@@ -2,8 +2,8 @@
 # Idempotent setup of the GCP sandbox project the factory builds and deploys into. Runs on YOUR machine, with
 # gcloud authenticated as an owner of SANDBOX_PROJECT who can also read the Hub VM in HUB_PROJECT.
 #
-#   DRY_RUN=1 scripts/setup-sandbox.sh --with-spanner --with-bigquery   # print the plan, change nothing
-#   scripts/setup-sandbox.sh --with-spanner --with-bigquery
+#   DRY_RUN=1 scripts/setup-sandbox.sh --with-bigquery   # print the plan, change nothing
+#   scripts/setup-sandbox.sh --with-bigquery
 #   read -rs GITHUB_TOKEN; export GITHUB_TOKEN; scripts/setup-sandbox.sh   # also store the token (stdin, not argv)
 #
 # What it does (each step is skipped when already in place):
@@ -12,18 +12,20 @@
 #   3. creates the runtime SA (RUNTIME_SA_NAME): the product's Cloud Run identity. Never run the product on the
 #      default compute SA: it got Vertex AI 403s (L7). The deployer can act as it.
 #   4. lets the Hub VM's SA mint tokens for the deployer SA (Scion "assign" identity mode), and gives it what the
-#      Hub-side sync and the eval agents (passthrough identity) need: Spanner data access, Firestore, the data
-#      bucket, and serviceUsageConsumer so it can bill API calls to the sandbox (L12)
+#      Hub-side sync and the eval agents (passthrough identity) need: Firestore, the data bucket, and
+#      serviceUsageConsumer so it can bill API calls to the sandbox (L12)
 #   5. lets the default compute SA run Cloud Build for `gcloud run deploy --source` (needed when the organization
 #      disables the automatic Editor grant)
-#   6. --with-spanner: instance (100 processing units), database, factory tables (config/spanner-factory-ddl.sql),
-#      read access for the dashboard
+#   6. --with-spanner (opt-in, product only): instance (100 processing units) and database. The factory itself
+#      never needs Spanner; use it only when the product has a requirement that Firestore or BigQuery can't meet.
 #   7. --with-bigquery: the dataset
-#   8. Firestore (default) database in Native mode, and the data bucket (uniform access, public access prevented)
+#   8. Firestore database (FIRESTORE_DATABASE, default `(default)`) in Native mode with the factory control-plane
+#      indexes (config/firestore/firestore.indexes.json), and the data bucket (uniform access, public access
+#      prevented)
 #   9. if GITHUB_TOKEN is set: secret `github-token` (read from stdin). An existing secret is left alone unless
 #      UPDATE_SECRET=1.
 # The dashboard's runtime SA (DASHBOARD_RUNTIME_SA, default: the project's default compute SA) gets read access to
-# the factory tables and the secret. A dedicated, read-only SA is better; create one and set DASHBOARD_RUNTIME_SA.
+# Firestore (roles/datastore.viewer) and the secret. A dedicated, read-only SA is better; create one and set DASHBOARD_RUNTIME_SA.
 #
 # The roles are deliberately broad for a throwaway sandbox (see architecture.md, Identities). Tighten them for
 # anything shared.
@@ -79,6 +81,7 @@ fi
 PROJECT_NUMBER="$(gcloud projects describe "$P" --format='value(projectNumber)' 2>/dev/null || echo '<project-number>')"
 COMPUTE_SA="$PROJECT_NUMBER-compute@developer.gserviceaccount.com"
 DASHBOARD_RUNTIME_SA="${DASHBOARD_RUNTIME_SA:-$COMPUTE_SA}"
+FS_DATABASE="${FIRESTORE_DATABASE:-(default)}"
 echo "sandbox=$P region=$R deployer=$DEPLOYER_SA runtime=$RUNTIME_SA hub_vm_sa=$HUB_VM_SA dry_run=$DRY_RUN"
 
 step "1. APIs"
@@ -139,25 +142,9 @@ if [[ "$with_spanner" == 1 ]]; then
   else
     run gcloud spanner databases create "$SPANNER_DATABASE" --instance="$SPANNER_INSTANCE" --project="$P"
   fi
-  ddl_file="$here/../config/spanner-factory-ddl.sql"
-  current_ddl="$(gcloud spanner databases ddl describe "$SPANNER_DATABASE" --instance="$SPANNER_INSTANCE" \
-    --project="$P" 2>/dev/null || true)"
-  while read -r table; do
-    if grep -q "CREATE TABLE $table " <<< "$current_ddl"; then
-      echo "table $table: exists"
-      continue
-    fi
-    stmt="$(sed -e '/^[[:space:]]*--/d' "$ddl_file" | awk -v t="$table" 'BEGIN{RS=";"} $0 ~ ("CREATE TABLE " t " ") {print; exit}')"
-    run gcloud spanner databases ddl update "$SPANNER_DATABASE" --instance="$SPANNER_INSTANCE" --project="$P" --ddl="$stmt" </dev/null
-  done < <(grep -o 'CREATE TABLE [a-z_]*' "$ddl_file" | awk '{print $3}')
-  for sa in "$RUNTIME_SA" "$HUB_VM_SA"; do
-    run gcloud spanner databases add-iam-policy-binding "$SPANNER_DATABASE" --instance="$SPANNER_INSTANCE" \
-      --project="$P" --member="serviceAccount:$sa" --role=roles/spanner.databaseUser --quiet >/dev/null
-  done
-  echo "databaseUser on $SPANNER_DATABASE: runtime SA, VM SA"
   run gcloud spanner databases add-iam-policy-binding "$SPANNER_DATABASE" --instance="$SPANNER_INSTANCE" \
-    --project="$P" --member="serviceAccount:$DASHBOARD_RUNTIME_SA" --role=roles/spanner.databaseReader --quiet >/dev/null
-  echo "databaseReader on $SPANNER_DATABASE: $DASHBOARD_RUNTIME_SA (dashboard)"
+    --project="$P" --member="serviceAccount:$RUNTIME_SA" --role=roles/spanner.databaseUser --quiet >/dev/null
+  echo "databaseUser on $SPANNER_DATABASE: runtime SA (product only; the factory control plane is on Firestore)"
 fi
 
 if [[ "$with_bigquery" == 1 ]]; then
@@ -169,12 +156,31 @@ if [[ "$with_bigquery" == 1 ]]; then
   fi
 fi
 
-step "8. Firestore and data bucket"
-if exists gcloud firestore databases describe --database='(default)' --project="$P"; then
-  echo "firestore (default): exists"
+step "8. Firestore (factory control plane) and data bucket"
+if exists gcloud firestore databases describe --database="$FS_DATABASE" --project="$P"; then
+  echo "firestore $FS_DATABASE: exists"
 else
-  run gcloud firestore databases create --database='(default)' --location="$R" --type=firestore-native --project="$P"
+  run gcloud firestore databases create --database="$FS_DATABASE" --location="$R" --type=firestore-native --project="$P"
 fi
+existing_indexes="$(gcloud firestore indexes composite list --project="$P" --database="$FS_DATABASE" \
+  --format='value(name)' 2>/dev/null || true)"
+create_index() {
+  local group="$1"; shift
+  if grep -q "collectionGroups/$group/" <<< "$existing_indexes"; then
+    echo "index on $group: exists"
+  else
+    run gcloud firestore indexes composite create --project="$P" --database="$FS_DATABASE" \
+      --collection-group="$group" "$@" --async --quiet >/dev/null
+    echo "index on $group: creating (async)"
+  fi
+}
+# Keep in sync with config/firestore/firestore.indexes.json (tests check that file).
+create_index factory_agent_status --field-config=field-path=project_slug,order=ascending \
+  --field-config=field-path=agent_name,order=ascending
+create_index eval_runs --field-config=field-path=project_slug,order=ascending \
+  --field-config=field-path=evaluated_at,order=descending
+bind_project "serviceAccount:$DASHBOARD_RUNTIME_SA" roles/datastore.viewer
+echo "datastore.viewer: $DASHBOARD_RUNTIME_SA (dashboard); datastore.user: VM SA (sync, eval agents)"
 if exists gcloud storage buckets describe "gs://$DATA_BUCKET" --project="$P"; then
   echo "bucket gs://$DATA_BUCKET: exists"
 else

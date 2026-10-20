@@ -1,17 +1,20 @@
 #!/usr/bin/env python3
-"""Sync live agent state from the Scion Hub into Spanner for the eval dashboard. Runs ON the Hub VM.
+"""Sync live agent state from the Scion Hub into Firestore for the eval dashboard. Runs ON the Hub VM.
 
-Reads the Hub's SQLite DB read-only and upserts one row per live agent of the factory projects into
-`factory_agent_status` (PK project_slug, agent_name; DDL in config/spanner-factory-ddl.sql). Rows that were not
-refreshed for PRUNE_MINUTES (deleted agents) are removed. install-sync-cron.sh runs it every minute from the
-Hub OS user's crontab.
+Reads the Hub's SQLite DB read-only and upserts one document per live agent of the factory projects into the
+Firestore collection `factory_agent_status` (document ID `<project_slug>__<agent_name>`; contract in
+docs/plans/2026-10-20-firestore-control-plane.md). Documents that were not refreshed for PRUNE_MINUTES (deleted
+agents) are removed. install-sync-cron.sh ships this file and factory_store.py to the VM and runs it every minute
+from the Hub OS user's crontab.
 
 Configuration (environment):
-  SANDBOX_PROJECT, SPANNER_INSTANCE, SPANNER_DATABASE   where factory_agent_status lives
+  FIRESTORE_PROJECT    project that holds the Firestore database (default: SANDBOX_PROJECT)
+  FIRESTORE_DATABASE   database ID (default: (default))
   FACTORY_PROJECTS     comma-separated Scion project slugs (default: BUILD_PROJECT,EVAL_PROJECT)
-  BILLING_PROJECT      quota/billing project for the Spanner API calls (default: SANDBOX_PROJECT). The VM's
-                       service account defaults to the Hub project for quota, which fails without this flag
-                       (lessons-learned.md L12). The VM SA needs roles/serviceusage.serviceUsageConsumer here.
+  BILLING_PROJECT      quota project sent as x-goog-user-project (default: the Firestore project). The VM's
+                       service account defaults to the Hub project for quota, which fails without it
+                       (lessons-learned.md L12). The VM SA needs roles/serviceusage.serviceUsageConsumer and
+                       roles/datastore.user on the Firestore project.
   PRUNE_MINUTES        default 10
   SCION_HOME           default ~/.scion
 
@@ -19,7 +22,7 @@ Turn and model-call counters are written as NULL when the Hub reports 0: the Hub
 so "unknown" is the honest value, not zero (lessons-learned.md L9).
 
   python3 sync-factory-agents.py            # upsert + prune
-  python3 sync-factory-agents.py --dry-run  # print the SQL, write nothing
+  python3 sync-factory-agents.py --dry-run  # print the Firestore requests, write nothing
 """
 import argparse
 import datetime
@@ -31,6 +34,9 @@ import subprocess
 import sys
 import urllib.parse
 import urllib.request
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import factory_store  # noqa: E402  (shipped next to this file by install-sync-cron.sh)
 
 
 def read_hub_project_id(scion_home):
@@ -125,54 +131,37 @@ def load_sync_env():
             return
 
 
-def env(name, default=None):
-    value = os.environ.get(name, default)
+def parse_ts(value):
+    """Go/SQLite timestamp text (e.g. '2026-10-12 23:45:52.44 +0000 UTC') -> aware datetime, or None."""
     if not value:
-        sys.exit(f"{name} is not set")
-    return value
-
-
-def lit(value, max_len=None):
-    """GoogleSQL string literal, or NULL."""
-    if value is None:
-        return "NULL"
-    s = str(value)
-    if max_len and len(s) > max_len:
-        s = s[: max_len - 1] + "…"
-    s = s.replace("\\", "\\\\").replace("'", "\\'").replace("\n", "\\n").replace("\r", "\\r")
-    return f"'{s}'"
-
-
-def ts(value):
-    """Go/SQLite timestamp text (e.g. '2026-10-12 23:45:52.44 +0000 UTC') -> GoogleSQL TIMESTAMP literal, or NULL."""
-    if not value:
-        return "NULL"
+        return None
     m = re.match(r"(\d{4}-\d{2}-\d{2})[ T](\d{2}:\d{2}:\d{2})", str(value))
-    return f"TIMESTAMP '{m.group(1)}T{m.group(2)}Z'" if m else "NULL"
+    if not m:
+        return None
+    return datetime.datetime.strptime(f"{m.group(1)}T{m.group(2)}", "%Y-%m-%dT%H:%M:%S").replace(
+        tzinfo=datetime.timezone.utc)
 
 
 def counter(value):
-    return str(int(value)) if value else "NULL"
+    """Counters the Hub doesn't populate are unknown (None), not zero (L9)."""
+    return int(value) if value else None
+
+
+def truncate(value, max_len=500):
+    if value is None:
+        return None
+    s = str(value)
+    return s if len(s) <= max_len else s[: max_len - 1] + "…"
 
 
 def now():
     return datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-def run_spanner(spanner_cmd, sql):
-    try:
-        res = subprocess.run(spanner_cmd + [f"--sql={sql}"], capture_output=True, text=True, timeout=120)
-        if res.returncode != 0:
-            return "", res.stderr.strip()[:500]
-        return res.stdout, ""
-    except (FileNotFoundError, subprocess.TimeoutExpired) as e:
-        return "", str(e)
-
-
 def main():
     load_sync_env()
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    parser.add_argument("--dry-run", action="store_true", help="print the SQL instead of running it")
+    parser.add_argument("--dry-run", action="store_true", help="print the Firestore requests instead of sending them")
     args = parser.parse_args()
 
     projects = os.environ.get("FACTORY_PROJECTS") or ",".join(
@@ -180,10 +169,10 @@ def main():
     projects = [p.strip() for p in projects.split(",") if p.strip()]
     if not projects:
         sys.exit("set FACTORY_PROJECTS (or BUILD_PROJECT/EVAL_PROJECT)")
-    sandbox = env("SANDBOX_PROJECT")
-    spanner = ["gcloud", "spanner", "databases", "execute-sql", env("SPANNER_DATABASE"),
-               f"--instance={env('SPANNER_INSTANCE')}", f"--project={sandbox}",
-               f"--billing-project={os.environ.get('BILLING_PROJECT') or sandbox}", "--quiet"]
+    try:
+        store = factory_store.store_from_env(dry_run=args.dry_run)
+    except ValueError as err:
+        sys.exit(str(err))
     prune_minutes = int(os.environ.get("PRUNE_MINUTES", "10"))
     scion_home = os.path.expanduser(os.environ.get("SCION_HOME", "~/.scion"))
     hub_db = os.path.join(scion_home, "hub.db")
@@ -208,34 +197,36 @@ def main():
         print(f"{now()} no agents found in {projects}; nothing to sync")
         return 0
 
-    values = []
+    docs = []
     for r in rows:
         parent = names.get(r["created_by"])  # None when a user (not an agent) created it
         aid = r["id"]
         turns_val = max(int(r["current_turns"] or 0), int(tool_calls_by_agent.get(aid, 0)))
         calls_val = max(int(r["current_model_calls"] or 0), int(api_calls_by_agent.get(aid, 0)))
-        values.append("(" + ", ".join([
-            lit(r["project_slug"]), lit(r["name"]), lit(r["id"]), lit(r["template"]), lit(r["harness"]),
-            lit(r["phase"]), lit(r["activity"]), lit(parent), counter(turns_val),
-            counter(calls_val), lit(r["task_summary"] or r["message"], 500),
-            ts(r["last_activity_event"]), "CURRENT_TIMESTAMP()",
-        ]) + ")")
-    statements = [
-        "INSERT OR UPDATE INTO factory_agent_status (project_slug, agent_name, agent_id, template, harness, phase, "
-        "activity, parent_agent, current_turns, model_calls, last_summary, last_activity_at, updated_at) VALUES "
-        + ", ".join(values),
-        "DELETE FROM factory_agent_status "
-        f"WHERE updated_at < TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL {prune_minutes} MINUTE)",
-    ]
-    if args.dry_run:
-        print("\n".join(" ".join(spanner) + f" --sql=<<{sql}>>" for sql in statements))
-        return 0
-    for sql in statements:
-        stdout, err = run_spanner(spanner, sql)
-        if err:
-            print(f"{now()} ERROR: {err}", file=sys.stderr)
-            return 1
-    print(f"{now()} synced {len(values)} agents")
+        docs.append({
+            "project_slug": r["project_slug"],
+            "agent_name": r["name"],
+            "agent_id": r["id"],
+            "template": r["template"],
+            "harness": r["harness"],
+            "phase": r["phase"],
+            "activity": r["activity"],
+            "parent_agent": parent,
+            "current_turns": counter(turns_val),
+            "model_calls": counter(calls_val),
+            "last_summary": truncate(r["task_summary"] or r["message"]),
+            "last_activity_at": parse_ts(r["last_activity_event"]),
+        })
+
+    cutoff = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(minutes=prune_minutes)
+    try:
+        written = store.commit(factory_store.agent_status_writes(store, docs))
+        pruned = factory_store.prune_agent_status(store, cutoff)
+    except RuntimeError as err:
+        print(f"{now()} ERROR: {err}", file=sys.stderr)
+        return 1
+    if not args.dry_run:
+        print(f"{now()} synced {written} agents, pruned {pruned}")
     return 0
 
 

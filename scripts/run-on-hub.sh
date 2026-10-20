@@ -10,8 +10,8 @@
 #   scripts/run-on-hub.sh scripts/scion-admin.py schedule list --project psearch
 #
 # The interpreter is chosen by extension (.py -> python3, anything else -> bash). These factory.env variables
-# are forwarded to the remote script's environment: SANDBOX_PROJECT SANDBOX_REGION SPANNER_INSTANCE
-# SPANNER_DATABASE BUILD_PROJECT EVAL_PROJECT FACTORY_PROJECTS BILLING_PROJECT GITHUB_REPO PO_EMAIL HUB_LOCAL_URL.
+# are forwarded to the remote script's environment: SANDBOX_PROJECT SANDBOX_REGION FIRESTORE_PROJECT
+# FIRESTORE_DATABASE BUILD_PROJECT EVAL_PROJECT FACTORY_PROJECTS BILLING_PROJECT GITHUB_REPO PO_EMAIL HUB_LOCAL_URL.
 set -euo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -38,7 +38,7 @@ interp=bash
 
 forward=()
 for var in HUB_PROJECT HUB_PROJECT_ID ADMIN_EMAIL PO_EMAIL SANDBOX_PROJECT SANDBOX_REGION \
-           SPANNER_INSTANCE SPANNER_DATABASE BUILD_PROJECT EVAL_PROJECT FACTORY_PROJECTS \
+           FIRESTORE_PROJECT FIRESTORE_DATABASE BUILD_PROJECT EVAL_PROJECT FACTORY_PROJECTS \
            BILLING_PROJECT GITHUB_REPO HUB_LOCAL_URL; do
   if [[ -n "${!var:-}" ]]; then
     forward+=("$(printf '%s=%q' "$var" "${!var}")")

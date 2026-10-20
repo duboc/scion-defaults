@@ -1,0 +1,33 @@
+{
+  "indexes": [
+    {
+      "collectionGroup": "factory_agent_status",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "project_slug",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "agent_name",
+          "order": "ASCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "eval_runs",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "project_slug",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "evaluated_at",
+          "order": "DESCENDING"
+        }
+      ]
+    }
+  ],
+  "fieldOverrides": []
+}
