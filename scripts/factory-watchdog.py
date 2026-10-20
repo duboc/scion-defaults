@@ -542,8 +542,15 @@ def check_po_inbox(conn, state, apply):
 
 
 def check_shared_knowledge_plane(conn, apply=False):
-    """Ensure Hub shared-dirs/knowledge-plane stays synced with the repo's knowledge-plane/ directory."""
-    src_dir = os.path.join(SCION_HOME, "projects", "psearch", "knowledge-plane")
+    """Ensure Hub shared-dirs/knowledge-plane stays synced with the build project's knowledge-plane/ directory.
+
+    The source project is KNOWLEDGE_PLANE_SOURCE_PROJECT (default: the first entry in FACTORY_PROJECTS).
+    Agents in every factory project read the copy at /scion-volumes/knowledge-plane.
+    """
+    source_project = os.environ.get("KNOWLEDGE_PLANE_SOURCE_PROJECT") or (FACTORY_PROJECTS[0] if FACTORY_PROJECTS else "")
+    if not source_project:
+        return
+    src_dir = os.path.join(SCION_HOME, "projects", source_project, "knowledge-plane")
     if not os.path.isdir(src_dir):
         return
 
