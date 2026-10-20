@@ -1,5 +1,11 @@
 # Scion Software Factory: Verification & Product Evaluation Methodology
 
+> [!NOTE]
+> This page records the verification of the reference factory. Since 2026-10-20 the factory control plane
+> (`factory_agent_status`, `eval_runs`) lives in serverless Firestore instead of Cloud Spanner; see
+> [`config/firestore/README.md`](../config/firestore/README.md). Spanner references below describe the reference
+> product and the original run.
+
 A comprehensive guide to verifying control-plane integrity, evaluating search quality, and maintaining automated multi-layer test harnesses across the Scion software factory.
 
 This document synthesizes:

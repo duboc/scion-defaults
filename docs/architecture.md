@@ -29,7 +29,7 @@ flowchart TB
     subgraph SBX["Sandbox (SANDBOX_PROJECT)"]
         SERVING["Cloud Run: SERVING_SERVICE<br/>runs as RUNTIME_SA"]
         DASH["Cloud Run: DASHBOARD_SERVICE"]
-        DATA["Spanner (product and factory tables), BigQuery,<br/>Firestore, GCS bucket, Secret Manager"]
+        DATA["Firestore (factory control plane), product data stores,<br/>BigQuery, GCS bucket, Secret Manager"]
     end
 
     PO -->|IAP| PROXY --> HUB
@@ -40,7 +40,7 @@ flowchart TB
     EDEP -->|DEPLOYER_SA| DASH
     CRON -->|"hub.db to factory_agent_status"| DATA
     SPEC -->|probes| SERVING
-    SPEC -->|"read Spanner, write Firestore and GCS"| DATA
+    SPEC -->|"read and write Firestore and GCS"| DATA
     SERVING --> DATA
     DASH --> DATA
     DASH -->|GITHUB_TOKEN| GH
@@ -57,21 +57,21 @@ flowchart TB
 | Templates | Hub, per project | Role prompts and settings ([`templates/`](../templates/)). |
 | Schedules | Hub | Admin-owned cron jobs that message each lead every 15 minutes (the heartbeat). |
 | Watchdog daemon | cron on the VM | [`factory-watchdog.py`](../scripts/factory-watchdog.py) runs every 5 minutes: guards provisioners against drift, restores schedules, wakes suspended agents, restarts crashed workers (3/hr circuit breaker), and forwards PO escalations to Cloud Logging. |
-| Agent-status sync | cron on the VM | [`sync-factory-agents.py`](../scripts/sync-factory-agents.py) copies agent state from `hub.db` to Spanner every minute, so the dashboard can show it without Hub access. |
+| Agent-status sync | cron on the VM | [`sync-factory-agents.py`](../scripts/sync-factory-agents.py) copies agent state from `hub.db` to Firestore (`factory_agent_status`) every minute, so the dashboard can show it without Hub access. |
 | Backups | cron & GCE snapshots | [`backup-hub.sh`](../scripts/backup-hub.sh) creates daily online SQLite backups and state tarballs (14-day retention); GCE disk snapshot policy runs daily at 04:00 UTC. |
 | Alerts & Budgets | Cloud Monitoring in `HUB_PROJECT` | Log-based alert policy on `scion-factory-alerts` (Cloud Monitoring email notifications to PO). Monthly billing budgets ($150 Hub, $150 Sandbox) with 50%, 80%, 100% actual and 120% forecasted spend threshold alerts. |
 | GitHub repo | `GITHUB_REPO` | Issues are the backlog and the record of work; `BUILD_BRANCH` (`main`) and `EVAL_BRANCH` (`eval-dashboard`) are independent orphan branches (`git switch --orphan`) in `GITHUB_REPO` that share no Git ancestry and are never merged into each other. |
-| Sandbox | `SANDBOX_PROJECT` | Everything the factories build and run: the product service, its Spanner and BigQuery data, the dashboard, Firestore, a data bucket, the `github-token` secret. Kept apart from the Hub project so agents can't break the Hub. |
+| Sandbox | `SANDBOX_PROJECT` | Everything the factories build and run: the product service and its data stores, the dashboard, Firestore (the factory control plane), a data bucket, the `github-token` secret. Kept apart from the Hub project so agents can't break the Hub. |
 
 ## Identities
 
 | Who | Identity | Grants | Why |
 |---|---|---|---|
-| Agents (default) | Hub VM SA (Scion `passthrough` mode) | `HUB_PROJECT`: `aiplatform.user` (models), log/metric/trace writers. Sandbox: `datastore.user`, `serviceusage.serviceUsageConsumer`, `spanner.databaseUser` on the database, `storage.objectAdmin` on the data bucket | Model calls; workers query Spanner/Firestore/GCS for tests and evaluation, while Cloud Run deployments and IAM mutations are restricted to deployers holding `DEPLOYER_SA`. |
-| Deploy agents | `DEPLOYER_SA` (Scion `assign` mode) | Sandbox: `run.admin`, `cloudbuild.builds.editor`, `artifactregistry.admin`, `storage.admin`, `logging.viewer`, `serviceusage.serviceUsageConsumer`, `aiplatform.user`, `iam.serviceAccountUser`, `datastore.user`, `spanner.admin`, `spanner.databaseAdmin`, `bigquery.admin` | Deploys and migrations. Broad on purpose for a throwaway sandbox; scope `iam.serviceAccountUser` to the runtime and build SAs for anything shared. |
+| Agents (default) | Hub VM SA (Scion `passthrough` mode) | `HUB_PROJECT`: `aiplatform.user` (models), log/metric/trace writers. Sandbox: `datastore.user`, `serviceusage.serviceUsageConsumer`, `storage.objectAdmin` on the data bucket | Model calls; workers query Firestore/GCS (and any product data store) for tests and evaluation, while Cloud Run deployments and IAM mutations are restricted to deployers holding `DEPLOYER_SA`. |
+| Deploy agents | `DEPLOYER_SA` (Scion `assign` mode) | Sandbox: `run.admin`, `cloudbuild.builds.editor`, `artifactregistry.admin`, `storage.admin`, `logging.viewer`, `serviceusage.serviceUsageConsumer`, `aiplatform.user`, `iam.serviceAccountUser`, `datastore.user`, `bigquery.admin` (plus product-store admin roles only when the product needs them) | Deploys and migrations. Broad on purpose for a throwaway sandbox; scope `iam.serviceAccountUser` to the runtime and build SAs for anything shared. |
 | Hub VM SA, for the deployers | | `iam.serviceAccountTokenCreator` and `iam.serviceAccountUser` on `DEPLOYER_SA` | Scion mints the deployer's tokens with the VM's identity. |
-| Product service | `RUNTIME_SA` | `aiplatform.user` (project), `spanner.databaseUser` (database) | Exactly what the code uses (L7). |
-| Dashboard | the default compute SA today | `secretAccessor` on `github-token`, Spanner read | Works, but the same SA also runs Cloud Build for source deploys and holds broad roles. Give the dashboard its own read-only SA, as for the product (L7). |
+| Product service | `RUNTIME_SA` | `aiplatform.user` (project), plus the data-store role the code uses | Exactly what the code uses (L7). |
+| Dashboard | the default compute SA today | `secretAccessor` on `github-token`, `datastore.viewer` | Works, but the same SA also runs Cloud Build for source deploys and holds broad roles. Give the dashboard its own read-only SA, as for the product (L7). |
 | Cloud Build (source deploys) | the default compute SA | `cloudbuild.builds.builder` | `gcloud run deploy --source` builds the image with this identity. |
 | GitHub | the PO's personal access token (repo scope) | push, issues, PRs | Simple, but every action shows as the PO and PR approvals are impossible (L14). A GitHub App is the long-term fix. |
 
@@ -106,9 +106,9 @@ The PO escalation path is narrow on purpose: IAM grants, cost, scope. Everything
 
 | Signal | Source | Consumer |
 |---|---|---|
-| Agent phase, activity, last activity | `hub.db` -> Spanner `factory_agent_status` (every minute) | dashboard, factory-analyst |
+| Agent phase, activity, last activity | `hub.db` -> Firestore `factory_agent_status` (every minute) | dashboard, factory-analyst |
 | Issues, commits, branches | GitHub API | dashboard, factory-analyst |
-| Search quality and latency | probes -> Spanner `eval_runs` | dashboard |
+| Search quality and latency | probes -> Firestore `eval_runs` | dashboard |
 | History snapshots | `consolidate_factory_data.py` (eval code) -> Firestore, `gs://DATA_BUCKET/snapshots/` | dashboard |
 | Everything at once, for operators | [`scripts/factory-status.sh`](../scripts/factory-status.sh) | you |
 

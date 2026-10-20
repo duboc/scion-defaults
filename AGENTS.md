@@ -7,8 +7,8 @@ This repository (`duboc/scion-defaults`) is the canonical blueprint, automation 
 | Path | Purpose |
 |---|---|
 | [`README.md`](README.md) | Overview, architecture, what we built, and 12-step replication quickstart |
-| [`config/`](config/) | Parameterized environment (`factory.env.example`), Hub `settings.yaml`, OpenCode Vertex AI model catalog (`opencode-models.json`), heartbeat prompt, and Cloud Spanner DDL (`spanner-factory-ddl.sql`) |
-| [`scripts/`](scripts/README.md) | Idempotent provisioning, admin API client (`scion-admin.py`), template rendering/pushing, telemetry setup, harness patching, 1-minute Spanner sync, 5-minute self-healing watchdog, backups, and alerting |
+| [`config/`](config/) | Parameterized environment (`factory.env.example`), Hub `settings.yaml`, OpenCode Vertex AI model catalog (`opencode-models.json`), heartbeat prompt, and the Firestore control-plane contract, indexes, and rules (`firestore/`) |
+| [`scripts/`](scripts/README.md) | Idempotent provisioning, admin API client (`scion-admin.py`), template rendering/pushing, telemetry setup, harness patching, 1-minute Firestore status sync (`sync-factory-agents.py` + `factory_store.py`), 5-minute self-healing watchdog, backups, and alerting |
 | [`templates/`](templates/README.md) | Shared multi-agent coordination protocol (`_shared/agents.md`) + 10 role templates (`lead`, `backend`, `frontend`, `reviewer`, `deployer`, `eval-lead`, `factory-analyst`, `search-evaluator`, `ui-craftsman`, `eval-deployer`) |
 | [`docs/`](docs/) | Architecture (`architecture.md`), setup runbook (`setup-runbook.md`), operations runbook (`operations-runbook.md`), agent protocol (`agent-protocol.md`), 5-layer evaluation pyramid (`verification-and-eval.md`), 27 lessons learned (`lessons-learned.md`), and v2 orchestration spec (`specs/`) |
 | [`docs/telemetry/`](docs/telemetry/README.md) | ASD-STE100 documentation for reproducing telemetry, the evaluation data pipeline, and harness hooks / stacked Cloud Trace waterfalls |
@@ -28,5 +28,7 @@ This repository (`duboc/scion-defaults`) is the canonical blueprint, automation 
      ```
 2. **Idempotent Scripts with `DRY_RUN=1`:**
    - Every provisioning and patching script in `scripts/` must support `DRY_RUN=1` (or `--dry-run`) and use `set -euo pipefail` + `CLOUDSDK_CORE_DISABLE_PROMPTS=1`.
-3. **Never Run `docker restart` on Scion Agent Containers:**
+3. **Serverless First, No Spanner in the Factory:**
+   - The factory control plane (agent status, evaluation runs) uses Firestore through `scripts/factory_store.py`. Never add Spanner (or another provisioned database) to the factory itself; products may use one only when the interview records a requirement Firestore or BigQuery can't meet.
+4. **Never Run `docker restart` on Scion Agent Containers:**
    - Scion creates agent containers with `--rm` (`AutoRemove: true`). Update binaries or credentials in running containers via `docker cp` ([`scripts/patch-sciontool-telemetry.sh`](scripts/patch-sciontool-telemetry.sh)).

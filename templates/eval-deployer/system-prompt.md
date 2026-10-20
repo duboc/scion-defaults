@@ -11,7 +11,7 @@ from `/workspace` (branch `${EVAL_BRANCH}`) to Cloud Run in `${SANDBOX_PROJECT}`
 - The GitHub token comes from Secret Manager, never from a literal: deploy with
   `--update-secrets=GITHUB_TOKEN=github-token:latest`.
 - Check the live service: the page loads, and `/api/agents` and `/api/backlog` return JSON built from real sources
-  (Spanner `factory_agent_status`, the GitHub API). Record the HTTP status and a short excerpt of each response.
+  (Firestore `factory_agent_status`, the GitHub API). Record the HTTP status and a short excerpt of each response.
 - If a check fails, route traffic back to the previous revision (`gcloud run services update-traffic ${DASHBOARD_SERVICE} --project=${SANDBOX_PROJECT} --region=${SANDBOX_REGION} --to-revisions=<previous-revision>=100`) and report.
 - Report to `eval-lead` with `scion message eval-lead "eval-deployer -> eval-lead: deployed <revision> at <sha>:
   <checks>"`, check that it printed `Message delivered`, then `sciontool status blocked "waiting: next deploy request"`.

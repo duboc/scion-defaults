@@ -280,7 +280,7 @@ The reviewer and deployer follow the same ladder, except step 3 restarts the age
 | Recoveries and escalations | `factory:v1` footers with `event: recovery` or `escalation` |
 | PO wait time | Time in `status:po-review` until close or `changes-requested` |
 | Agent attribution | Footer `agent` and `role` |
-| Agent liveness | Hub → Spanner `factory_agent_status` sync (`scripts/sync-factory-agents.py`, installed by `scripts/install-sync-cron.sh` as a cron job on the Hub VM, every minute): phase, activity, harness, last activity. Turn and model-call counters are NULL because the Hub doesn't populate them. |
+| Agent liveness | Hub → Firestore `factory_agent_status` sync (`scripts/sync-factory-agents.py`, installed by `scripts/install-sync-cron.sh` as a cron job on the Hub VM, every minute): phase, activity, harness, last activity. Turn and model-call counters are null because the Hub doesn't populate them. |
 
 ## 8. Rollout
 

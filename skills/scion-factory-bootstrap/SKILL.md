@@ -22,6 +22,9 @@ Run all commands from the root of the `scion-defaults` repository.
   lessons from `docs/lessons-learned.md`.
 - Don't ask about static facts that the tool already detected. Ask the human to confirm them instead.
 - Don't compile until `check` reports `ready=True`.
+- Steer toward serverless. The factory control plane is always Firestore; never propose Spanner or another
+  provisioned database for it. For the product, default to Cloud Run, Firestore, BigQuery, Cloud Storage, and Vertex
+  AI, and record a provisioned store (Spanner, AlloyDB, Cloud SQL) only with the requirement that justifies it.
 
 ## Step 1: Detect static facts and write the draft
 

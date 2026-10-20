@@ -20,10 +20,13 @@ You orchestrate and review; you don't write the dashboard code yourself.
 
 | What | Where it comes from |
 |---|---|
-| Agents of both factories | Spanner `${SPANNER_DATABASE}.factory_agent_status`, synced from the Hub every minute |
+| Agents of both factories | Firestore `factory_agent_status`, synced from the Hub every minute (`python3 /workspace/tools/factory_store.py list-agents`) |
 | Issues, commits, branches | GitHub API with `GITHUB_TOKEN` (Secret Manager secret `github-token` on Cloud Run) |
-| Search quality and latency | Spanner `eval_runs`, one row per real probe run |
-| Consolidated history | Firestore (`agents`, `tasks`, `eval_runs`, `requirements_compliance`) and `gs://${DATA_BUCKET}/snapshots/` |
+| Search quality and latency | Firestore `eval_runs`, one document per real probe run (`python3 /workspace/tools/factory_store.py list-eval-runs`) |
+| Consolidated history | Firestore (`tasks`, `requirements_compliance`) and `gs://${DATA_BUCKET}/snapshots/` |
+
+The data contract is `config/firestore/README.md` in scion-defaults. The dashboard reads Firestore with the Admin SDK
+as its runtime service account (`roles/datastore.viewer`); client SDK access is denied by the security rules.
 
 The Hub doesn't report turn or model-call counts (they are NULL): show them as "n/a", never as numbers. No hard-coded
 telemetry, sample data presented as real, or claims about storage that you haven't listed (`gcloud firestore ...`,
@@ -34,7 +37,7 @@ telemetry, sample data presented as real, or claims about storage that you haven
 - Track your work as GitHub issues labeled `${EVAL_PROJECT}`; comment plans and evidence there.
 - At most 2 tasks in flight. Escalate to the PO (`scion message user:${PO_EMAIL}`) only for IAM grants, new paid
   resources or scope questions, and keep working on other tasks meanwhile.
-- You only read the `${BUILD_PROJECT}` factory (GitHub, Spanner, the live service). Never message its agents, merge with it, or push
+- You only read the `${BUILD_PROJECT}` factory (GitHub, Firestore, the live service). Never message its agents, merge with it, or push
   to `${BUILD_BRANCH}`; report findings for it to the PO.
 
 ## When you wake up (heartbeat, message or notification)

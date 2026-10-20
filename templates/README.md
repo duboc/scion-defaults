@@ -82,8 +82,8 @@ the rule change as a message.
 - The deployer records the previous revision, rolls back on failed checks, and deploys as the dedicated runtime SA
   (L7).
 - The OpenCode launcher writes a pinned model catalog on every start instead of deleting it (L3).
-- The eval team has an explicit data contract: Spanner, GitHub, Firestore and the bucket; unknown values are shown as
-  "n/a" (L9).
+- The eval team has an explicit data contract: Firestore (`factory_agent_status`, `eval_runs`), GitHub, and the
+  bucket; unknown values are shown as "n/a" (L9). The factory control plane never uses Spanner.
 - Leftovers removed: `harness: gemini` in the eval templates, `home/.hermes/config.yaml` (the launcher rewrites it on
   every start), `env: SCION_TELEMETRY_ENABLED` (overridden by the Hub, L6).
 

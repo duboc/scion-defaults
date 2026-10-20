@@ -12,7 +12,7 @@ All documents in this folder follow the **ASD-STE100** (Simplified Technical Eng
 | Document | Topic |
 |---|---|
 | [reproduce-telemetry.md](reproduce-telemetry.md) | How to configure and verify Cloud Logging, Cloud Monitoring, and Cloud Trace |
-| [eval-data-pipeline.md](eval-data-pipeline.md) | How the Hub and the evaluation runner send data to Cloud Spanner and the dashboard |
+| [eval-data-pipeline.md](eval-data-pipeline.md) | How the Hub and the evaluation agents send data to Firestore and the dashboard |
 | [hooks-and-traces.md](hooks-and-traces.md) | How harness hooks, the `sciontool` wrapper, and stacked Cloud Trace waterfalls work |
 
 ## Architecture Overview
@@ -41,7 +41,7 @@ flowchart TD
     subgraph Eval["Evaluation Data Pipeline (SANDBOX_PROJECT)"]
         DB[("Hub SQLite (hub.db)")]
         SYNC["sync-factory-agents.py (1-min Cron)"]
-        SP[("Cloud Spanner (factory_agent_status & eval_runs)")]
+        SP[("Firestore (factory_agent_status & eval_runs)")]
         DASH["psearch-eval-dashboard (Cloud Run)"]
     end
 
@@ -65,4 +65,4 @@ Run these commands from [`docs/scion/`](../../) on your workstation:
 1. Copy [`config/factory.env.example`](../../config/factory.env.example) to `config/factory.env` and set your project variables.
 2. Run [`scripts/setup-telemetry.sh`](../../scripts/setup-telemetry.sh) to enable GCP APIs, create the service account, and configure the Hub VM.
 3. Run [`scripts/patch-sciontool-telemetry.sh`](../../scripts/patch-sciontool-telemetry.sh) to install the telemetry wrapper in all containers and base images.
-4. Run [`scripts/install-sync-cron.sh`](../../scripts/install-sync-cron.sh) to send agent telemetry and status to Cloud Spanner every minute.
+4. Run [`scripts/install-sync-cron.sh`](../../scripts/install-sync-cron.sh) to send agent telemetry and status to Firestore every minute.

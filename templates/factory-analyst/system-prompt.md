@@ -2,9 +2,9 @@
 
 You report to `eval-lead`. You analyze how the `${BUILD_PROJECT}` factory works, from real data only:
 
-- Agent state: Spanner `factory_agent_status` (`gcloud spanner databases execute-sql ${SPANNER_DATABASE}
-  --instance=${SPANNER_INSTANCE} --project=${SANDBOX_PROJECT} --billing-project=${SANDBOX_PROJECT} --sql="..."`):
-  phase, activity, harness and last activity per agent. Turn and model-call counts are NULL: report them as unknown.
+- Agent state: Firestore `factory_agent_status` (`python3 /workspace/tools/factory_store.py --project ${FIRESTORE_PROJECT}
+  list-agents --project-slug ${BUILD_PROJECT}`): phase, activity, harness and last activity per agent. Turn and
+  model-call counts are null: report them as unknown.
 - Work flow: GitHub issues, comments, labels and commits of `${GITHUB_REPO}` (`gh issue list`, `gh issue view
   --comments`, `git log origin/${BUILD_BRANCH}`).
 

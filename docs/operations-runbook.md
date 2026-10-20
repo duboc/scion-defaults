@@ -131,7 +131,7 @@ Each runbook below has: **Trigger**, **Diagnose**, **Act**, **Check**, **Escalat
   *(Important: after pinning traffic with `--to-revisions=<rev>=100`, the next `gcloud run deploy` must pass `--to-latest`,
   or you must run `gcloud run services update-traffic $SERVING_SERVICE ... --to-latest` afterward, otherwise traffic
   remains pinned to the rollback revision; I3).*
-  A 403 from Vertex AI or Spanner means the runtime SA is missing a role; grant exactly that role to `RUNTIME_SA`,
+  A 403 from Vertex AI or a data store means the runtime SA is missing a role; grant exactly that role to `RUNTIME_SA`,
   never switch the service to the default compute SA (L7).
 - **Check:** `/api/health` returns 200 and the issue's acceptance checks pass on the old revision; the deployer posts
   the rollback on the issue.
@@ -145,15 +145,16 @@ Each runbook below has: **Trigger**, **Diagnose**, **Act**, **Check**, **Escalat
   curl -s "$url/api/agents" | head -c 600; echo
   curl -s "$url/api/backlog" | head -c 600; echo     # HTML here means the route doesn't exist
   ```
-  Agents come from Spanner `factory_agent_status` (is the sync running? see the next runbook), the backlog from the
-  GitHub API (is `GITHUB_TOKEN <- secret github-token` on the service?), metrics from `eval_runs`.
+  Agents come from Firestore `factory_agent_status` (is the sync running? see the next runbook; read it directly with
+  `python3 scripts/factory_store.py list-agents`), the backlog from the GitHub API (is
+  `GITHUB_TOKEN <- secret github-token` on the service?), metrics from Firestore `eval_runs`.
 - **Act:** give `eval-lead` the evidence and the data-source rule; don't accept "fixed" without a `curl` that shows
   real data.
 - **Check:** the same `curl` returns data that matches the source (e.g. agent count equals `factory-status.sh`).
 
 ## Evaluation & Product Verification
 
-For complete methodology on evaluating the hybrid search service, running the 5-Layer Evaluation Pyramid (L1–L5, 76 scenarios, 100% threshold), verifying all 14 Biggy Search requirements across Waves 1–5, and validating Spanner/Firestore persistence, see [`verification-and-eval.md`](verification-and-eval.md).
+For complete methodology on evaluating the hybrid search service, running the 5-Layer Evaluation Pyramid (L1–L5, 76 scenarios, 100% threshold), verifying all 14 Biggy Search requirements across Waves 1–5, and validating data persistence, see [`verification-and-eval.md`](verification-and-eval.md).
 
 Quick checks:
 ```bash

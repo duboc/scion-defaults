@@ -65,14 +65,18 @@ scripts/run-on-hub.sh scripts/scion-admin.py experiments --set web.terminal_work
 ## 4. Sandbox
 
 ```bash
-DRY_RUN=1 scripts/setup-sandbox.sh --with-spanner --with-bigquery     # read the plan
-read -rs GITHUB_TOKEN && export GITHUB_TOKEN                          # paste the PAT; not echoed, not in history
-scripts/setup-sandbox.sh --with-spanner --with-bigquery
+DRY_RUN=1 scripts/setup-sandbox.sh --with-bigquery     # read the plan
+read -rs GITHUB_TOKEN && export GITHUB_TOKEN           # paste the PAT; not echoed, not in history
+scripts/setup-sandbox.sh --with-bigquery
 unset GITHUB_TOKEN
 ```
 
 Grant up front everything the backlog will obviously need (runtime identities, data stores, secrets): an IAM decision
 that waits for the PO stalls the factory for hours (L17).
+
+The factory control plane (agent status and evaluation runs) lives in serverless Firestore; the script creates the
+database and its indexes (see [`config/firestore/README.md`](../config/firestore/README.md)). Add `--with-spanner`
+only if the product itself has a requirement that Firestore or BigQuery can't meet.
 
 **Check:** run it again; every step reports "exists" and nothing new is created.
 
@@ -238,12 +242,15 @@ ran the heartbeat steps.
 
 ## 10. Agent-status sync, backups, and watchdog
 
-Install the Hub -> Spanner status sync:
+Install the Hub -> Firestore status sync:
 
 ```bash
 scripts/install-sync-cron.sh --dry-run      # read what it will do
 scripts/install-sync-cron.sh
 ```
+
+Give the evaluation agents the Firestore client: copy [`scripts/factory_store.py`](../scripts/factory_store.py) to
+`tools/factory_store.py` in the evaluation workspace (compiled kits ship it in `eval-workspace/tools/`).
 
 Install daily consistent Hub backups and cron:
 

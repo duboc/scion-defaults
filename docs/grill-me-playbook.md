@@ -68,7 +68,7 @@ Each question maps to a failure that happened in production. The lessons are in
 | `mission_and_non_goals` | `1_mission_and_boundaries` | Agents build out-of-scope features, or send product decisions to your inbox. | [L4, L15, L25](lessons-learned.md) |
 | `branch_isolation_topology` | `1_mission_and_boundaries` | Evaluation agents overwrite application code, or grade unmerged local files. Without Git, the evaluation team needs its own workspace for the same reason. | [L18, L23, L25](lessons-learned.md) |
 | `stack_verification_commands` | `2_runtime_data_and_iam` | A broken commit in the shared `/workspace` blocks every specialist in the project. | [L18, L23](lessons-learned.md) |
-| `cloud_stores_and_deployer_iam` | `2_runtime_data_and_iam` | The deployer stops mid-wave with `PERMISSION_DENIED` on Spanner, BigQuery, or Cloud Run. | [L5, L13, L23](lessons-learned.md) |
+| `cloud_stores_and_deployer_iam` | `2_runtime_data_and_iam` | The deployer stops mid-wave with `PERMISSION_DENIED` on a data store or Cloud Run, or the product picks a provisioned database that a serverless store would serve. | [L5, L13, L23](lessons-learned.md) |
 | `team_roster_and_harnesses` | `3_roster_models_and_cost` | Gemini 4 Argon on Vertex AI returns 404 without `GOOGLE_CLOUD_LOCATION=global`, and Antigravity hooks stall for 60 seconds without `SCION_TELEMETRY_ENABLED=false`. | [L6, L7, L8, L16, L22](lessons-learned.md) |
 | `heartbeat_and_budget_guardrails` | `3_roster_models_and_cost` | Waking an Opus lead every 15 minutes on an idle repository wastes tokens, and an uncapped WIP limit causes rebase conflicts. | [L9, L10, L17, L21, L24](lessons-learned.md) |
 | `eval_l1_l2_contracts` | `4_evaluation_pyramid_oracle` | Expensive L3 and L4 evaluations run against broken or unmigrated endpoints. | [L15, L23](lessons-learned.md) |
@@ -82,10 +82,11 @@ Each question maps to a failure that happened in production. The lessons are in
 
 The agent can show you these presets when you need an example answer:
 
-- [`starter-service.factory.yaml`](../presets/starter-service.factory.yaml): A Go and Spanner double-entry ledger.
+- [`starter-service.factory.yaml`](../presets/starter-service.factory.yaml): A serverless Go double-entry ledger on Cloud Run,
+  Firestore, and BigQuery.
   The L3 metric is `reconciliation_accuracy >= 0.999`.
 - [`psearch.factory.yaml`](../presets/psearch.factory.yaml): A 10-agent hybrid product search factory on Go,
-  Spanner, BigQuery, and Vertex AI. The L3 metric is `ndcg_at_10 >= 0.80`. Its knowledge plane is learned from
+  Spanner, BigQuery, and Vertex AI (the historical product stack; its control plane uses Firestore like every kit). The L3 metric is `ndcg_at_10 >= 0.80`. Its knowledge plane is learned from
   existing sources (`PRODUCT.md`, ADRs, and an OpenAPI contract).
 - [`acme-airlines.factory.yaml`](../presets/acme-airlines.factory.yaml): A 14-agent airline disruption recovery
   factory on Python, FastAPI, React, and Spanner, with dedicated heartbeat sensor agents. The L3 metric is

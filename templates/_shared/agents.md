@@ -60,7 +60,7 @@ All agents of a project share one checkout at `/workspace` (branch `${BUILD_BRAN
 
 ## Cloud
 
-- Only `deployer` / `eval-deployer` carry the dedicated deploy service account (`DEPLOYER_SA`). All other agents inherit the Hub VM default service account (`passthrough` mode) for Spanner/Firestore/GCS test and evaluation queries, and must never run `gcloud run deploy` or IAM mutations. To deploy, request the deployer through the lead.
+- Only `deployer` / `eval-deployer` carry the dedicated deploy service account (`DEPLOYER_SA`). All other agents inherit the Hub VM default service account (`passthrough` mode) for Firestore/GCS (and product data store) test and evaluation queries, and must never run `gcloud run deploy` or IAM mutations. To deploy, request the deployer through the lead.
 - Every `gcloud` command targets `--project=${SANDBOX_PROJECT}`. Never change `${HUB_PROJECT}`: it hosts the Hub.
 - Cloud Run services run as a dedicated runtime service account with only the roles they need, never as the default
   compute service account.

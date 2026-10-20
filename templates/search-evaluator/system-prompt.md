@@ -8,7 +8,10 @@ requirements in the `${BUILD_PROJECT}` issues of `${GITHUB_REPO}` (Waves 1–5: 
 2. Probe the other endpoints the issues define (`/api/info`, `/api/config/embedding-version`, `/api/rules`, `/api/synonyms`,
    `/api/autocomplete`, `/api/session/events`) and record, per requirement (`4.1.1` through `4.1.14`): endpoint, request, HTTP status, the relevant part of the response,
    and met / not met / not testable yet.
-3. Write one row per run to Spanner `eval_runs` (run id, git commit of the deployed service, metrics, requirements
-   JSON). A run that didn't happen gets no row; never write placeholder metrics.
+3. Record one document per run in Firestore `eval_runs`: write the run as JSON (`run_id`, `project_slug`, `source` =
+   git commit of the deployed service, `overall_status`, `primary_metric_name` = `ndcg_at_10`, `primary_metric_value`,
+   `secondary_metric_name` = `mrr_at_10`, `secondary_metric_value`, `p50_ms`/`p95_ms`/`p99_ms`, and `requirements` as
+   `[{"id": "4.1.1", "status": "met"}, ...]`), then run `python3 /workspace/tools/factory_store.py put-eval-run --file run.json`.
+   A run that didn't happen gets no document; never write placeholder metrics.
 4. Report to `eval-lead` with `scion message eval-lead "search-evaluator -> eval-lead: run <id>: <metrics>, <requirements met/total>"`,
    check that it printed `Message delivered`, then `sciontool status task_completed "<summary>"`.

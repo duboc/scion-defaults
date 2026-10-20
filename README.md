@@ -4,7 +4,8 @@ Scion defaults helps you bootstrap an always-on, self-healing multi-agent softwa
 [Scion](https://github.com/GoogleCloudPlatform/scion) for a new project. You work with an agentic coding agent, such as
 Antigravity, Claude Code, or OpenCode. The agent inspects your repository, interviews you about your project, and
 generates a complete factory kit: agent templates for a build team and an independent evaluation team, a knowledge
-plane, an evaluation oracle, a telemetry schema, and a seeded backlog. Git is optional: you can start without it and
+plane, an evaluation oracle, a serverless Firestore control plane for agent status and evaluation runs, and a seeded
+backlog. Git is optional: you can start without it and
 add it later.
 
 The defaults come from two factories that ran in production on a self-hosted Scion Hub: a 10-agent hybrid search
@@ -38,6 +39,11 @@ flowchart LR
     Gate -->|"ready"| Compile["compile"]
     Compile --> Kit["Factory kit: templates, oracle, DDL, waves"]
 ```
+
+The factory is serverless wherever possible. Agents run on the Scion Hub, products deploy to Cloud Run, and the
+factory's own data (agent status and evaluation runs) lives in Firestore, so there is no database instance to size or
+pay for while idle. The interview steers products toward serverless stores too, and asks you to justify a
+provisioned store such as Spanner, AlloyDB, or Cloud SQL.
 
 The tools separate two kinds of information:
 
@@ -146,7 +152,8 @@ The compiled kit contains the following files:
 | `factory.yaml` | The validated specification, which is the source of truth for the kit. |
 | `AGENTS.md` | The project architecture, verification commands, agent roster, and evaluation pyramid. |
 | `config/factory.env.example` | Environment variables for the Hub, the application project, and the agent roster. |
-| `config/spanner-factory-ddl.sql` | Domain-neutral tables for agent status and evaluation runs. |
+| `config/firestore/` | The Firestore data contract, composite indexes, and security rules for agent status (`factory_agent_status`) and evaluation runs (`eval_runs`). |
+| `eval-workspace/tools/factory_store.py` | The Firestore client that evaluation agents use to read agent status and record evaluation runs. |
 | `config/heartbeat-message.txt` | The message that the heartbeat schedule sends to the lead agent. |
 | `templates/_shared/agents.md` | The shared operating protocol that every agent follows. |
 | `templates/ROLE/` | The `scion-agent.yaml`, `system-prompt.md`, and `agents.md` files for each role. |
@@ -252,7 +259,7 @@ flowchart TB
             BE["backend (OpenCode — Gemini 4 Argon)<br/>Go / SQL / APIs / Unit Tests"]
             FE["frontend (Antigravity — Gemini 4 Argon)<br/>Web UI / Lit / React / Accessibility"]
             REV["reviewer (Hermes — Gemini 4 Argon)<br/>Independent QA & Diff Review"]
-            DEP["deployer (Claude Code + GCP Deployer SA)<br/>Clean git archive deploy to Cloud Run & Spanner"]
+            DEP["deployer (Claude Code + GCP Deployer SA)<br/>Clean git archive deploy to Cloud Run"]
             L <--> BE
             L <--> FE
             L <--> REV
@@ -262,7 +269,7 @@ flowchart TB
         subgraph Eval["Evaluation Control Tower (EVAL_PROJECT — orphan branch: eval-dashboard)"]
             EL["eval-lead (Antigravity — Gemini 4 Argon)<br/>Coordinates evaluation sweeps"]
             SE["search-evaluator (Antigravity — Gemini 4 Argon)<br/>L1–L5 Golden Queries · NDCG@10 · MRR@10"]
-            FA["factory-analyst (Antigravity — Gemini 4 Argon)<br/>Throughput · Telemetry · Spanner Sync"]
+            FA["factory-analyst (Antigravity — Gemini 4 Argon)<br/>Throughput · Telemetry · Firestore Status"]
             UI["ui-craftsman (Antigravity — Gemini 4 Argon)<br/>Control Tower UI & Impeccable Checks"]
             ED["eval-deployer (Antigravity + GCP Deployer SA)<br/>Deploys Eval Dashboard to Cloud Run"]
             EL <--> SE
@@ -274,7 +281,7 @@ flowchart TB
 
     subgraph Sandbox["Sandbox GCP Project (SANDBOX_PROJECT)"]
         PROD["Product Service (Cloud Run)"]
-        SPAN[("Cloud Spanner<br/>Product Tables + factory_agent_status + eval_runs")]
+        SPAN[("Firestore (serverless)<br/>factory_agent_status + eval_runs")]
         BQ[("BigQuery Dataset")]
         DASH["Eval Dashboard (Cloud Run)"]
     end
@@ -310,7 +317,7 @@ The repository encodes the following capabilities from that implementation:
 - **Stacked traces:** [`patches/sciontool-stacked-traces/`](patches/sciontool-stacked-traces/README.md) produces one
   three-level Cloud Trace waterfall per agent turn, linked across turns.
 - **Evaluation control tower:** [`scripts/sync-factory-agents.py`](scripts/sync-factory-agents.py) syncs agent state
-  and telemetry counters to Spanner every minute, and
+  and telemetry counters to Firestore every minute, and
   [`docs/verification-and-eval.md`](docs/verification-and-eval.md) defines the L1–L5 evaluation pyramid.
 - **Production guardrails:** Orphan-branch isolation for evaluation code, clean `git archive` deployments with
   `--to-latest`, daily disk snapshots and SQLite backups, alerts, and billing budgets.
