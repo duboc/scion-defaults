@@ -5,9 +5,13 @@ Transforms a repository + user intent into a complete, domain-agnostic Scion
 autonomous software factory boilerplate (build team + isolated adversarial eval
 team + L1-L5 Evaluation Pyramid + Spanner telemetry DDL + Wave 1-N backlog).
 
+This tool is designed to be driven by an agentic coding agent that follows
+skills/scion-factory-bootstrap/SKILL.md. The agent conducts the interview; this
+script only inspects, drafts, validates, and compiles. It never blocks on stdin.
+
 Usage:
   python3 scripts/scion_factory.py inspect <repo_path> [--json]
-  python3 scripts/scion_factory.py grill [--repo <repo_path>] [--out factory.yaml] [--non-interactive]
+  python3 scripts/scion_factory.py grill [--repo <repo_path>] [--out factory.yaml] [--force] [--json]
   python3 scripts/scion_factory.py check <factory.yaml> [--json]
   python3 scripts/scion_factory.py compile <factory.yaml> --out <out_dir>
 """
@@ -432,6 +436,9 @@ def evaluate_spec_readiness(spec: dict[str, Any]) -> dict[str, Any]:
         missing.append("team.build_roles must define at least 3 build roles (e.g. lead, specialist, deployer)")
     if len(eval_roles) < 2:
         missing.append("team.eval_roles must define at least 2 independent evaluation roles (Lesson L25)")
+    for role_spec in list(build_roles) + list(eval_roles):
+        if _is_vague(role_spec.get("responsibility")):
+            missing.append(f"team role '{role_spec.get('role', '?')}' is missing a concrete responsibility")
 
     pyramid = spec.get("evaluation_pyramid") or {}
     l1 = pyramid.get("l1_health") or {}
@@ -904,74 +911,118 @@ def compile_factory_boilerplate(spec: dict[str, Any], out_dir: str | Path) -> di
 
 
 # ---------------------------------------------------------------------------
-# Interactive / CLI Socratic "Grill-Me" Loop
+# Agent-Driven Draft Spec (`draft_spec_from_repo`)
 # ---------------------------------------------------------------------------
+#
+# The grill-me interview is always conducted by an agentic coding agent (see
+# skills/scion-factory-bootstrap/SKILL.md). This module never blocks on stdin:
+# it writes a draft that contains only STATIC facts plus the proven roster
+# defaults, and leaves every INTENT field empty so the readiness gate fails
+# until the agent has elicited real answers from the human.
 
-def _prompt_with_challenge(question_obj: dict[str, Any], default_val: str = "") -> str:
-    pillars_label = question_obj["pillar"].replace("_", " ").upper()
-    lessons_str = ", ".join(question_obj["lessons"])
-    print(f"\n=== [{pillars_label}] ({lessons_str}) ===")
-    print(f"Q: {question_obj['question']}")
-    print(f"   Why we ask: {question_obj['why_we_ask']}")
-    prompt_suffix = f" [{default_val}]" if default_val else ""
-    ans = input(f"> Your answer{prompt_suffix}: ").strip() or default_val
-    if _is_vague(ans):
-        print(f"\n[CHALLENGE] {question_obj['challenge_prompt']}")
-        ans = input("> Refined answer: ").strip() or ans
-    return ans
+DEFAULT_BUILD_ROLES: list[dict[str, str]] = [
+    {"role": "lead", "harness": "claude", "model": "opus"},
+    {"role": "backend", "harness": "opencode", "model": "google-vertex/gemini-4-argon"},
+    {"role": "frontend", "harness": "antigravity", "model": "Gemini 4 Argon (High)"},
+    {"role": "reviewer", "harness": "hermes", "model": "google/gemini-4-argon"},
+    {"role": "deployer", "harness": "claude", "model": "opus", "gcp_identity": "deployer-sa"},
+]
+
+DEFAULT_EVAL_ROLES: list[dict[str, str]] = [
+    {"role": "eval-lead", "harness": "antigravity", "model": "Gemini 4 Argon (High)"},
+    {"role": "domain-evaluator", "harness": "antigravity", "model": "Gemini 4 Argon (High)"},
+    {"role": "factory-analyst", "harness": "antigravity", "model": "Gemini 4 Argon (High)"},
+    {"role": "ui-craftsman", "harness": "antigravity", "model": "Gemini 4 Argon (High)"},
+    {"role": "eval-deployer", "harness": "antigravity", "model": "Gemini 4 Argon (High)", "gcp_identity": "deployer-sa"},
+]
 
 
-def run_interactive_grill(repo_path: str | Path | None, out_path: str | Path, non_interactive: bool = False) -> dict[str, Any]:
-    """Run the Socratic Grill-Me session (or seed from starter preset in non-interactive mode)."""
-    starter_path = Path(__file__).resolve().parent.parent / "presets" / "starter-service.factory.yaml"
-    spec = load_spec(starter_path)
+def _slugify(value: str) -> str:
+    slug = re.sub(r"[^a-z0-9]+", "-", value.lower()).strip("-")
+    return slug or "new-project"
+
+
+def draft_spec_from_repo(repo_path: str | Path | None) -> dict[str, Any]:
+    """Build a draft FactorySpec with STATIC facts filled and INTENT fields empty."""
+    detected: dict[str, Any] = {}
+    slug = "new-project"
+    if repo_path:
+        detected = inspect_repository(repo_path)["detected"]
+        slug = _slugify(Path(repo_path).resolve().name)
+
+    language = detected.get("primary_language", "")
+    return {
+        "project": {
+            "name": "",
+            "slug": slug,
+            "eval_slug": f"{slug}-eval",
+            "github_repo": "",
+            "build_branch": "main",
+            "eval_branch": "eval-dashboard",
+            "mission": "",
+            "non_goals": [],
+        },
+        "stack": {
+            "primary_language": "" if language in ("", "unknown") else language,
+            "framework": detected.get("framework", ""),
+            "build_command": detected.get("build_command", ""),
+            "test_command": detected.get("test_command", ""),
+            "lint_command": detected.get("lint_command", ""),
+            "port": detected.get("port", 8080),
+        },
+        "infrastructure": {
+            "cloud_stores": detected.get("cloud_stores", []),
+            "serving_service": f"{slug}-serving",
+            "eval_service": f"{slug}-eval-dashboard",
+            "budget_usd": None,
+            "deployer_iam_roles": [],
+        },
+        "team": {
+            "heartbeat_mode": "direct-lead",
+            "heartbeat_cron": "*/15 * * * *",
+            "watchdog_cron": "*/5 * * * *",
+            "max_wip": 2,
+            "build_roles": [dict(r, responsibility="") for r in DEFAULT_BUILD_ROLES],
+            "eval_roles": [dict(r, responsibility="") for r in DEFAULT_EVAL_ROLES],
+        },
+        "evaluation_pyramid": {
+            "l1_health": {"endpoint": "", "checks": []},
+            "l2_contract": {"endpoints": [], "invariants": []},
+            "l3_domain_quality": {
+                "primary_metric": "",
+                "target_threshold": None,
+                "secondary_metric": "",
+                "secondary_threshold": None,
+                "probe_description": "",
+            },
+            "l4_safety_grounding": {"invariants": []},
+            "l5_latency_slo": {"p50_ms": None, "p95_ms": None, "p99_ms": None},
+        },
+        "waves": [],
+    }
+
+
+def prepare_grill_session(repo_path: str | Path | None, out_path: str | Path, force: bool = False) -> dict[str, Any]:
+    """Write (or reuse) the draft spec and return the payload the agent uses to interview the human."""
+    out = Path(out_path)
+    if out.exists() and not force:
+        spec = load_spec(out)
+    else:
+        spec = draft_spec_from_repo(repo_path)
+        save_spec(spec, out)
 
     if repo_path:
         inspection = inspect_repository(repo_path)
-        det = inspection["detected"]
-        if det["primary_language"] != "unknown":
-            spec["stack"]["primary_language"] = det["primary_language"]
-        if det["build_command"]:
-            spec["stack"]["build_command"] = det["build_command"]
-        if det["test_command"]:
-            spec["stack"]["test_command"] = det["test_command"]
-        if det["lint_command"]:
-            spec["stack"]["lint_command"] = det["lint_command"]
-        if det["port"]:
-            spec["stack"]["port"] = det["port"]
-        if det["cloud_stores"]:
-            spec["infrastructure"]["cloud_stores"] = det["cloud_stores"]
+        detected, questions = inspection["detected"], inspection["unresolved_questions"]
+    else:
+        detected, questions = {}, get_grill_questions()
 
-    if not non_interactive and sys.stdin.isatty():
-        print("Starting Scion Software Factory Socratic 'Grill-Me' Session...")
-        questions = {q["id"]: q for q in get_grill_questions()}
-
-        mission = _prompt_with_challenge(questions["mission_and_non_goals"], spec["project"]["mission"])
-        spec["project"]["mission"] = mission
-
-        l3_metric = _prompt_with_challenge(
-            questions["eval_l3_metric"],
-            f"{spec['evaluation_pyramid']['l3_domain_quality']['primary_metric']}:{spec['evaluation_pyramid']['l3_domain_quality']['target_threshold']}",
-        )
-        if ":" in l3_metric:
-            m_name, m_val = l3_metric.split(":", 1)
-            spec["evaluation_pyramid"]["l3_domain_quality"]["primary_metric"] = m_name.strip()
-            try:
-                spec["evaluation_pyramid"]["l3_domain_quality"]["target_threshold"] = float(m_val.strip())
-            except ValueError:
-                pass
-
-        l5_p95 = _prompt_with_challenge(
-            questions["eval_l5_slo"],
-            str(spec["evaluation_pyramid"]["l5_latency_slo"]["p95_ms"]),
-        )
-        try:
-            spec["evaluation_pyramid"]["l5_latency_slo"]["p95_ms"] = float(l5_p95)
-        except ValueError:
-            pass
-
-    save_spec(spec, out_path)
-    return spec
+    return {
+        "draft_path": str(out),
+        "detected": detected,
+        "readiness": evaluate_spec_readiness(spec),
+        "questions": questions,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -989,10 +1040,14 @@ def main(argv: list[str] | None = None) -> int:
     p_inspect.add_argument("repo_path", help="Path to target repository")
     p_inspect.add_argument("--json", action="store_true", help="Output JSON")
 
-    p_grill = sub.add_parser("grill", help="Run the 5-pillar Socratic Grill-Me inquiry to produce factory.yaml")
+    p_grill = sub.add_parser(
+        "grill",
+        help="Write a draft factory.yaml and emit the grill-me question bank for your coding agent (never blocks)",
+    )
     p_grill.add_argument("--repo", default=None, help="Optional repository path to inspect first")
-    p_grill.add_argument("--out", default="factory.yaml", help="Output FactorySpec YAML path")
-    p_grill.add_argument("--non-interactive", action="store_true", help="Print questions and write starter spec without blocking on stdin")
+    p_grill.add_argument("--out", default="factory.yaml", help="Draft FactorySpec YAML path")
+    p_grill.add_argument("--force", action="store_true", help="Overwrite an existing draft instead of reusing it")
+    p_grill.add_argument("--json", action="store_true", help="Output JSON (recommended for agents)")
 
     p_check = sub.add_parser("check", help="Evaluate readiness of a FactorySpec YAML/JSON file")
     p_check.add_argument("spec_path", help="Path to factory.yaml")
@@ -1021,15 +1076,16 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     if args.cmd == "grill":
-        if args.non_interactive:
-            for q in get_grill_questions():
-                print(f"[{q['pillar']}] {q['id']} (Lessons {', '.join(q['lessons'])})")
+        payload = prepare_grill_session(args.repo, args.out, force=args.force)
+        if args.json:
+            print(json.dumps(payload, indent=2))
+        else:
+            print(f"Draft: {payload['draft_path']} (readiness {payload['readiness']['score']})")
+            for q in payload["questions"]:
+                print(f"\n[{q['pillar']}] {q['id']} (Lessons {', '.join(q['lessons'])})")
                 print(f"  Q: {q['question']}")
                 print(f"  Why: {q['why_we_ask']}")
-                print(f"  Challenge: {q['challenge_prompt']}\n")
-        spec = run_interactive_grill(args.repo, args.out, non_interactive=args.non_interactive)
-        report = evaluate_spec_readiness(spec)
-        print(f"Wrote FactorySpec to {args.out} (Readiness: {report['score']}, ready={report['ready']})")
+                print(f"  Challenge: {q['challenge_prompt']}")
         return 0
 
     if args.cmd == "check":

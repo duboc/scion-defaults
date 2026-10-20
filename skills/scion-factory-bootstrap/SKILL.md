@@ -1,57 +1,82 @@
 ---
 name: scion-factory-bootstrap
-description: Use when a user wants to bootstrap a new Scion autonomous software factory for any repository or domain, or asks to be grilled/interviewed to generate Scion agent templates, evaluation pyramids, and backlog waves from the psearch and acme-airlines learnings.
+description: Use when a user wants to bootstrap a new Scion autonomous software factory for any repository or domain, or asks to be grilled or interviewed to generate Scion agent templates, an evaluation pyramid, and backlog waves from the scion-defaults lessons.
 ---
 
-# Scion Factory Bootstrap & Socratic "Grill-Me" Skill
+# Scion factory bootstrap
 
-## Overview
+You conduct a structured interview with the human product owner, record the answers in `factory.yaml`, and compile a
+Scion software factory kit with the deterministic tool in this repository. The tool never interviews the human and
+never waits for keyboard input. You own the conversation; the tool owns detection, validation, and compilation.
 
-This skill turns any target repository or project idea into a complete, domain-agnostic Scion software factory (`FactorySpec` + agent templates + Spanner telemetry DDL + L1–L5 Evaluation Pyramid + Wave 1..N GitHub backlog) using the empirical lessons (`L1`–`L27`) from `psearch` and `acme-airlines`.
+Run all commands from the root of the `scion-defaults` repository.
 
-**Core principle:** Separate **STATIC FACTS** (auto-detected from the repository) from **HUMAN INTENT** (elicited through a Socratic 1-question-at-a-time "Grill-Me" interview that challenges vague answers before compiling boilerplate).
+## Rules
 
----
+- Ask about one topic per turn. Don't send the whole question bank at once.
+- Never invent intent. Mission, non-goals, IAM roles, metrics, thresholds, latency targets, and backlog issues come
+  from the human. You can propose candidates, but the human must confirm each one.
+- Challenge vague answers. When an answer isn't testable, quote the question's `challenge_prompt` and cite its
+  lessons from `docs/lessons-learned.md`.
+- Don't ask about static facts that the tool already detected. Ask the human to confirm them instead.
+- Don't compile until `check` reports `ready=True`.
 
-## Phase 1: Static Repository Inspection (`STATIC` vs `INTENT`)
+## Step 1: Detect static facts and write the draft
 
-Before asking the user any stack questions, inspect their target repository (if one exists) using `scripts/scion-factory inspect`:
+Run the following command. Replace `TARGET_REPO_PATH` with the target repository, or omit `--repo` if no repository
+exists yet:
 
 ```bash
-./scripts/scion-factory inspect /path/to/target-repo --json
+./scripts/scion-factory grill --repo TARGET_REPO_PATH --out factory.yaml --json
 ```
 
-Present the auto-detected facts (`primary_language`, `build_command`, `test_command`, `lint_command`, `port`, `cloud_stores`) to the user in a concise summary table and ask only for confirmation or overrides.
+The JSON output contains:
 
----
+- `draft_path`: The draft specification. Static facts are filled in; intent fields are empty.
+- `detected`: The language, commands, port, and cloud stores found in the repository.
+- `readiness`: The current readiness report. It fails for a new draft.
+- `questions`: The unresolved interview questions, each with `pillar`, `question`, `why_we_ask`, `lessons`,
+  `challenge_prompt`, and `field_path`.
 
-## Phase 2: The 5-Pillar Socratic "Grill-Me" Interview
+If `factory.yaml` already exists, the command reuses it. Add `--force` only when the human wants to start over.
 
-Conduct the interview **one pillar at a time** (1–2 questions per turn). Whenever an answer is qualitative or vague (e.g., *"it should be fast"*, *"accurate"*, *"standard permissions"*), push back using the concrete failure mode from `docs/lessons-learned.md` (`L1`–`L27`):
+Show the human a short table of the detected facts, and ask them to confirm or correct it.
 
-| Pillar | Question Focus | Lesson Pushback (`why_we_ask`) | Required Concrete Output |
-|---|---|---|---|
-| **1. Mission & Boundaries** | Production mission, explicit non-goals, build branch vs disjoint orphan eval branch | **L4, L15, L25:** Without explicit non-goals and branch isolation, agents hallucinate scope or overwrite app code with eval code. | 1-sentence mission, $\ge 2$ explicit non-goals, `build_branch` (`main`) + orphan `eval_branch` (`eval-dashboard`). |
-| **2. Runtime, Data & IAM** | Deterministic build/test/lint commands, cloud stores, and `deployer-sa` IAM roles | **L5, L13, L18:** In `psearch`, Wave 1 blocked because `deployer-sa` lacked `roles/bigquery.dataEditor` and `roles/spanner.databaseAdmin`. | Exact CLI commands ($< 60\text{s}$) and exact `roles/...` list for `deployer-sa`. |
-| **3. Roster, Models & Cost** | Build roles + Eval roles, harnesses (`claude`, `opencode`, `antigravity`, `hermes`), heartbeat mode (`direct-lead` vs `dedicated-sensor`), WIP cap | **L6, L7, L9, L22:** OpenCode Argon requires `GOOGLE_CLOUD_LOCATION=global`; Antigravity requires `SCION_TELEMETRY_ENABLED=false` in hooks; idle Opus heartbeats burn budget. | Build + Eval role roster, `heartbeat_mode`, `max_wip` (default `2`), and `budget_usd`. |
-| **4. L1–L5 Evaluation Pyramid** | L1 health endpoint, L2 contract invariants, **L3 quantitative domain metric + threshold**, L4 grounding/fallback invariants, L5 latency SLOs (`p50`/`p95`/`p99`) | **L15, L25, L27:** Replaces `psearch`'s `ndcg_at_10 >= 0.80` with the target domain's quantitative oracle. Without a numeric L3 threshold and L5 `p95_ms`, the Eval Team cannot grade waves. | Numeric `primary_metric` + `target_threshold`, probe description, and `p50_ms` / `p95_ms` / `p99_ms`. |
-| **5. Wave 1–N Backlog** | Initial vertical slices, owner roles, and falsifiable acceptance criteria | **L1, L2, L18:** Lead agents dispatch exclusively from GitHub issues (`status:ready`). Vague issues stall Wave 1 on the first heartbeat. | Wave 1 & Wave 2 issues with `owner_role` and verifiable `acceptance_criteria`. |
+## Step 2: Interview the human, one topic at a time
 
----
+Work through the `questions` in pillar order. For each question:
 
-## Phase 3: Readiness Gate & Boilerplate Compilation
+1. Ask the question in plain language, and explain `why_we_ask` in one sentence.
+1. If the answer is vague, quote the `challenge_prompt` and ask again.
+1. Write the confirmed answer into `factory.yaml` at `field_path`.
 
-1. Write the elicited specification to `factory.yaml` (following `config/factory.schema.json` and `presets/starter-service.factory.yaml`).
-2. Run the readiness gate:
-   ```bash
-   ./scripts/scion-factory check factory.yaml
-   ```
-   Do **not** compile if `ready` is `False`; resolve every item in `missing_or_weak` with the user first.
-3. Compile the complete project boilerplate:
-   ```bash
-   ./scripts/scion-factory compile factory.yaml --out /path/to/output-factory
-   ```
-4. Run the generated verification script syntax and artifact check:
-   ```bash
-   /path/to/output-factory/scripts/verify-factory.sh
-   ```
+| Pillar | Fields to fill |
+|---|---|
+| `1_mission_and_boundaries` | `project.name`, `project.github_repo`, `project.mission`, `project.non_goals`, branches |
+| `2_runtime_data_and_iam` | `stack.*` commands, `infrastructure.cloud_stores`, `infrastructure.deployer_iam_roles` |
+| `3_roster_models_and_cost` | `team.build_roles[*].responsibility`, `team.eval_roles[*].responsibility`, `team.heartbeat_mode`, `team.max_wip`, `infrastructure.budget_usd` |
+| `4_evaluation_pyramid_oracle` | `evaluation_pyramid.l1_health` through `evaluation_pyramid.l5_latency_slo` |
+| `5_backlog_waves_and_autonomy` | `waves[*].issues[*]` with `owner_role` and `acceptance_criteria` |
+
+The draft includes the proven default roster. Ask the human whether to keep, rename, add, or remove roles before you
+fill in responsibilities. Use `presets/*.factory.yaml` as worked examples when the human needs inspiration.
+
+## Step 3: Pass the readiness gate
+
+```bash
+./scripts/scion-factory check factory.yaml --json
+```
+
+For each entry in `missing_or_weak`, return to the matching pillar and resolve it with the human. Repeat until the
+report shows `"ready": true`.
+
+## Step 4: Compile and verify the kit
+
+Ask the human for an output directory, `OUTPUT_DIR`, and then run:
+
+```bash
+./scripts/scion-factory compile factory.yaml --out OUTPUT_DIR
+OUTPUT_DIR/scripts/verify-factory.sh
+```
+
+Summarize what was generated, and point the human to `docs/setup-runbook.md` to deploy the factory to a Scion Hub.

@@ -1,19 +1,154 @@
-# Scion Defaults — Autonomous Multi-Agent Software Factory Blueprint
+# Scion defaults
 
-`scion-defaults` is a production-hardened blueprint, template catalog, and automation suite for running an **always-on, self-healing software factory on [Scion](https://github.com/GoogleCloudPlatform/scion)**.
+Scion defaults helps you bootstrap an always-on, self-healing multi-agent software factory on
+[Scion](https://github.com/GoogleCloudPlatform/scion) for a new project. You work with an agentic coding agent, such as
+Antigravity, Claude Code, or OpenCode. The agent inspects your repository, interviews you about your project, and
+generates a complete factory kit: agent templates for a build team and an independent evaluation team, an evaluation
+oracle, a telemetry schema, and a seeded backlog.
 
-It packages everything we designed, debugged, and verified while operating two parallel 5-agent factories on a single self-hosted Scion Hub VM on Google Cloud:
-- **Build Factory (`BUILD_PROJECT` on `main`):** Plans, implements, reviews, deploys, and verifies features from a GitHub Issues backlog.
-- **Evaluation Control Tower (`EVAL_PROJECT` on orphan branch `eval-dashboard`):** Continuously probes the live product across a 5-layer evaluation pyramid (`L1`–`L5`) and serves a real-time evaluation and telemetry dashboard on Cloud Run.
+The defaults come from two factories that ran in production on a self-hosted Scion Hub: a 10-agent hybrid search
+factory and a 14-agent airline-operations factory. Every interview question traces back to a documented production
+failure in [`docs/lessons-learned.md`](docs/lessons-learned.md) (lessons L1–L27).
 
 > [!IMPORTANT]
-> This repository contains **zero secrets, tokens, or hardcoded project IDs**. All environment-specific values live in `config/factory.env` (git-ignored) and are injected at runtime by the scripts in [`scripts/`](scripts/README.md).
+> Always use this repository through an agentic coding agent. The scripts in this repository don't interview you,
+> and they don't make design decisions. The agent conducts the interview, and the scripts only inspect, draft,
+> validate, and compile.
 
----
+## How it works
 
-## 1. What We Built and Verified
+The workflow splits responsibilities between your coding agent and deterministic tools. The agent handles the work
+that needs judgment. The tools handle the work that must be repeatable.
 
-### Multi-Harness Agent Topology (10 Agents Across 2 Projects)
+| Component | Role | Type |
+|---|---|---|
+| [`skills/scion-factory-bootstrap/SKILL.md`](skills/scion-factory-bootstrap/SKILL.md) | Turns your coding agent into an interviewer. The agent reads your code, asks one topic at a time, and challenges vague answers with evidence from lessons L1–L27. | Agentic |
+| [`scripts/scion-factory`](scripts/scion_factory.py) | Detects facts from your repository, writes a draft specification, scores readiness, and compiles the factory kit. It makes no LLM calls and never waits for keyboard input. | Deterministic |
+| Generated factory kit | A 10-to-14 agent Scion factory that you deploy to a Scion Hub. | Multi-agent system |
+
+```mermaid
+flowchart LR
+    You["You (product owner)"] <-->|"Interview, one topic at a time"| Agent["Coding agent + scion-factory-bootstrap skill"]
+    Agent -->|"inspect"| Repo[("Your repository")]
+    Agent -->|"grill --json"| Draft["factory.yaml (draft)"]
+    Agent -->|"edits with your answers"| Draft
+    Agent -->|"check"| Gate{"Readiness gate"}
+    Gate -->|"gaps"| Agent
+    Gate -->|"ready"| Compile["compile"]
+    Compile --> Kit["Factory kit: templates, oracle, DDL, waves"]
+```
+
+The tools separate two kinds of information:
+
+- **Static facts** are things your repository already states, such as the language, build and test commands, the
+  exposed port, and cloud SDK dependencies. The agent detects these and asks you only to confirm them.
+- **Intent** is information that only you can supply, such as the mission, non-goals, deployer permissions, the
+  quality metric and its threshold, latency targets, and the first backlog wave. The draft specification leaves
+  these fields empty, so the readiness gate fails until the agent gets real answers from you.
+
+## Before you begin
+
+1. Install an agentic coding agent that supports skills, such as Antigravity or Claude Code.
+1. Install [`uv`](https://docs.astral.sh/uv/). The `scripts/scion-factory` wrapper uses `uv` to provide PyYAML. If
+   `uv` isn't available, the wrapper falls back to `python3`.
+1. Clone this repository:
+
+   ```bash
+   git clone https://github.com/duboc/scion-defaults.git
+   ```
+
+1. Make the skill available to your agent. For example, for Antigravity:
+
+   ```bash
+   ln -s "$PWD/scion-defaults/skills/scion-factory-bootstrap" ~/.gemini/config/skills/scion-factory-bootstrap
+   ```
+
+   For Claude Code, link the same directory into `~/.claude/skills/`. For other agents, see your agent's
+   documentation for its skills directory, or point the agent at the `SKILL.md` file directly.
+
+## Bootstrap a new factory
+
+1. Open your coding agent in the `scion-defaults` directory, and give it a request such as the following. Replace
+   `TARGET_REPO_PATH` with the path to your project's repository:
+
+   ```none
+   Bootstrap a Scion software factory for TARGET_REPO_PATH using the scion-factory-bootstrap skill.
+   ```
+
+   If your project doesn't have a repository yet, describe the project instead. The agent starts from an empty draft.
+
+1. Review the facts that the agent detects. The agent runs `scripts/scion-factory inspect` and
+   `scripts/scion-factory grill --json`, shows you a summary of the detected stack, and writes a draft
+   `factory.yaml`. Confirm or correct the detected values.
+
+1. Answer the interview. The agent asks about five topics, one at a time. Expect the agent to push back when an answer
+   isn't specific enough to test. For example, "it must be fast" isn't accepted as a latency target.
+
+   | Topic | What you decide | Why it matters |
+   |---|---|---|
+   | Mission and boundaries | The mission, at least two non-goals, and the build and evaluation branches. | Without non-goals, agents expand scope or escalate product decisions to you (L4, L25). |
+   | Runtime, data, and IAM | Build, test, and lint commands, cloud stores, and the exact IAM roles for the deployer service account. | A missing role blocked the first wave of the search factory mid-sprint (L5). |
+   | Roster, models, and cost | Build and evaluation roles, harness and model per role, heartbeat mode, WIP limit, and budget. | Each harness has runtime requirements, and idle heartbeats on expensive models waste budget (L6, L9, L22). |
+   | Evaluation pyramid | The health endpoint, API contract invariants, a numeric domain quality metric and threshold, safety invariants, and latency targets (p50, p95, p99). | Without a numeric oracle, the evaluation team can't grade a wave or file regressions (L15, L25). |
+   | Backlog waves | Wave 1 and wave 2 issues with an owner role and testable acceptance criteria. | The lead agent dispatches work only from ready GitHub issues (L1, L2, L18). |
+
+1. Let the agent run the readiness gate. The agent runs `scripts/scion-factory check factory.yaml` and resolves every
+   reported gap with you. The agent doesn't compile until the check passes.
+
+1. Let the agent compile the kit. The agent runs the following command, where `OUTPUT_DIR` is the directory for the
+   generated factory:
+
+   ```bash
+   ./scripts/scion-factory compile factory.yaml --out OUTPUT_DIR
+   ```
+
+   The output is similar to the following:
+
+   ```none
+   Compiled 41 boilerplate files into OUTPUT_DIR
+   ```
+
+1. Verify the kit:
+
+   ```bash
+   OUTPUT_DIR/scripts/verify-factory.sh
+   ```
+
+   The script checks the generated artifacts. To also check a live deployment, set the `SERVING_URL` and `EVAL_URL`
+   environment variables before you run it.
+
+## Review the generated factory kit
+
+The compiled kit contains the following files:
+
+| Path | Contents |
+|---|---|
+| `factory.yaml` | The validated specification, which is the source of truth for the kit. |
+| `AGENTS.md` | The project architecture, verification commands, agent roster, and evaluation pyramid. |
+| `config/factory.env.example` | Environment variables for the Hub, the application project, and the agent roster. |
+| `config/spanner-factory-ddl.sql` | Domain-neutral tables for agent status and evaluation runs. |
+| `config/heartbeat-message.txt` | The message that the heartbeat schedule sends to the lead agent. |
+| `templates/_shared/agents.md` | The shared operating protocol that every agent follows. |
+| `templates/ROLE/` | The `scion-agent.yaml`, `system-prompt.md`, and `agents.md` files for each role. |
+| `waves/issues.json` | The backlog waves. |
+| `scripts/seed-github-waves.sh` | Creates status labels and wave issues in GitHub. The script is a dry run unless you set `DRY_RUN=0`. |
+| `scripts/verify-factory.sh` | Checks the kit artifacts and, optionally, the live L1 and L3 endpoints. |
+
+## Deploy the factory to a Scion Hub
+
+To run the factory, follow [`docs/setup-runbook.md`](docs/setup-runbook.md). The runbook covers the Hub VM, the
+sandbox project, telemetry, harness patches, templates, heartbeats, the status sync, backups, the watchdog, and alerts.
+Each step ends with a check.
+
+> [!NOTE]
+> [`scripts/push-templates.py`](scripts/push-templates.py) reads role templates from this repository's
+> `templates/` directory. It doesn't accept a compiled kit directory yet, so ask your agent to adapt that step for
+> your kit.
+
+## Reference implementation
+
+The defaults in this repository come from the following topology, which ran on a single self-hosted Scion Hub VM on
+Google Cloud.
 
 ```mermaid
 flowchart TB
@@ -74,143 +209,62 @@ flowchart TB
     Eval --> CT & CM & CL
 ```
 
-### Key Capabilities Encoded in This Repo
+The repository encodes the following capabilities from that implementation:
 
-1. **Multi-Harness Fleet on Gemini 4 Argon & Claude Opus:**
-   - Pre-configured templates and provisioner patchers for **Antigravity** (`Gemini 4 Argon (High)`), **OpenCode** (`google-vertex/gemini-4-argon`), **Hermes** (`google/gemini-4-argon`) on Vertex AI global endpoints (`locations/global`), and **Claude Code** (`opus`).
-2. **Self-Sustaining Orchestration & Self-Healing Watchdog:**
-   - Admin-owned 15-minute heartbeat schedules (`scripts/scion-admin.py`) wake both leads continuously.
-   - [`scripts/factory-watchdog.py`](scripts/factory-watchdog.py) runs every 5 minutes to repair provisioner drift, re-enable paused heartbeats, wake stalled/stopped agents (with a 3-restart/hour circuit breaker), and forward PO escalations (`user:<PO_EMAIL>`) to Cloud Logging.
-3. **End-to-End GCP Telemetry & 3-Level Stacked Cloud Trace Waterfalls:**
-   - [`scripts/setup-telemetry.sh`](scripts/setup-telemetry.sh) and [`scripts/patch-sciontool-telemetry.sh`](scripts/patch-sciontool-telemetry.sh) wire Cloud Trace, Cloud Monitoring, and Cloud Logging across the Hub and all 10 agent containers.
-   - [`patches/sciontool-stacked-traces/`](patches/sciontool-stacked-traces/README.md) adds cross-process trace state (`/home/scion/.scion/trace-state.json` under `syscall.Flock`) and `ExplicitIDGenerator` so every agent turn produces a single 3-level parent-child waterfall in Cloud Trace (`agent.turn/<slug>` -> `gen_ai.api.response/<model>` & `agent.tool.result/<tool>` -> `agent.status/<type>`), linked across turns via `scion.previous_trace_id`.
-4. **Live Evaluation Control Tower & 5-Layer Pyramid (`L1`–`L5`):**
-   - [`scripts/sync-factory-agents.py`](scripts/sync-factory-agents.py) syncs live Hub SQLite agent state + Cloud Monitoring `gen_ai.api.calls` and `agent.tool.calls` deltas into Cloud Spanner (`factory_agent_status`) every minute.
-   - [`docs/verification-and-eval.md`](docs/verification-and-eval.md) defines the 5-layer evaluation pyramid (`L1` Infrastructure Health, `L2` Functional API Contract, `L3` Ranking & Search Quality `NDCG@10`/`MRR@10`, `L4` GenAI Grounding & Safety, `L5` Latency SLOs).
-5. **Production Guardrails (27 Lessons Learned):**
-   - Disjoint orphan branch isolation (`git switch --orphan eval-dashboard`) so evaluation code can never merge into `main`.
-   - Clean deployer packaging (`git archive "$SHA"` to a temporary directory + `--to-latest` traffic routing).
-   - Daily GCE disk snapshots + online SQLite `.backup` cron ([`scripts/backup-hub.sh`](scripts/backup-hub.sh)), `update_policy: notify`, Cloud Monitoring email alerts, and `$150/mo` GCP billing budgets ([`scripts/setup-alerts-and-budgets.sh`](scripts/setup-alerts-and-budgets.sh)).
+- **Multi-harness fleet:** Templates and provisioner patches for Antigravity, OpenCode, and Hermes on Gemini 4 Argon
+  through the Vertex AI global endpoint, and for Claude Code on Opus.
+- **Self-sustaining orchestration:** 15-minute heartbeat schedules through
+  [`scripts/scion-admin.py`](scripts/scion-admin.py), and a 5-minute watchdog,
+  [`scripts/factory-watchdog.py`](scripts/factory-watchdog.py), that repairs drift, wakes stalled agents with a
+  circuit breaker, and forwards escalations to Cloud Logging.
+- **Stacked traces:** [`patches/sciontool-stacked-traces/`](patches/sciontool-stacked-traces/README.md) produces one
+  three-level Cloud Trace waterfall per agent turn, linked across turns.
+- **Evaluation control tower:** [`scripts/sync-factory-agents.py`](scripts/sync-factory-agents.py) syncs agent state
+  and telemetry counters to Spanner every minute, and
+  [`docs/verification-and-eval.md`](docs/verification-and-eval.md) defines the L1–L5 evaluation pyramid.
+- **Production guardrails:** Orphan-branch isolation for evaluation code, clean `git archive` deployments with
+  `--to-latest`, daily disk snapshots and SQLite backups, alerts, and billing budgets.
 
----
+The three presets in [`presets/`](presets/) reproduce this lineage as specifications. Use them as worked examples
+during the interview:
 
-## 2. Bootstrap Any New Project: Socratic "Grill-Me" & Boilerplate Compiler
+- [`starter-service.factory.yaml`](presets/starter-service.factory.yaml): A double-entry ledger API, which shows a
+  non-search domain.
+- [`psearch.factory.yaml`](presets/psearch.factory.yaml): The 10-agent hybrid search factory.
+- [`acme-airlines.factory.yaml`](presets/acme-airlines.factory.yaml): The 14-agent airline-operations factory with
+  dedicated heartbeat sensor agents.
 
-Instead of hand-editing templates from `psearch`, use [`scripts/scion-factory`](scripts/scion_factory.py) (or the portable agent skill [`skills/scion-factory-bootstrap/SKILL.md`](skills/scion-factory-bootstrap/SKILL.md)) to inspect any target repository, run a 5-pillar Socratic "Grill-Me" interview grounded in Lessons `L1`–`L27`, validate readiness, and compile a zero-leak factory kit:
+## Repository layout
 
-```bash
-# 1. Auto-detect stack, test commands, ports, and cloud stores from an existing repo
-./scripts/scion-factory inspect /path/to/target-repo
-
-# 2. Run the 5-pillar Socratic Grill-Me inquiry (or start from presets/starter-service.factory.yaml)
-./scripts/scion-factory grill --repo /path/to/target-repo --out factory.yaml
-
-# 3. Verify readiness gate (blocks if L1-L5 oracle, deployer IAM roles, or Wave 1 criteria are vague)
-./scripts/scion-factory check factory.yaml
-
-# 4. Compile a complete, domain-agnostic factory kit (templates, Spanner DDL, Wave 1..N seeds, verify-factory.sh)
-./scripts/scion-factory compile factory.yaml --out ./my-project-factory
-```
-
-See [`docs/grill-me-playbook.md`](docs/grill-me-playbook.md) and the three reference presets ([`presets/starter-service.factory.yaml`](presets/starter-service.factory.yaml), [`presets/psearch.factory.yaml`](presets/psearch.factory.yaml), and [`presets/acme-airlines.factory.yaml`](presets/acme-airlines.factory.yaml)).
-
----
-
-## 3. How to Replicate This Setup on GCP (Step-by-Step Quickstart)
-
-Follow [`docs/setup-runbook.md`](docs/setup-runbook.md) for full verification checks after every step.
-
-### Step 1: Configure Your Environment
-```bash
-cp config/factory.env.example config/factory.env
-# Edit config/factory.env with your HUB_PROJECT, SANDBOX_PROJECT, HUB_VM, GITHUB_REPO, and PO_EMAIL
-```
-
-### Step 2: Provision the Sandbox GCP Project (Spanner, BigQuery, IAM, Secret Manager)
-```bash
-export GITHUB_TOKEN="ghp_..."
-DRY_RUN=1 ./scripts/setup-sandbox.sh --with-spanner --with-bigquery
-./scripts/setup-sandbox.sh --with-spanner --with-bigquery
-```
-
-### Step 3: Configure the Hub VM, Disable Experimental Terminal Workspace, and Set `update_policy: notify`
-```bash
-./scripts/run-on-hub.sh ./scripts/scion-admin.py experiments --set web.terminal_workspace=false
-```
-
-### Step 4: Initialize the Build Branch (`main`) and Disjoint Orphan Eval Branch (`eval-dashboard`)
-See [Step 6 of `docs/setup-runbook.md`](docs/setup-runbook.md#6-hub-projects-and-the-deployer-identity) to initialize the two Hub project checkouts on the VM and protect both branches with GitHub rulesets (`deletion` and `non_fast_forward`).
-
-### Step 5: Provision End-to-End Telemetry (Cloud Trace, Cloud Monitoring, Cloud Logging)
-```bash
-DRY_RUN=1 ./scripts/setup-telemetry.sh
-./scripts/setup-telemetry.sh
-```
-
-### Step 6: Patch Harness Provisioners for Gemini 4 Argon (`locations/global`) and Telemetry Hooks
-```bash
-./scripts/run-on-hub.sh ./scripts/patch-antigravity-hooks.py --apply
-./scripts/run-on-hub.sh ./scripts/patch-opencode-and-hermes.py --apply
-```
-
-### Step 7: Render and Push the 10 Role Templates, Then Start the 10 Agents
-```bash
-source config/factory.env
-./scripts/push-templates.py --project "$BUILD_PROJECT" --roles lead,backend,frontend,reviewer,deployer --apply
-./scripts/push-templates.py --project "$EVAL_PROJECT" --roles eval-lead,factory-analyst,search-evaluator,ui-craftsman,eval-deployer --apply
-```
-
-### Step 8: Install the `sciontool` Telemetry Wrapper and Stacked Trace Binary
-```bash
-# Optional: build custom sciontool.real from patches/sciontool-stacked-traces/README.md first
-DRY_RUN=1 ./scripts/patch-sciontool-telemetry.sh
-./scripts/patch-sciontool-telemetry.sh
-```
-
-### Step 9: Create the 15-Minute Heartbeat Schedules for Both Leads
-```bash
-source config/factory.env
-./scripts/run-on-hub.sh ./scripts/scion-admin.py schedule create \
-  --project "$BUILD_PROJECT" --name "${BUILD_PROJECT}-lead-heartbeat" \
-  --cron "*/15 * * * *" --agent lead --text "$(cat config/heartbeat-message.txt)"
-
-./scripts/run-on-hub.sh ./scripts/scion-admin.py schedule create \
-  --project "$EVAL_PROJECT" --name "${EVAL_PROJECT}-lead-heartbeat" \
-  --cron "*/15 * * * *" --agent eval-lead --text "$(cat config/heartbeat-message.txt)"
-```
-
-### Step 10: Install the 1-Minute Spanner Sync, 5-Minute Watchdog, Daily Backups, and Alerts
-```bash
-./scripts/install-sync-cron.sh
-./scripts/run-on-hub.sh ./scripts/backup-hub.sh --install-cron
-./scripts/run-on-hub.sh ./scripts/factory-watchdog.py --install-cron --apply
-./scripts/setup-alerts-and-budgets.sh
-```
-
-### Step 11: Check Factory Health
-```bash
-./scripts/run-on-hub.sh ./scripts/factory-status.sh
-```
-
----
-
-## 4. Repository Map
-
-| Directory / File | Description |
+| Path | Contents |
 |---|---|
-| **[`docs/grill-me-playbook.md`](docs/grill-me-playbook.md)** | 5-pillar Socratic "Grill-Me" inquiry & boilerplate compiler guide (`scion-factory inspect/grill/check/compile`) |
-| **[`skills/scion-factory-bootstrap/SKILL.md`](skills/scion-factory-bootstrap/SKILL.md)** | Portable Agent Skill for interviewing a user and compiling a new Scion software factory |
-| **[`presets/`](presets/)** | Reference `FactorySpec` presets: `starter-service.factory.yaml` (Pulse Ledger), `psearch.factory.yaml`, and `acme-airlines.factory.yaml` |
-| **[`config/factory.schema.json`](config/factory.schema.json)** | JSON Schema separating invariant Scion factory mechanics from project-specific domain contracts |
-| **[`docs/architecture.md`](docs/architecture.md)** | System architecture, components, identities, data flows, and design trade-offs |
-| **[`docs/setup-runbook.md`](docs/setup-runbook.md)** | Complete step-by-step build guide from a clean GCP project to a running 10-agent factory |
-| **[`docs/operations-runbook.md`](docs/operations-runbook.md)** | Day-2 operations: checking status, rotating tokens, rollbacks, and handling Scion upgrades |
-| **[`docs/agent-protocol.md`](docs/agent-protocol.md)** | Multi-agent coordination rules: GitHub issue workflow, commit-slot serialization, and narrow escalation |
-| **[`docs/verification-and-eval.md`](docs/verification-and-eval.md)** | 5-layer product evaluation pyramid (`L1`–`L5`) and Wave 1–5 verification audit |
-| **[`docs/lessons-learned.md`](docs/lessons-learned.md)** | All 27 failure modes (`L1`–`L27`) encountered in production, root causes, and encoded fixes |
-| **[`docs/telemetry/`](docs/telemetry/README.md)** | Concise **ASD-STE100** guides for reproducing telemetry, the Spanner eval pipeline, and harness hooks |
-| **[`docs/specs/factory-orchestration-v2-design.md`](docs/specs/factory-orchestration-v2-design.md)** | Next-generation orchestration spec: per-issue workers, `factoryctl`, and status labels |
-| **[`templates/`](templates/README.md)** | Shared protocol (`_shared/agents.md`) + 10 parameterized agent templates (`lead`, `backend`, `frontend`, `reviewer`, `deployer`, `eval-lead`, `factory-analyst`, `search-evaluator`, `ui-craftsman`, `eval-deployer`) |
-| **[`scripts/`](scripts/README.md)** | All automation scripts (`scion-admin.py`, `setup-sandbox.sh`, `setup-telemetry.sh`, `patch-sciontool-telemetry.sh`, `patch-antigravity-hooks.py`, `patch-opencode-and-hermes.py`, `push-templates.py`, `sync-factory-agents.py`, `factory-watchdog.py`, `backup-hub.sh`, `setup-alerts-and-budgets.sh`) |
-| **[`config/`](config/)** | `factory.env.example`, `hub-settings.example.yaml`, `opencode-models.json`, `heartbeat-message.txt`, `spanner-factory-ddl.sql` |
-| **[`patches/sciontool-stacked-traces/`](patches/sciontool-stacked-traces/README.md)** | Go patch and `tracestate.go` for 3-level stacked Cloud Trace waterfalls and Cloud Monitoring `CUMULATIVE` epochs |
+| [`skills/scion-factory-bootstrap/`](skills/scion-factory-bootstrap/SKILL.md) | The agent skill that drives the bootstrap workflow. |
+| [`docs/grill-me-playbook.md`](docs/grill-me-playbook.md) | The interview questions, the lesson behind each question, and the readiness gate rules. |
+| [`scripts/scion_factory.py`](scripts/scion_factory.py) | The deterministic tool that the agent calls: `inspect`, `grill`, `check`, and `compile`. |
+| [`config/factory.schema.json`](config/factory.schema.json) | The JSON Schema for `factory.yaml`. |
+| [`presets/`](presets/) | Worked example specifications. |
+| [`docs/`](docs/) | Architecture, setup and operations runbooks, the agent protocol, the evaluation pyramid, lessons learned, and the orchestration spec. |
+| [`docs/telemetry/`](docs/telemetry/README.md) | ASD-STE100 guides for telemetry, the evaluation data pipeline, and harness hooks. |
+| [`templates/`](templates/README.md) | The shared protocol and the 10 role templates from the reference implementation. |
+| [`scripts/`](scripts/README.md) | Hub administration, provisioning, telemetry, patching, sync, watchdog, backup, and alerting scripts. |
+| [`patches/sciontool-stacked-traces/`](patches/sciontool-stacked-traces/README.md) | The `sciontool` patch for stacked Cloud Trace waterfalls. |
+
+## Contribute
+
+Run the test suite before you change the tools or the presets:
+
+```bash
+uv run --with pytest --with pyyaml pytest tests/test_scion_factory.py -q
+```
+
+The tests check repository detection, interview coverage, the readiness gate, domain-leak-free compilation, and
+compilation of all three presets.
+
+This repository contains no secrets, tokens, or real project identifiers. Real values belong in the git-ignored
+`config/factory.env`. Before you commit, run the secret scan in [`AGENTS.md`](AGENTS.md).
+
+## What's next
+
+- Read [`docs/grill-me-playbook.md`](docs/grill-me-playbook.md) to prepare your answers before the interview.
+- Read [`docs/lessons-learned.md`](docs/lessons-learned.md) to understand the failure behind each default.
+- Follow [`docs/setup-runbook.md`](docs/setup-runbook.md) to deploy your factory.

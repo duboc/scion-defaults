@@ -128,3 +128,51 @@ def test_retrodiction_presets_compile_cleanly(tmp_path):
         verify_sh = out_dir / "scripts" / "verify-factory.sh"
         proc = subprocess.run(["bash", "-n", str(verify_sh)], capture_output=True, text=True)
         assert proc.returncode == 0, proc.stderr
+
+
+def test_draft_spec_keeps_static_facts_but_requires_human_intent(tmp_path):
+    """A grill draft pre-fills detected facts but never passes readiness without human intent."""
+    import sys
+    sys.path.insert(0, str(ROOT / "scripts"))
+    import scion_factory
+
+    (tmp_path / "go.mod").write_text("module example.com/inventory\n\ngo 1.24\n")
+    (tmp_path / "Makefile").write_text("test:\n\tgo test ./...\n")
+
+    draft = scion_factory.draft_spec_from_repo(tmp_path)
+    assert draft["stack"]["primary_language"] == "go"
+    assert draft["stack"]["test_command"] == "go test ./..."
+
+    report = scion_factory.evaluate_spec_readiness(draft)
+    assert report["ready"] is False
+    joined = " ".join(report["missing_or_weak"])
+    assert "project.mission" in joined
+    assert "l3_domain_quality" in joined
+
+    # No preset domain content may leak into a draft
+    text = json.dumps(draft).lower()
+    for token in ("pulse", "ledger", "reconciliation", "psearch", "acme"):
+        assert token not in text, f"draft leaked preset token {token!r}"
+
+
+def test_grill_cli_emits_agent_readable_json(tmp_path):
+    """`grill --json` is non-blocking and returns the question bank plus the draft path for the agent."""
+    (tmp_path / "pyproject.toml").write_text("[project]\nname='svc'\ndependencies=['fastapi']\n")
+    out = tmp_path / "factory.yaml"
+    proc = subprocess.run(
+        [sys_executable(), str(ROOT / "scripts" / "scion_factory.py"), "grill",
+         "--repo", str(tmp_path), "--out", str(out), "--json"],
+        capture_output=True, text=True, stdin=subprocess.DEVNULL, timeout=30,
+    )
+    assert proc.returncode == 0, proc.stderr
+    payload = json.loads(proc.stdout)
+    assert payload["draft_path"] == str(out)
+    assert out.exists()
+    assert payload["readiness"]["ready"] is False
+    assert len(payload["questions"]) >= 8
+    assert payload["detected"]["primary_language"] == "python"
+
+
+def sys_executable():
+    import sys
+    return sys.executable
