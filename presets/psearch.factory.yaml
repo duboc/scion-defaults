@@ -1,120 +1,154 @@
 project:
-  name: "Product Search (psearch)"
-  slug: "psearch"
-  eval_slug: "psearch-eval"
-  github_repo: "example-org/scion-experiment"
-  build_branch: "main"
-  eval_branch: "eval-dashboard"
-  mission: "Build a hybrid vector + keyword e-commerce product search service with AI overviews, facets, merchandising rules, and sponsored products."
+  name: Product Search (psearch)
+  slug: psearch
+  eval_slug: psearch-eval
+  mission: Build a hybrid vector + keyword e-commerce product search service with AI overviews, facets, merchandising
+    rules, and sponsored products.
   non_goals:
-    - "Payment checkout processing"
-    - "Inventory warehouse ERP"
-
+  - Payment checkout processing
+  - Inventory warehouse ERP
+vcs:
+  enabled: true
+  provider: github
+  repo: example-org/scion-experiment
+  build_branch: main
+  eval_branch: eval-dashboard
+knowledge_plane:
+  root: knowledge-plane
+  sources:
+    requirements:
+    - PRODUCT.md
+    adrs:
+    - knowledge-plane/adr
+    contracts:
+    - knowledge-plane/contracts/biggy-search-openapi.yaml
+    design:
+    - DESIGN.md
+    guides:
+    - README.md
+  requirements:
+  - id: REQ-001
+    title: Hybrid search (requirement 4.1.1)
+    acceptance:
+    - Keyword and vector results are fused with reciprocal rank fusion controlled by alpha
+  - id: REQ-002
+    title: Vector search with 1024-d embeddings (requirement 4.1.2)
+    acceptance:
+    - Queries use 1024-dimension embeddings with blue/green embedding versions
+  - id: REQ-003
+    title: Server-side facets (requirement 4.1.5)
+    acceptance:
+    - Facet counts match Spanner ground truth for the top candidates
+  invariants:
+  - Every feature works against Spanner and the deterministic in-memory fallback, so `go test -race ./...` passes
+    offline.
+  - When Spanner returns zero rows without error, the API returns an empty result and never falls back to memory.
+  - All SQL uses bound parameters, and every write endpoint calls the admin authorization check.
+  decisions: []
+  glossary: []
 stack:
-  primary_language: "go"
-  framework: "Go net/http + Cloud Spanner Vector Search + Vertex AI"
-  build_command: "go build -buildvcs=false ./..."
-  test_command: "go test ./..."
-  lint_command: "go vet ./..."
+  primary_language: go
+  framework: Go net/http + Cloud Spanner Vector Search + Vertex AI
+  build_command: go build -buildvcs=false ./...
+  test_command: go test ./...
+  lint_command: go vet ./...
   port: 8080
-
 infrastructure:
   cloud_stores:
-    - "spanner"
-    - "bigquery"
-    - "firestore"
-  serving_service: "psearch-serving"
-  eval_service: "psearch-eval-dashboard"
+  - spanner
+  - bigquery
+  - firestore
+  serving_service: psearch-serving
+  eval_service: psearch-eval-dashboard
   budget_usd: 150
   deployer_iam_roles:
-    - "roles/run.admin"
-    - "roles/cloudbuild.builds.editor"
-    - "roles/spanner.databaseAdmin"
-    - "roles/bigquery.dataEditor"
-    - "roles/aiplatform.user"
-
+  - roles/run.admin
+  - roles/cloudbuild.builds.editor
+  - roles/spanner.databaseAdmin
+  - roles/bigquery.dataEditor
+  - roles/aiplatform.user
 team:
-  heartbeat_mode: "direct-lead"
-  heartbeat_cron: "*/15 * * * *"
-  watchdog_cron: "*/5 * * * *"
+  heartbeat_mode: direct-lead
+  heartbeat_cron: '*/15 * * * *'
+  watchdog_cron: '*/5 * * * *'
   max_wip: 2
   build_roles:
-    - role: "lead"
-      harness: "claude"
-      model: "opus"
-      responsibility: "Coordinates Wave 1-5 backlog on GitHub Issues and verifies live Cloud Run deployments"
-    - role: "backend"
-      harness: "opencode"
-      model: "google-vertex/gemini-4-argon"
-      responsibility: "Implements Go hybrid search, Spanner CosineDistance queries, facets, and merchandising"
-    - role: "frontend"
-      harness: "antigravity"
-      model: "Gemini 4 Argon (High)"
-      responsibility: "Builds storefront search UI, facet sidebar, and AI overview cards"
-    - role: "reviewer"
-      harness: "hermes"
-      model: "google/gemini-4-argon"
-      responsibility: "Reviews diffs, runs go test ./..., and delivers PASS/FAIL verdicts via scion message"
-    - role: "deployer"
-      harness: "claude"
-      model: "opus"
-      gcp_identity: "deployer-sa"
-      responsibility: "Exports clean git archive and deploys psearch-serving to Cloud Run with --to-latest"
+  - role: lead
+    harness: claude
+    model: opus
+    responsibility: Coordinates Wave 1-5 backlog on GitHub Issues and verifies live Cloud Run deployments
+  - role: backend
+    harness: opencode
+    model: google-vertex/gemini-4-argon
+    responsibility: Implements Go hybrid search, Spanner CosineDistance queries, facets, and merchandising
+  - role: frontend
+    harness: antigravity
+    model: Gemini 4 Argon (High)
+    responsibility: Builds storefront search UI, facet sidebar, and AI overview cards
+  - role: reviewer
+    harness: hermes
+    model: google/gemini-4-argon
+    responsibility: Reviews diffs, runs go test ./..., and delivers PASS/FAIL verdicts via scion message
+  - role: deployer
+    harness: claude
+    model: opus
+    gcp_identity: deployer-sa
+    responsibility: Exports clean git archive and deploys psearch-serving to Cloud Run with --to-latest
   eval_roles:
-    - role: "eval-lead"
-      harness: "antigravity"
-      model: "Gemini 4 Argon (High)"
-      responsibility: "Orchestrates 5-layer evaluation sweeps and Control Tower updates"
-    - role: "search-evaluator"
-      harness: "antigravity"
-      model: "Gemini 4 Argon (High)"
-      responsibility: "Executes golden search queries, alpha sweeps, and NDCG@10 / MRR@10 probes"
-    - role: "factory-analyst"
-      harness: "antigravity"
-      model: "Gemini 4 Argon (High)"
-      responsibility: "Tracks factory velocity, issue cycle times, and Spanner telemetry sync"
-    - role: "ui-craftsman"
-      harness: "antigravity"
-      model: "Gemini 4 Argon (High)"
-      responsibility: "Builds the above-the-fold evaluation dashboard and passes impeccable UI checks"
-    - role: "eval-deployer"
-      harness: "antigravity"
-      model: "Gemini 4 Argon (High)"
-      gcp_identity: "deployer-sa"
-      responsibility: "Deploys psearch-eval-dashboard from the disjoint eval-dashboard branch"
-
+  - role: eval-lead
+    harness: antigravity
+    model: Gemini 4 Argon (High)
+    responsibility: Orchestrates 5-layer evaluation sweeps and Control Tower updates
+  - role: search-evaluator
+    harness: antigravity
+    model: Gemini 4 Argon (High)
+    responsibility: Executes golden search queries, alpha sweeps, and NDCG@10 / MRR@10 probes
+  - role: factory-analyst
+    harness: antigravity
+    model: Gemini 4 Argon (High)
+    responsibility: Tracks factory velocity, issue cycle times, and Spanner telemetry sync
+  - role: ui-craftsman
+    harness: antigravity
+    model: Gemini 4 Argon (High)
+    responsibility: Builds the above-the-fold evaluation dashboard and passes impeccable UI checks
+  - role: eval-deployer
+    harness: antigravity
+    model: Gemini 4 Argon (High)
+    gcp_identity: deployer-sa
+    responsibility: Deploys psearch-eval-dashboard from the disjoint eval-dashboard branch
 evaluation_pyramid:
   l1_health:
-    endpoint: "/health"
+    endpoint: /health
     checks:
-      - "HTTP 200 and Spanner catalog count >= 15"
+    - HTTP 200 and Spanner catalog count >= 15
   l2_contract:
     endpoints:
-      - "GET /api/search"
-      - "GET /api/autocomplete"
-      - "GET /api/catalog"
+    - GET /api/search
+    - GET /api/autocomplete
+    - GET /api/catalog
     invariants:
-      - "Facet counts, price filters, and sort orders match Spanner ground truth"
+    - Facet counts, price filters, and sort orders match Spanner ground truth
   l3_domain_quality:
-    primary_metric: "ndcg_at_10"
-    target_threshold: 0.90
-    secondary_metric: "mrr_at_10"
-    secondary_threshold: 0.90
-    probe_description: "Run golden query suite across hybrid alpha weights (0.0 to 1.0) and compute NDCG@10 and MRR@10."
+    primary_metric: ndcg_at_10
+    target_threshold: 0.9
+    secondary_metric: mrr_at_10
+    secondary_threshold: 0.9
+    probe_description: Run golden query suite across hybrid alpha weights (0.0 to 1.0) and compute NDCG@10 and MRR@10.
   l4_safety_grounding:
     invariants:
-      - "AI Overview cites only product IDs returned in retrieval set"
-      - "Sponsored products are capped at 2 slots and labeled is_sponsored=true"
+    - AI Overview cites only product IDs returned in retrieval set
+    - Sponsored products are capped at 2 slots and labeled is_sponsored=true
   l5_latency_slo:
     p50_ms: 80
     p95_ms: 250
     p99_ms: 500
-
 waves:
-  - wave: 1
-    title: "Hybrid Search & 768-dim Embeddings"
-    issues:
-      - title: "Wave 1.1: Hybrid RRF / alpha blending between FTS and vector search"
-        owner_role: "backend"
-        acceptance_criteria:
-          - "GET /api/search?alpha=0.5 blends vector and keyword scores with NDCG@10 >= 0.90"
+- wave: 1
+  title: Hybrid Search & 768-dim Embeddings
+  issues:
+  - title: 'Wave 1.1: Hybrid RRF / alpha blending between FTS and vector search'
+    owner_role: backend
+    acceptance_criteria:
+    - GET /api/search?alpha=0.5 blends vector and keyword scores with NDCG@10 >= 0.90
+    requirements:
+    - REQ-001

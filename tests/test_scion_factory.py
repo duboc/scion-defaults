@@ -36,14 +36,14 @@ def test_inspect_repository_detects_stack_and_gaps(tmp_path):
     assert "wave_1_backlog" in unresolved_ids
 
 
-def test_grill_questions_cover_five_pillars_and_lessons():
-    """Verify the Socratic grill-me bank covers all 5 factory pillars and cites lessons L1-L27."""
+def test_grill_questions_cover_six_pillars_and_lessons():
+    """Verify the Socratic grill-me bank covers all 6 factory pillars and cites lessons L1-L27."""
     import sys
     sys.path.insert(0, str(ROOT / "scripts"))
     import scion_factory
 
     questions = scion_factory.get_grill_questions()
-    assert len(questions) >= 8
+    assert len(questions) >= 10
     pillars = {q["pillar"] for q in questions}
     assert pillars == {
         "1_mission_and_boundaries",
@@ -51,6 +51,7 @@ def test_grill_questions_cover_five_pillars_and_lessons():
         "3_roster_models_and_cost",
         "4_evaluation_pyramid_oracle",
         "5_backlog_waves_and_autonomy",
+        "6_knowledge_plane",
     }
     for q in questions:
         assert q.get("lessons"), f"Question {q['id']} must reference lessons learned"

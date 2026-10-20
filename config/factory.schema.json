@@ -3,71 +3,375 @@
   "title": "ScionFactorySpec",
   "description": "Declarative domain-agnostic specification for an autonomous Scion multi-agent software factory.",
   "type": "object",
-  "required": ["project", "stack", "infrastructure", "team", "evaluation_pyramid", "waves"],
+  "required": [
+    "project",
+    "vcs",
+    "knowledge_plane",
+    "stack",
+    "infrastructure",
+    "team",
+    "evaluation_pyramid",
+    "waves"
+  ],
   "properties": {
     "project": {
       "type": "object",
-      "required": ["name", "slug", "eval_slug", "github_repo", "build_branch", "eval_branch", "mission", "non_goals"],
+      "required": [
+        "name",
+        "slug",
+        "eval_slug",
+        "mission",
+        "non_goals"
+      ],
       "properties": {
-        "name": { "type": "string" },
-        "slug": { "type": "string" },
-        "eval_slug": { "type": "string" },
-        "github_repo": { "type": "string" },
-        "build_branch": { "type": "string", "default": "main" },
-        "eval_branch": { "type": "string", "default": "eval-dashboard" },
-        "mission": { "type": "string" },
-        "non_goals": { "type": "array", "items": { "type": "string" } }
+        "name": {
+          "type": "string"
+        },
+        "slug": {
+          "type": "string"
+        },
+        "eval_slug": {
+          "type": "string"
+        },
+        "mission": {
+          "type": "string"
+        },
+        "non_goals": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "vcs": {
+      "type": "object",
+      "description": "Optional Git/GitHub integration. When disabled, the factory uses backlog/issues.json and snapshot deploys; `scion-factory enable-git` switches it on later.",
+      "required": [
+        "enabled"
+      ],
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "default": false
+        },
+        "provider": {
+          "type": "string",
+          "enum": [
+            "github"
+          ],
+          "default": "github"
+        },
+        "repo": {
+          "type": "string",
+          "description": "OWNER/NAME; required when enabled",
+          "pattern": "^$|^[\\w.-]+/[\\w.-]+$"
+        },
+        "build_branch": {
+          "type": "string",
+          "default": "main"
+        },
+        "eval_branch": {
+          "type": "string",
+          "default": "eval-dashboard"
+        }
+      },
+      "if": {
+        "properties": {
+          "enabled": {
+            "const": true
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "repo",
+          "build_branch",
+          "eval_branch"
+        ],
+        "properties": {
+          "repo": {
+            "minLength": 3
+          }
+        }
+      }
+    },
+    "knowledge_plane": {
+      "type": "object",
+      "description": "Knowledge the agents read before planning, implementing, reviewing, or deploying. Learned from repository sources or elicited in the interview.",
+      "required": [
+        "requirements",
+        "invariants"
+      ],
+      "properties": {
+        "root": {
+          "type": "string",
+          "default": "knowledge-plane"
+        },
+        "sources": {
+          "type": "object",
+          "description": "Existing repository files indexed in place (paths relative to the repository root).",
+          "properties": {
+            "requirements": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "adrs": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "contracts": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "design": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "guides": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        "requirements": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "required": [
+              "id",
+              "title",
+              "acceptance"
+            ],
+            "properties": {
+              "id": {
+                "type": "string",
+                "pattern": "^REQ-\\d{3,}$"
+              },
+              "title": {
+                "type": "string"
+              },
+              "description": {
+                "type": "string"
+              },
+              "acceptance": {
+                "type": "array",
+                "minItems": 1,
+                "items": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "invariants": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string"
+          }
+        },
+        "decisions": {
+          "type": "array",
+          "description": "Decisions elicited in the interview. Don't repeat ADRs that already exist in sources.adrs.",
+          "items": {
+            "type": "object",
+            "required": [
+              "id",
+              "title",
+              "decision"
+            ],
+            "properties": {
+              "id": {
+                "type": "string",
+                "pattern": "^ADR-\\d{3,}$"
+              },
+              "title": {
+                "type": "string"
+              },
+              "status": {
+                "type": "string"
+              },
+              "requirements": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "context": {
+                "type": "string"
+              },
+              "decision": {
+                "type": "string"
+              },
+              "consequences": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        "glossary": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "term",
+              "definition"
+            ]
+          }
+        }
       }
     },
     "stack": {
       "type": "object",
-      "required": ["primary_language", "build_command", "test_command", "port"],
+      "required": [
+        "primary_language",
+        "build_command",
+        "test_command",
+        "port"
+      ],
       "properties": {
-        "primary_language": { "type": "string" },
-        "framework": { "type": "string" },
-        "build_command": { "type": "string" },
-        "test_command": { "type": "string" },
-        "lint_command": { "type": "string" },
-        "port": { "type": "integer", "default": 8080 }
+        "primary_language": {
+          "type": "string"
+        },
+        "framework": {
+          "type": "string"
+        },
+        "build_command": {
+          "type": "string"
+        },
+        "test_command": {
+          "type": "string"
+        },
+        "lint_command": {
+          "type": "string"
+        },
+        "port": {
+          "type": "integer",
+          "default": 8080
+        }
       }
     },
     "infrastructure": {
       "type": "object",
-      "required": ["cloud_stores", "serving_service", "eval_service", "budget_usd", "deployer_iam_roles"],
+      "required": [
+        "cloud_stores",
+        "serving_service",
+        "eval_service",
+        "budget_usd",
+        "deployer_iam_roles"
+      ],
       "properties": {
-        "cloud_stores": { "type": "array", "items": { "type": "string" } },
-        "serving_service": { "type": "string" },
-        "eval_service": { "type": "string" },
-        "budget_usd": { "type": "integer" },
-        "deployer_iam_roles": { "type": "array", "items": { "type": "string" } }
+        "cloud_stores": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "serving_service": {
+          "type": "string"
+        },
+        "eval_service": {
+          "type": "string"
+        },
+        "budget_usd": {
+          "type": "integer"
+        },
+        "deployer_iam_roles": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
       }
     },
     "team": {
       "type": "object",
-      "required": ["heartbeat_mode", "heartbeat_cron", "max_wip", "build_roles", "eval_roles"],
+      "required": [
+        "heartbeat_mode",
+        "heartbeat_cron",
+        "max_wip",
+        "build_roles",
+        "eval_roles"
+      ],
       "properties": {
-        "heartbeat_mode": { "type": "string", "enum": ["direct-lead", "dedicated-sensor"] },
-        "heartbeat_cron": { "type": "string" },
-        "watchdog_cron": { "type": "string", "default": "*/5 * * * *" },
-        "max_wip": { "type": "integer", "default": 2 },
-        "build_roles": { "type": "array", "items": { "type": "object" } },
-        "eval_roles": { "type": "array", "items": { "type": "object" } }
+        "heartbeat_mode": {
+          "type": "string",
+          "enum": [
+            "direct-lead",
+            "dedicated-sensor"
+          ]
+        },
+        "heartbeat_cron": {
+          "type": "string"
+        },
+        "watchdog_cron": {
+          "type": "string",
+          "default": "*/5 * * * *"
+        },
+        "max_wip": {
+          "type": "integer",
+          "default": 2
+        },
+        "build_roles": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          }
+        },
+        "eval_roles": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          }
+        }
       }
     },
     "evaluation_pyramid": {
       "type": "object",
-      "required": ["l1_health", "l2_contract", "l3_domain_quality", "l4_safety_grounding", "l5_latency_slo"],
+      "required": [
+        "l1_health",
+        "l2_contract",
+        "l3_domain_quality",
+        "l4_safety_grounding",
+        "l5_latency_slo"
+      ],
       "properties": {
-        "l1_health": { "type": "object" },
-        "l2_contract": { "type": "object" },
+        "l1_health": {
+          "type": "object"
+        },
+        "l2_contract": {
+          "type": "object"
+        },
         "l3_domain_quality": {
           "type": "object",
-          "required": ["primary_metric", "target_threshold", "probe_description"]
+          "required": [
+            "primary_metric",
+            "target_threshold",
+            "probe_description"
+          ]
         },
-        "l4_safety_grounding": { "type": "object" },
+        "l4_safety_grounding": {
+          "type": "object"
+        },
         "l5_latency_slo": {
           "type": "object",
-          "required": ["p50_ms", "p95_ms", "p99_ms"]
+          "required": [
+            "p50_ms",
+            "p95_ms",
+            "p99_ms"
+          ]
         }
       }
     },
@@ -76,7 +380,33 @@
       "minItems": 1,
       "items": {
         "type": "object",
-        "required": ["wave", "title", "issues"]
+        "required": [
+          "wave",
+          "title",
+          "issues"
+        ],
+        "properties": {
+          "issues": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "title",
+                "owner_role",
+                "acceptance_criteria"
+              ],
+              "properties": {
+                "requirements": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "pattern": "^REQ-\\d{3,}$"
+                  }
+                }
+              }
+            }
+          }
+        }
       }
     }
   }

@@ -32,6 +32,9 @@ try:
 except ImportError:
     yaml = None
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import knowledge_plane as kp  # noqa: E402
+
 
 # ---------------------------------------------------------------------------
 # Socratic "Grill-Me" Question Bank (5 Pillars, grounded in Lessons L1-L27)
@@ -61,11 +64,13 @@ GRILL_QUESTIONS: list[dict[str, Any]] = [
     {
         "id": "branch_isolation_topology",
         "pillar": "1_mission_and_boundaries",
-        "field_path": "project.build_branch / project.eval_branch",
+        "field_path": "vcs.enabled / vcs.repo / vcs.build_branch / vcs.eval_branch",
         "question": (
-            "Which git branch will the Build Team push to (default: `main`), and "
-            "which disjoint orphan branch will the Evaluation Team push its dashboard "
-            "to (default: `eval-dashboard`)?"
+            "Do you want Git and GitHub now, or start without Git and add it later? "
+            "With Git: which repository, which branch does the Build Team push to "
+            "(default: `main`), and which disjoint orphan branch does the Evaluation "
+            "Team use (default: `eval-dashboard`)? Without Git: the factory uses a file "
+            "backlog and snapshot deploys, and `scion-factory enable-git` adds Git later."
         ),
         "why_we_ask": (
             "If build and eval agents share the same branch or workspace, eval agents "
@@ -74,8 +79,9 @@ GRILL_QUESTIONS: list[dict[str, Any]] = [
         ),
         "lessons": ["L18", "L23", "L25"],
         "challenge_prompt": (
-            "Confirm that the evaluation branch is an isolated orphan branch with "
-            "zero shared git history with the build branch."
+            "If you choose Git, confirm that the evaluation branch is an isolated orphan "
+            "branch with zero shared history with the build branch. If you skip Git, "
+            "confirm that the evaluation team gets its own Hub project workspace."
         ),
     },
     {
@@ -222,7 +228,8 @@ GRILL_QUESTIONS: list[dict[str, Any]] = [
         "field_path": "waves",
         "question": (
             "What are the initial Wave 1 and Wave 2 slices (issue titles, owner role, "
-            "and falsifiable acceptance criteria) that seed the GitHub backlog?"
+            "falsifiable acceptance criteria, and the REQ- IDs each issue delivers) that "
+            "seed the backlog (GitHub issues with Git, backlog/issues.json without)?"
         ),
         "why_we_ask": (
             "The Lead agent drives work exclusively from GitHub issues (`status:ready` -> "
@@ -237,6 +244,52 @@ GRILL_QUESTIONS: list[dict[str, Any]] = [
         ),
     },
 ]
+
+
+GRILL_QUESTIONS.extend([
+    {
+        "id": "knowledge_sources",
+        "pillar": "6_knowledge_plane",
+        "field_path": "knowledge_plane.sources",
+        "question": (
+            "Which existing documents define this product: requirements or PRD, "
+            "architecture decisions, API or data contracts, design docs, and contributor "
+            "guides? Confirm the sources detected in the repository, or name the ones "
+            "that live elsewhere."
+        ),
+        "why_we_ask": (
+            "Agents are only as good as the knowledge they can open. When the reviewer "
+            "couldn't find the real ADR and migration paths, it guessed file names, "
+            "issued a wrong FAIL, and the factory deadlocked for about 60 hours (Lesson L4)."
+        ),
+        "lessons": ["L4", "L15"],
+        "challenge_prompt": (
+            "'It's all in people's heads' means the agents start blind. Point to at least "
+            "one file per kind, or agree that we write the missing pieces now in this interview."
+        ),
+    },
+    {
+        "id": "knowledge_requirements_invariants",
+        "pillar": "6_knowledge_plane",
+        "field_path": "knowledge_plane.requirements / knowledge_plane.invariants / knowledge_plane.decisions",
+        "question": (
+            "From those sources (or from scratch), what are the requirements with stable "
+            "IDs and acceptance criteria, which MUST rules every change keeps, and which "
+            "architecture decisions are already made?"
+        ),
+        "why_we_ask": (
+            "Requirement IDs connect backlog items, ADRs, reviews, and evaluation results. "
+            "Invariants are the reviewer's checklist; without them reviews are opinions "
+            "and regressions ship (Lesson L15, L18, L25)."
+        ),
+        "lessons": ["L15", "L18", "L25"],
+        "challenge_prompt": (
+            "Each requirement needs an ID like REQ-001, a title, and at least one testable "
+            "acceptance criterion. Each invariant must be something a reviewer can verify "
+            "in a diff or with a command."
+        ),
+    },
+])
 
 
 def get_grill_questions() -> list[dict[str, Any]]:
@@ -373,6 +426,8 @@ def inspect_repository(repo_path: str | Path) -> dict[str, Any]:
             detected["port"] = int(m_port.group(1))
 
     detected["cloud_stores"] = sorted(cloud_stores)
+    detected["knowledge_sources"] = kp.detect_knowledge_sources(root)
+    detected["vcs"] = kp.detect_vcs(root)
 
     # Filter which grill questions remain unresolved even after static inspection
     unresolved = []
@@ -411,11 +466,21 @@ def evaluate_spec_readiness(spec: dict[str, Any]) -> dict[str, Any]:
     missing: list[str] = []
 
     project = spec.get("project") or {}
-    for key in ("name", "slug", "eval_slug", "github_repo", "mission"):
+    for key in ("name", "slug", "eval_slug", "mission"):
         if _is_vague(project.get(key)):
             missing.append(f"project.{key} is missing or vague")
     if not isinstance(project.get("non_goals"), list) or len(project.get("non_goals", [])) < 1:
         missing.append("project.non_goals must list at least 1 explicit non-goal (Lesson L4)")
+
+    vcs = spec.get("vcs") or {}
+    if vcs.get("enabled"):
+        if not re.fullmatch(r"[\w.-]+/[\w.-]+", str(vcs.get("repo") or "")):
+            missing.append("vcs.repo must be OWNER/NAME when vcs.enabled is true")
+        for key in ("build_branch", "eval_branch"):
+            if _is_vague(vcs.get(key)):
+                missing.append(f"vcs.{key} is missing")
+        if vcs.get("build_branch") and vcs.get("build_branch") == vcs.get("eval_branch"):
+            missing.append("vcs.eval_branch must differ from vcs.build_branch (orphan branch isolation, Lesson L25)")
 
     stack = spec.get("stack") or {}
     for key in ("primary_language", "build_command", "test_command"):
@@ -461,7 +526,7 @@ def evaluate_spec_readiness(spec: dict[str, Any]) -> dict[str, Any]:
 
     waves = spec.get("waves") or []
     if not isinstance(waves, list) or len(waves) < 1:
-        missing.append("waves must define at least Wave 1 issues to seed the GitHub backlog")
+        missing.append("waves must define at least Wave 1 issues to seed the backlog")
     else:
         first_issues = waves[0].get("issues") or []
         if len(first_issues) < 1:
@@ -470,7 +535,9 @@ def evaluate_spec_readiness(spec: dict[str, Any]) -> dict[str, Any]:
             if not issue.get("acceptance_criteria"):
                 missing.append(f"waves[0].issues[{idx}] is missing acceptance_criteria")
 
-    total_checks = 15
+    missing.extend(kp.validate_knowledge_plane(spec))
+
+    total_checks = 17
     passed = max(0, total_checks - len(missing))
     return {
         "ready": len(missing) == 0,
@@ -483,34 +550,41 @@ def evaluate_spec_readiness(spec: dict[str, Any]) -> dict[str, Any]:
 # Boilerplate Compiler (`compile_factory_boilerplate`)
 # ---------------------------------------------------------------------------
 
+def _vcs_enabled(spec: dict[str, Any]) -> bool:
+    return bool((spec.get("vcs") or {}).get("enabled"))
+
+
 def _render_shared_agents_md(spec: dict[str, Any]) -> str:
     proj = spec["project"]
     stack = spec["stack"]
     infra = spec["infrastructure"]
+    vcs = spec.get("vcs") or {}
     l3 = spec["evaluation_pyramid"]["l3_domain_quality"]
     l5 = spec["evaluation_pyramid"]["l5_latency_slo"]
+    lint = stack.get("lint_command") or "true"
+    git = _vcs_enabled(spec)
 
-    return f"""# Shared Factory Agent Protocol — {proj['name']} (`{proj['slug']}` & `{proj['eval_slug']}`)
-
-Every agent in this Scion software factory MUST follow these operational rules (derived from Lessons L1–L27).
-
-## 1. Mission & Non-Goals
-- **Mission:** {proj['mission']}
-- **Build Project (`{proj['slug']}`):** Pushes application code to `{proj.get('build_branch', 'main')}` in `{proj['github_repo']}` and deploys `{infra['serving_service']}`.
-- **Eval Project (`{proj['eval_slug']}`):** Pushes the independent evaluation control tower to the disjoint orphan branch `{proj.get('eval_branch', 'eval-dashboard')}` and deploys `{infra['eval_service']}` (Lesson L25).
-- **Explicit Non-Goals (Never Build):**
-{chr(10).join(f'  - {ng}' for ng in proj.get('non_goals', []))}
-
-## 2. Deterministic Pre-Commit Verification & Commit Slot (Lesson L18)
-Before committing or pushing to `{proj.get('build_branch', 'main')}`:
-1. Pull the latest branch state: `git pull --rebase origin {proj.get('build_branch', 'main')}`.
+    if git:
+        topology = (
+            f"- **Build Project (`{proj['slug']}`):** Pushes application code to `{vcs['build_branch']}` in "
+            f"`{vcs['repo']}` and deploys `{infra['serving_service']}`.\n"
+            f"- **Eval Project (`{proj['eval_slug']}`):** Pushes the independent evaluation control tower to the "
+            f"disjoint orphan branch `{vcs['eval_branch']}` and deploys `{infra['eval_service']}` (Lesson L25)."
+        )
+        backlog = f"""## 3. Backlog & Status (Lessons L1, L18)
+- The backlog is GitHub issues in `{vcs['repo']}`. Status labels move `status:ready` -> `status:in-progress` -> `status:in-review` -> `status:verified` (or `status:blocked`).
+- The lead assigns work and moves labels. Every issue cites the `REQ-` IDs it delivers.
+"""
+        integrate = f"""## 4. Pre-Commit Verification & Commit Slot (Lesson L18)
+Before committing or pushing to `{vcs['build_branch']}`, ask the lead for the commit slot, then:
+1. Pull the latest branch state: `git pull --rebase origin {vcs['build_branch']}`.
 2. Run build verification: `{stack['build_command']}`.
 3. Run test verification: `{stack['test_command']}`.
-4. Run lint verification: `{stack.get('lint_command', 'true')}`.
+4. Run lint verification: `{lint}`.
 5. Never commit secrets, tokens, `.env` files, or agent state files.
-
-## 3. Clean Deployment Packaging & Traffic Unpinning (Lesson L23)
-Deployer agents (`deployer`, `eval-deployer`) MUST NEVER run `gcloud run deploy --source=/workspace` directly on a shared workspace. Always export the verified commit SHA to a clean temporary directory and pass `--to-latest`:
+"""
+        deploy = """## 5. Clean Deployment Packaging & Traffic Unpinning (Lesson L23)
+Deployer agents (`deployer`, `eval-deployer`) MUST NEVER run `gcloud run deploy --source=/workspace` directly on a shared workspace. Always export the verified commit with `git archive` to a clean temporary directory and pass `--to-latest`:
 ```bash
 sha=$(git -C /workspace rev-parse HEAD)
 d=/tmp/deploy-$sha
@@ -518,13 +592,69 @@ rm -rf "$d" && mkdir -p "$d"
 git -C /workspace archive "$sha" | tar -x -C "$d"
 gcloud run deploy <SERVICE_NAME> --source="$d" --to-latest
 ```
+After the deploy, record the revision, the rollback revision, and the commit in `/workspace/knowledge-plane/state/LIVE.md`.
+"""
+        turn_ref = "issue # and commit SHA"
+    else:
+        topology = (
+            f"- **Build Project (`{proj['slug']}`):** Works in the shared `/workspace` (no version control yet) and "
+            f"deploys `{infra['serving_service']}`.\n"
+            f"- **Eval Project (`{proj['eval_slug']}`):** Works in its own Hub project workspace, isolated from the "
+            f"build workspace, and deploys `{infra['eval_service']}` (Lesson L25)."
+        )
+        backlog = """## 3. Backlog & Status (Lessons L1, L18)
+- The backlog is `/workspace/backlog/issues.json`. Each item has an `id`, `title`, `owner_role`, `requirements`, `acceptance_criteria`, and `status` (`ready` -> `in-progress` -> `in-review` -> `verified`, or `blocked`).
+- The lead is the only writer of `backlog/issues.json`. Workers never edit it; they report progress and results to the lead with `scion message`.
+- Every item cites the `REQ-` IDs it delivers.
+"""
+        integrate = f"""## 4. Edit Slot & Verification (Lesson L18)
+The shared `/workspace` has no version control, so a bad edit can't be reverted with Git.
+1. Ask the lead for the edit slot before you change files outside the paths assigned to you.
+2. Run build verification: `{stack['build_command']}`.
+3. Run test verification: `{stack['test_command']}`.
+4. Run lint verification: `{lint}`.
+5. Report the changed paths to the lead, then release the slot. Never write secrets, tokens, or `.env` files.
+"""
+        deploy = """## 5. Snapshot Deployment Packaging & Traffic Unpinning (Lesson L23)
+Deployer agents (`deployer`, `eval-deployer`) MUST NEVER run `gcloud run deploy --source=/workspace` directly. After the reviewer's PASS, take a snapshot while no edit slot is open, deploy the snapshot, and pass `--to-latest`:
+```bash
+ts=$(date -u +%Y%m%dT%H%M%SZ)
+snap=/tmp/deploy-$ts.tgz
+tar -C /workspace --exclude=./.scion --exclude=./node_modules --exclude=./.venv -czf "$snap" .
+sum=$(sha256sum "$snap" | cut -d' ' -f1)
+d=/tmp/deploy-$ts && mkdir -p "$d" && tar -xzf "$snap" -C "$d"
+gcloud run deploy <SERVICE_NAME> --source="$d" --to-latest
+```
+After the deploy, record the revision, the rollback revision, the snapshot path, and its SHA-256 in `/workspace/knowledge-plane/state/LIVE.md`. Keep the last three snapshots for rollback.
+"""
+        turn_ref = "backlog item ID and snapshot SHA-256"
 
-## 4. Communication & Turn Completion (Lessons L1, L2, L4)
+    return f"""# Shared Factory Agent Protocol — {proj['name']} (`{proj['slug']}` & `{proj['eval_slug']}`)
+
+Every agent in this Scion software factory MUST follow these operational rules (derived from Lessons L1–L27).
+
+## 1. Mission & Non-Goals
+- **Mission:** {proj['mission']}
+{topology}
+- **Explicit Non-Goals (Never Build):**
+{chr(10).join(f'  - {ng}' for ng in proj.get('non_goals', []))}
+
+## 2. Knowledge Plane (Lesson L4)
+- Build agents read `/workspace/knowledge-plane/INDEX.md` before planning, implementing, reviewing, or deploying. Evaluation agents read the same knowledge plane read-only at `{kp.EVAL_KP_MOUNT}/INDEX.md`.
+- Open files through the paths in the index. Never guess a file name.
+- Cite `REQ-` and `ADR-` IDs in work items, reviews, and evaluation results. Record new decisions with `knowledge-plane/adr/_template.md`.
+- Only the deployer writes `knowledge-plane/state/LIVE.md`. Evaluation golden datasets never go into the build knowledge plane.
+- After you change the knowledge plane, run `python3 /workspace/knowledge-plane/kp-check.py` and fix every problem it reports.
+
+{backlog}
+{integrate}
+{deploy}
+## 6. Communication & Turn Completion (Lessons L1, L2, L4)
 - **Verify message delivery (L1):** Always check the exit code of `scion message <recipient> "<msg>"` and confirm recipient names reside in the same Scion project.
-- **Signal turn completion (L2):** End every turn by running `sciontool status task_completed "<concise summary with issue # and commit SHA>"` (or `sciontool status ask_user "<blocker>"` when genuinely blocked).
+- **Signal turn completion (L2):** End every turn by running `sciontool status task_completed "<concise summary with {turn_ref}>"` (or `sciontool status ask_user "<blocker>"` when genuinely blocked).
 - **Narrow PO escalation (L4):** Escalate to the human PO (`scion message user:<PO_USER> "..."`) ONLY for missing IAM roles, missing secrets/quotas, or genuine spec contradictions.
 
-## 5. L1–L5 Evaluation Pyramid Contract
+## 7. L1–L5 Evaluation Pyramid Contract
 - **L1 Health:** `GET {spec['evaluation_pyramid']['l1_health']['endpoint']}`
 - **L2 Contract Invariants:** {'; '.join(spec['evaluation_pyramid']['l2_contract']['invariants'])}
 - **L3 Primary Domain Metric:** `{l3['primary_metric']} >= {l3['target_threshold']}` ({l3.get('probe_description', '')})
@@ -561,13 +691,28 @@ def _render_role_system_prompt(spec: dict[str, Any], role_spec: dict[str, Any], 
     l5 = pyramid["l5_latency_slo"]
     role = role_spec["role"]
     project_slug = proj["eval_slug"] if is_eval else proj["slug"]
-    branch = proj.get("eval_branch", "eval-dashboard") if is_eval else proj.get("build_branch", "main")
     service = infra["eval_service"] if is_eval else infra["serving_service"]
+    vcs = spec.get("vcs") or {}
+    kp_index = f"{kp.EVAL_KP_MOUNT}/INDEX.md" if is_eval else "/workspace/knowledge-plane/INDEX.md"
+    if _vcs_enabled(spec):
+        branch = vcs["eval_branch"] if is_eval else vcs["build_branch"]
+        location = f"Repository `{vcs['repo']}`, Branch `{branch}`"
+        intake = f"inspect GitHub issues in `{vcs['repo']}` (`gh issue list -R {vcs['repo']} --label status:ready`)"
+        where = f"on branch `{branch}`"
+        handoff = "pushing or messaging downstream teammates"
+    else:
+        location = "Shared Hub project workspace `/workspace`, no version control"
+        intake = (
+            "follow the eval-lead's instructions" if is_eval
+            else "read `/workspace/backlog/issues.json` (only the lead edits it)"
+        )
+        where = "in `/workspace` while holding the edit slot when required"
+        handoff = "reporting results to the lead"
 
     return f"""# Role: `{role}` ({'Evaluation Team' if is_eval else 'Build Team'} — Project `{project_slug}`)
 
 ## Identity & Responsibility
-- **Project:** `{project_slug}` (Repository `{proj['github_repo']}`, Branch `{branch}`)
+- **Project:** `{project_slug}` ({location})
 - **Harness / Model:** `{role_spec['harness']}` / `{role_spec['model']}`
 - **Primary Responsibility:** {role_spec['responsibility']}
 - **Target Cloud Run Service:** `{service}`
@@ -590,10 +735,11 @@ def _render_role_system_prompt(spec: dict[str, Any], role_spec: dict[str, Any], 
 5. **L5 Latency SLO:** `p50 <= {l5.get('p50_ms', 100)}ms`, `p95 <= {l5['p95_ms']}ms`, `p99 <= {l5.get('p99_ms', 500)}ms`
 
 ## Operating Loop
-1. Read incoming `scion message` instructions and inspect GitHub issues in `{proj['github_repo']}`.
-2. Execute your role responsibility on branch `{branch}` while honoring `templates/_shared/agents.md`.
-3. Verify your work with `{stack['test_command']}` before pushing or messaging downstream teammates.
-4. Always conclude your turn with `sciontool status task_completed "<summary>"`.
+1. Read incoming `scion message` instructions and {intake}.
+2. Read `{kp_index}` and the requirements and ADRs that the work item cites.
+3. Execute your role responsibility {where} while honoring `templates/_shared/agents.md`.
+4. Verify your work with `{stack['test_command']}` before {handoff}.
+5. Always conclude your turn with `sciontool status task_completed "<summary>"`.
 """
 
 
@@ -654,6 +800,7 @@ def _render_factory_env_example(spec: dict[str, Any]) -> str:
     build_names = " ".join(r["role"] for r in team["build_roles"])
     eval_names = " ".join(r["role"] for r in team["eval_roles"])
     iam_roles = " ".join(infra.get("deployer_iam_roles", []))
+    vcs = spec.get("vcs") or {}
 
     return f"""# Scion Software Factory Environment Configuration — {proj['name']}
 # Copy to config/factory.env (gitignored) and populate real values before running scripts.
@@ -669,11 +816,14 @@ export APP_GCP_REGION="us-central1"
 export DEPLOYER_SA_NAME="deployer-sa"
 export DEPLOYER_IAM_ROLES="{iam_roles}"
 
-export GITHUB_REPO="{proj['github_repo']}"
+export VCS_ENABLED="{'true' if vcs.get('enabled') else 'false'}"
+export GITHUB_REPO="{vcs.get('repo', '')}"
 export BUILD_PROJECT_SLUG="{proj['slug']}"
 export EVAL_PROJECT_SLUG="{proj['eval_slug']}"
-export BUILD_BRANCH="{proj.get('build_branch', 'main')}"
-export EVAL_BRANCH="{proj.get('eval_branch', 'eval-dashboard')}"
+export BUILD_BRANCH="{vcs.get('build_branch', 'main')}"
+export EVAL_BRANCH="{vcs.get('eval_branch', 'eval-dashboard')}"
+export FACTORY_PROJECTS="{proj['slug']},{proj['eval_slug']}"
+export KNOWLEDGE_PLANE_SOURCE_PROJECT="{proj['slug']}"
 
 export SERVING_SERVICE_NAME="{infra['serving_service']}"
 export EVAL_SERVICE_NAME="{infra['eval_service']}"
@@ -690,6 +840,8 @@ export MAX_WIP="{team.get('max_wip', 2)}"
 
 def _render_verify_factory_sh(spec: dict[str, Any]) -> str:
     proj = spec["project"]
+    backlog_check = "" if _vcs_enabled(spec) else 'test -f "$ROOT_DIR/backlog/issues.json"'
+
     infra = spec["infrastructure"]
     l1_ep = spec["evaluation_pyramid"]["l1_health"]["endpoint"]
     l3 = spec["evaluation_pyramid"]["l3_domain_quality"]
@@ -718,6 +870,10 @@ test -f "$ROOT_DIR/factory.yaml"
 test -f "$ROOT_DIR/config/spanner-factory-ddl.sql"
 test -f "$ROOT_DIR/waves/issues.json"
 test -f "$ROOT_DIR/templates/_shared/agents.md"
+test -f "$ROOT_DIR/knowledge-plane/INDEX.md"
+test -f "$ROOT_DIR/knowledge-plane/kp-check.py"
+{backlog_check}
+echo "  Knowledge plane present. In the build workspace, run: python3 knowledge-plane/kp-check.py"
 
 echo "[2/4] Verifying L1 Health endpoint ({l1_ep}) if SERVING_URL is set..."
 if [[ -n "$SERVING_URL" ]]; then
@@ -752,13 +908,14 @@ echo "[4/4] Verification complete for {proj['name']}."
 
 def _render_seed_waves_sh(spec: dict[str, Any]) -> str:
     proj = spec["project"]
+    repo = spec["vcs"]["repo"]
     return f"""#!/usr/bin/env bash
-# Seed Wave 1..N GitHub Issues for {proj['name']} ({proj['github_repo']})
+# Seed Wave 1..N GitHub Issues for {proj['name']} ({repo})
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${{BASH_SOURCE[0]}}")" && pwd)"
 ISSUES_FILE="$SCRIPT_DIR/../waves/issues.json"
-REPO="${{GITHUB_REPO:-{proj['github_repo']}}}"
+REPO="${{GITHUB_REPO:-{repo}}}"
 
 if [[ ! -f "$ISSUES_FILE" ]]; then
   echo "Missing $ISSUES_FILE" >&2
@@ -802,14 +959,27 @@ def _render_root_agents_md(spec: dict[str, Any]) -> str:
         f"| `{r['role']}` | `{proj['eval_slug']}` | `{r['harness']}` | `{r['model']}` | {r['responsibility']} |"
         for r in team["eval_roles"]
     )
+    vcs = spec.get("vcs") or {}
+    if vcs.get("enabled"):
+        vcs_lines = (
+            f"- **Repository:** `{vcs['repo']}`\n"
+            f"- **Build Project (`{proj['slug']}`):** Branch `{vcs['build_branch']}` -> Cloud Run `{infra['serving_service']}`\n"
+            f"- **Evaluation Project (`{proj['eval_slug']}`):** Disjoint orphan branch `{vcs['eval_branch']}` -> Cloud Run `{infra['eval_service']}`"
+        )
+    else:
+        vcs_lines = (
+            "- **Version control:** Not configured yet. Backlog in `backlog/issues.json`; deploys from workspace snapshots. "
+            "Run `scion-factory enable-git` and `scripts/enable-git.sh` to add Git later.\n"
+            f"- **Build Project (`{proj['slug']}`):** Shared workspace -> Cloud Run `{infra['serving_service']}`\n"
+            f"- **Evaluation Project (`{proj['eval_slug']}`):** Separate workspace -> Cloud Run `{infra['eval_service']}`"
+        )
 
     return f"""# {proj['name']} — Scion Autonomous Software Factory (`AGENTS.md`)
 
 ## 1. Mission & Architecture
 - **Mission:** {proj['mission']}
-- **Repository:** `{proj['github_repo']}`
-- **Build Project (`{proj['slug']}`):** Branch `{proj.get('build_branch', 'main')}` -> Cloud Run `{infra['serving_service']}`
-- **Evaluation Project (`{proj['eval_slug']}`):** Disjoint orphan branch `{proj.get('eval_branch', 'eval-dashboard')}` -> Cloud Run `{infra['eval_service']}`
+{vcs_lines}
+- **Knowledge Plane:** [`knowledge-plane/INDEX.md`](knowledge-plane/INDEX.md) (copy `knowledge-plane/` to the root of the build workspace)
 - **Heartbeat Mode:** `{team.get('heartbeat_mode', 'direct-lead')}` (`{team.get('heartbeat_cron', '*/15 * * * *')}`) + Watchdog (`{team.get('watchdog_cron', '*/5 * * * *')}`)
 
 ## 2. Build & Verification Commands
@@ -838,8 +1008,161 @@ def _render_root_agents_md(spec: dict[str, Any]) -> str:
 """
 
 
-def compile_factory_boilerplate(spec: dict[str, Any], out_dir: str | Path) -> dict[str, Any]:
-    """Compile a validated FactorySpec into a complete Scion factory directory."""
+def _render_backlog(spec: dict[str, Any]) -> list[dict[str, Any]]:
+    items = []
+    for wave in spec["waves"]:
+        for n, issue in enumerate(wave.get("issues") or [], start=1):
+            items.append({
+                "id": f"W{wave['wave']}-{n}",
+                "wave": wave["wave"],
+                "title": issue["title"],
+                "owner_role": issue.get("owner_role", "lead"),
+                "requirements": list(issue.get("requirements") or []),
+                "acceptance_criteria": list(issue.get("acceptance_criteria") or []),
+                "status": "ready",
+            })
+    return items
+
+
+ENABLE_GIT_SH = r'''#!/usr/bin/env bash
+# Add Git and GitHub to a __NAME__ factory that started without version control.
+#
+# Run on the Hub VM as the Hub OS user, from this kit directory. Dry run unless DRY_RUN=0.
+# Before you run it with DRY_RUN=0:
+#   1. Create the empty GitHub repository OWNER/NAME.
+#   2. Make sure the Hub OS user can push to it (for example, `gh auth setup-git`) and has a Git identity.
+#   3. Run `scion-factory enable-git factory.yaml --repo OWNER/NAME`, recompile the kit, and push the new templates.
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+if [[ -f "$ROOT_DIR/config/factory.env" ]]; then
+  # shellcheck disable=SC1091
+  source "$ROOT_DIR/config/factory.env"
+fi
+
+DRY_RUN="${DRY_RUN:-1}"
+REPO="${GITHUB_REPO:-${1:-}}"
+BUILD_BRANCH="${BUILD_BRANCH:-main}"
+EVAL_BRANCH="${EVAL_BRANCH:-eval-dashboard}"
+BUILD_WORKSPACE="${BUILD_WORKSPACE:-$HOME/.scion/projects/__SLUG__}"
+EVAL_WORKSPACE="${EVAL_WORKSPACE:-$HOME/.scion/projects/__EVAL_SLUG__}"
+
+if [[ -z "$REPO" ]]; then
+  echo "usage: GITHUB_REPO=OWNER/NAME $0   (or: $0 OWNER/NAME)" >&2
+  exit 2
+fi
+if [[ "$BUILD_BRANCH" == "$EVAL_BRANCH" ]]; then
+  echo "BUILD_BRANCH and EVAL_BRANCH must differ (orphan branch isolation, L25)" >&2
+  exit 2
+fi
+
+run() {
+  if [[ "$DRY_RUN" == "0" ]]; then
+    "$@"
+  else
+    printf '[dry-run]'
+    printf ' %q' "$@"
+    printf '\n'
+  fi
+}
+
+ensure_gitignore() {
+  local ws="$1"
+  local f="$ws/.gitignore"
+  for pattern in ".env" ".env.*" ".envrc" ".scion/" "node_modules/" ".venv/"; do
+    if ! grep -qxF "$pattern" "$f" 2>/dev/null; then
+      run sh -c "printf '%s\n' '$pattern' >> '$f'"
+    fi
+  done
+}
+
+import_workspace() {
+  local ws="$1" branch="$2" message="$3"
+  if [[ ! -d "$ws" ]]; then
+    echo "workspace not found: $ws" >&2
+    exit 1
+  fi
+  if [[ -d "$ws/.git" ]]; then
+    echo "  $ws is already a Git repository; skipping init"
+  else
+    run git -C "$ws" init -q -b "$branch"
+  fi
+  ensure_gitignore "$ws"
+  run git -C "$ws" add -A
+  run git -C "$ws" commit -q -m "$message"
+  if ! git -C "$ws" remote get-url origin >/dev/null 2>&1; then
+    run git -C "$ws" remote add origin "https://github.com/$REPO.git"
+  fi
+  run git -C "$ws" push -u origin "$branch"
+}
+
+echo "[1/3] Migrate backlog/issues.json to GitHub issues and repoint the knowledge plane"
+BACKLOG="$BUILD_WORKSPACE/backlog/issues.json"
+if [[ ! -f "$BACKLOG" ]]; then
+  echo "  no backlog at $BACKLOG; skipping"
+else
+  python3 - "$BACKLOG" "$REPO" "$DRY_RUN" <<'PY'
+import json, subprocess, sys
+path, repo, dry_run = sys.argv[1], sys.argv[2], sys.argv[3] != "0"
+items = json.load(open(path))
+
+def run(cmd):
+    if dry_run:
+        print("[dry-run] " + " ".join(cmd))
+    else:
+        subprocess.run(cmd, check=True)
+
+for status in ("ready", "in-progress", "in-review", "verified", "blocked"):
+    run(["gh", "label", "create", f"status:{status}", "--repo", repo, "--force"])
+for item in items:
+    criteria = "\n".join(f"- [ ] {c}" for c in item.get("acceptance_criteria", []))
+    reqs = ", ".join(item.get("requirements", [])) or "none"
+    body = (f"Migrated from backlog item `{item['id']}`.\n\n**Owner role:** `{item['owner_role']}`\n"
+            f"**Requirements:** {reqs}\n\n### Acceptance criteria\n{criteria}\n")
+    run(["gh", "issue", "create", "--repo", repo, "--title", f"[{item['id']}] {item['title']}",
+         "--body", body, "--label", f"status:{item.get('status', 'ready')}"])
+print(f"{len(items)} backlog item(s) processed")
+PY
+  run mv "$BACKLOG" "$BUILD_WORKSPACE/backlog/issues.migrated.json"
+fi
+
+INDEX="$BUILD_WORKSPACE/knowledge-plane/INDEX.md"
+if [[ -f "$INDEX" ]]; then
+  run python3 - "$INDEX" "$REPO" <<'PY'
+import sys
+path, repo = sys.argv[1], sys.argv[2]
+lines = open(path).read().splitlines()
+row = f"| Find the backlog | GitHub issues in `{repo}` (`status:*` labels) |"
+lines = [row if line.startswith("| Find the backlog |") else line for line in lines]
+open(path, "w").write("\n".join(lines) + "\n")
+PY
+fi
+
+echo "[2/3] Import the build workspace into $REPO on branch $BUILD_BRANCH"
+import_workspace "$BUILD_WORKSPACE" "$BUILD_BRANCH" "chore: import factory build workspace into Git"
+
+echo "[3/3] Import the evaluation workspace as the orphan branch $EVAL_BRANCH (no shared history)"
+import_workspace "$EVAL_WORKSPACE" "$EVAL_BRANCH" "chore: import factory evaluation workspace into Git"
+
+echo "Done. Next: recompile the kit after 'scion-factory enable-git', push the templates, and restart the agents."
+'''
+
+
+def _render_enable_git_sh(spec: dict[str, Any]) -> str:
+    proj = spec["project"]
+    return (ENABLE_GIT_SH.replace("__NAME__", proj["name"])
+            .replace("__SLUG__", proj["slug"]).replace("__EVAL_SLUG__", proj["eval_slug"]))
+
+
+def compile_factory_boilerplate(
+    spec: dict[str, Any], out_dir: str | Path, force_knowledge: bool = False
+) -> dict[str, Any]:
+    """Compile a validated FactorySpec into a complete Scion factory directory.
+
+    Files under knowledge-plane/, backlog/, and eval-workspace/ are seeded once and never
+    overwritten, because agents edit them after bootstrap. Pass force_knowledge=True to reseed.
+    """
     readiness = evaluate_spec_readiness(spec)
     if not readiness["ready"]:
         raise ValueError(f"FactorySpec is not ready to compile: {readiness['missing_or_weak']}")
@@ -848,8 +1171,13 @@ def compile_factory_boilerplate(spec: dict[str, Any], out_dir: str | Path) -> di
     out.mkdir(parents=True, exist_ok=True)
     written_files: list[str] = []
 
-    def _write(rel_path: str, content: str, executable: bool = False) -> None:
+    skipped_files: list[str] = []
+
+    def _write(rel_path: str, content: str, executable: bool = False, seed_once: bool = False) -> None:
         target = out / rel_path
+        if seed_once and target.exists() and not force_knowledge:
+            skipped_files.append(rel_path)
+            return
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(content, encoding="utf-8")
         if executable:
@@ -861,13 +1189,19 @@ def compile_factory_boilerplate(spec: dict[str, Any], out_dir: str | Path) -> di
     written_files.append("factory.yaml")
     _write("AGENTS.md", _render_root_agents_md(spec))
 
+    git = _vcs_enabled(spec)
+    backlog_ref = (
+        f"open GitHub issues in {spec['vcs']['repo']}" if git
+        else "/workspace/backlog/issues.json and /workspace/knowledge-plane/INDEX.md"
+    )
+
     # 2. Config files
     _write("config/factory.env.example", _render_factory_env_example(spec))
     _write("config/spanner-factory-ddl.sql", _render_spanner_ddl(spec))
     _write(
         "config/heartbeat-message.txt",
         (
-            f"[HEARTBEAT] Inspect open GitHub issues in {spec['project']['github_repo']}, "
+            f"[HEARTBEAT] Inspect {backlog_ref}, "
             f"check active teammates in {spec['project']['slug']} (max WIP={spec['team'].get('max_wip', 2)}), "
             f"advance verified slices, and end turn with sciontool status task_completed.\n"
         ),
@@ -898,15 +1232,29 @@ def compile_factory_boilerplate(spec: dict[str, Any], out_dir: str | Path) -> di
                     executable=True,
                 )
 
-    # 5. Waves & operational scripts
+    # 5. Knowledge plane (seeded once) and evaluation-only golden data notes
+    for rel, content in kp.render_knowledge_plane(spec, git).items():
+        _write(rel, content, executable=rel.endswith(".py"), seed_once=True)
+    _write("eval-workspace/golden/README.md", kp.render_eval_golden_readme(spec), seed_once=True)
+
+    # 6. Waves, backlog & operational scripts (mode-specific; stale scripts from the other mode are removed)
     _write("waves/issues.json", json.dumps(spec["waves"], indent=2) + "\n")
-    _write("scripts/seed-github-waves.sh", _render_seed_waves_sh(spec), executable=True)
+    if git:
+        _write("scripts/seed-github-waves.sh", _render_seed_waves_sh(spec), executable=True)
+        stale = out / "scripts" / "enable-git.sh"
+    else:
+        _write("backlog/issues.json", json.dumps(_render_backlog(spec), indent=2) + "\n", seed_once=True)
+        _write("scripts/enable-git.sh", _render_enable_git_sh(spec), executable=True)
+        stale = out / "scripts" / "seed-github-waves.sh"
+    if stale.exists():
+        stale.unlink()
     _write("scripts/verify-factory.sh", _render_verify_factory_sh(spec), executable=True)
 
     return {
         "out_dir": str(out),
         "files_written": len(written_files),
         "files": written_files,
+        "preserved": skipped_files,
     }
 
 
@@ -956,12 +1304,17 @@ def draft_spec_from_repo(repo_path: str | Path | None) -> dict[str, Any]:
             "name": "",
             "slug": slug,
             "eval_slug": f"{slug}-eval",
-            "github_repo": "",
-            "build_branch": "main",
-            "eval_branch": "eval-dashboard",
             "mission": "",
             "non_goals": [],
         },
+        "vcs": {
+            "enabled": bool((detected.get("vcs") or {}).get("github_repo")),
+            "provider": "github",
+            "repo": (detected.get("vcs") or {}).get("github_repo", ""),
+            "build_branch": "main",
+            "eval_branch": "eval-dashboard",
+        },
+        "knowledge_plane": kp.empty_knowledge_plane(detected.get("knowledge_sources")),
         "stack": {
             "primary_language": "" if language in ("", "unknown") else language,
             "framework": detected.get("framework", ""),
@@ -1025,6 +1378,25 @@ def prepare_grill_session(repo_path: str | Path | None, out_path: str | Path, fo
     }
 
 
+def enable_git(spec_path: str | Path, repo: str, build_branch: str = "main",
+               eval_branch: str = "eval-dashboard") -> dict[str, Any]:
+    """Switch a FactorySpec to Git mode in place. Recompile the kit afterwards."""
+    if not re.fullmatch(r"[\w.-]+/[\w.-]+", repo):
+        raise ValueError("--repo must be OWNER/NAME")
+    if build_branch == eval_branch:
+        raise ValueError("--eval-branch must differ from --build-branch (orphan branch isolation, L25)")
+    spec = load_spec(spec_path)
+    spec["vcs"] = {
+        "enabled": True,
+        "provider": "github",
+        "repo": repo,
+        "build_branch": build_branch,
+        "eval_branch": eval_branch,
+    }
+    save_spec(spec, spec_path)
+    return spec
+
+
 # ---------------------------------------------------------------------------
 # CLI Entrypoint
 # ---------------------------------------------------------------------------
@@ -1056,6 +1428,14 @@ def main(argv: list[str] | None = None) -> int:
     p_compile = sub.add_parser("compile", help="Compile a validated FactorySpec into a complete boilerplate directory")
     p_compile.add_argument("spec_path", help="Path to factory.yaml")
     p_compile.add_argument("--out", required=True, help="Output directory for generated factory boilerplate")
+    p_compile.add_argument("--force-knowledge", action="store_true",
+                           help="Reseed knowledge-plane/, backlog/, and eval-workspace/ even if they exist")
+
+    p_git = sub.add_parser("enable-git", help="Switch a factory that started without Git to Git mode")
+    p_git.add_argument("spec_path", help="Path to factory.yaml")
+    p_git.add_argument("--repo", required=True, help="GitHub repository OWNER/NAME")
+    p_git.add_argument("--build-branch", default="main")
+    p_git.add_argument("--eval-branch", default="eval-dashboard")
 
     args = parser.parse_args(argv)
 
@@ -1101,9 +1481,22 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.cmd == "compile":
         spec = load_spec(args.spec_path)
-        res = compile_factory_boilerplate(spec, args.out)
+        res = compile_factory_boilerplate(spec, args.out, force_knowledge=args.force_knowledge)
         print(f"Compiled {res['files_written']} boilerplate files into {res['out_dir']}")
+        if res["preserved"]:
+            print(f"Preserved {len(res['preserved'])} existing knowledge files (use --force-knowledge to reseed)")
         return 0
+
+    if args.cmd == "enable-git":
+        try:
+            spec = enable_git(args.spec_path, args.repo, args.build_branch, args.eval_branch)
+        except ValueError as err:
+            print(f"error: {err}", file=sys.stderr)
+            return 2
+        report = evaluate_spec_readiness(spec)
+        print(f"Enabled Git for {args.spec_path}: {args.repo} ({args.build_branch} / {args.eval_branch}); ready={report['ready']}")
+        print("Next: run scripts/enable-git.sh from the current kit (dry run first), then recompile the kit and push templates.")
+        return 0 if report["ready"] else 1
 
     return 1
 
