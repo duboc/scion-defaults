@@ -43,27 +43,29 @@ knowledge_plane:
     - Every AI explanation cites only committed transaction IDs
     - Postings still commit when Vertex AI is unreachable
   invariants:
-  - Every ledger write runs in a single Spanner read-write transaction.
-  - Money is stored as INT64 minor units; floating-point amounts are rejected in review.
-  - All SQL uses bound parameters; no query is built by string concatenation.
-  - '`go test -race ./...` passes offline through the in-memory store, without Spanner.'
+  - Every ledger write runs in a single Firestore transaction that also checks the zero-sum rule.
+  - Money is stored as integer minor units; floating-point amounts are rejected in review.
+  - All reads and writes go through the repository layer; handlers never call the Firestore client directly.
+  - '`go test -race ./...` passes offline through the in-memory store, without Firestore.'
   decisions:
   - id: ADR-001
-    title: Cloud Spanner as the system of record
+    title: Firestore as the system of record
     status: Accepted
     requirements:
     - REQ-001
-    context: The ledger needs externally consistent, multi-row transactions across accounts.
-    decision: Store accounts, journal entries, and postings in Cloud Spanner, with postings interleaved in their
-      journal entry.
-    consequences: Balance checks and postings commit atomically; local tests need an in-memory store.
+    context: The ledger needs atomic multi-document writes and no idle infrastructure cost.
+    decision: Store accounts, journal entries, and postings in Firestore (Native mode); write each journal entry
+      and its postings in one transaction, with postings in a subcollection of the entry.
+    consequences: Posting is atomic and serverless; one journal entry is limited to 500 document writes, and balance
+      reads use per-account running totals updated in the same transaction.
   - id: ADR-002
     title: Idempotency keys stored with the journal entry
     status: Accepted
     requirements:
     - REQ-002
     context: Clients retry on timeouts, which must never double-post.
-    decision: Add a unique idempotency_key column to journal_entries and return the existing entry on conflict.
+    decision: Use the idempotency key as the journal entry document ID, and return the existing entry when the transaction
+      finds it.
     consequences: Retries are safe; keys must be retained for the audit period.
   glossary:
   - term: Journal entry
@@ -72,14 +74,14 @@ knowledge_plane:
     definition: A single debit or credit to one account, in minor units.
 stack:
   primary_language: go
-  framework: net/http + Cloud Spanner
+  framework: net/http + Firestore
   build_command: go build -buildvcs=false ./...
   test_command: go test -race ./...
   lint_command: go vet ./...
   port: 8080
 infrastructure:
   cloud_stores:
-  - spanner
+  - firestore
   - bigquery
   serving_service: pulse-ledger-serving
   eval_service: pulse-ledger-eval-dashboard
@@ -87,7 +89,7 @@ infrastructure:
   deployer_iam_roles:
   - roles/run.admin
   - roles/cloudbuild.builds.editor
-  - roles/spanner.databaseAdmin
+  - roles/datastore.indexAdmin
   - roles/bigquery.dataEditor
   - roles/aiplatform.user
 team:
@@ -104,7 +106,7 @@ team:
   - role: backend
     harness: opencode
     model: google-vertex/gemini-4-argon
-    responsibility: Implements Go ledger handlers, Spanner transactions, and idempotency keys
+    responsibility: Implements Go ledger handlers, Firestore transactions, and idempotency keys
   - role: frontend
     harness: antigravity
     model: Gemini 4 Argon (High)
@@ -117,7 +119,7 @@ team:
     harness: claude
     model: opus
     gcp_identity: deployer-sa
-    responsibility: Applies Spanner migrations and deploys clean git archives to Cloud Run with --to-latest
+    responsibility: Applies Firestore index changes and deploys clean git archives to Cloud Run with --to-latest
   eval_roles:
   - role: eval-lead
     harness: antigravity
@@ -130,7 +132,7 @@ team:
   - role: factory-analyst
     harness: antigravity
     model: Gemini 4 Argon (High)
-    responsibility: Monitors agent throughput, Cloud Trace waterfalls, and Spanner status sync
+    responsibility: Monitors agent throughput, Cloud Trace waterfalls, and Firestore status sync
   - role: ui-craftsman
     harness: antigravity
     model: Gemini 4 Argon (High)
@@ -144,7 +146,7 @@ evaluation_pyramid:
   l1_health:
     endpoint: /health
     checks:
-    - HTTP 200 status and Spanner session pool ready
+    - HTTP 200 status and Firestore reachable
   l2_contract:
     endpoints:
     - POST /api/v1/entries
@@ -161,7 +163,7 @@ evaluation_pyramid:
       balance conservation and anomaly F1.
   l4_safety_grounding:
     invariants:
-    - AI audit explanations cite only committed transaction IDs from Spanner
+    - AI audit explanations cite only committed transaction IDs from Firestore
     - Fail-closed fallback when Vertex AI is unreachable (transactions still commit deterministically)
   l5_latency_slo:
     p50_ms: 45
@@ -171,10 +173,10 @@ waves:
 - wave: 1
   title: Core Double-Entry Schema & Idempotent Posting
   issues:
-  - title: 'Wave 1.1: Spanner schema for accounts, journal_entries, and postings with zero-sum check'
+  - title: 'Wave 1.1: Firestore data model for accounts, journal entries, and postings with zero-sum check'
     owner_role: backend
     acceptance_criteria:
-    - DDL applies cleanly and unit tests verify debit == credit invariant
+    - Index config deploys cleanly and unit tests verify the debit == credit invariant
     requirements:
     - REQ-001
   - title: 'Wave 1.2: Idempotent POST /api/v1/entries endpoint with replay protection'

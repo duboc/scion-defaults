@@ -3,7 +3,7 @@
 
 Transforms a repository + user intent into a complete, domain-agnostic Scion
 autonomous software factory boilerplate (build team + isolated adversarial eval
-team + L1-L5 Evaluation Pyramid + Spanner telemetry DDL + Wave 1-N backlog).
+team + L1-L5 Evaluation Pyramid + Firestore control plane + Wave 1-N backlog).
 
 This tool is designed to be driven by an agentic coding agent that follows
 skills/scion-factory-bootstrap/SKILL.md. The agent conducts the interview; this
@@ -107,19 +107,23 @@ GRILL_QUESTIONS: list[dict[str, Any]] = [
         "pillar": "2_runtime_data_and_iam",
         "field_path": "infrastructure.cloud_stores / infrastructure.deployer_iam_roles",
         "question": (
-            "Which cloud backing stores (e.g., Spanner, BigQuery, Vertex AI, GCS, AlloyDB) "
-            "does the system require, and what exact IAM roles must be pre-granted to "
-            "`deployer-sa` before Wave 1 starts?"
+            "Which cloud backing stores does the system require, and what exact IAM roles "
+            "must be pre-granted to `deployer-sa` before Wave 1 starts? Default to serverless "
+            "services: Cloud Run, Firestore, BigQuery, Cloud Storage, and Vertex AI."
         ),
         "why_we_ask": (
-            "In `psearch`, the deployer agent repeatedly blocked in Wave 1 because "
-            "`deployer-sa` lacked `roles/bigquery.dataEditor` and `roles/spanner.databaseAdmin`, "
-            "forcing human intervention mid-sprint (Lesson L5, L13)."
+            "In the reference factory, the deployer agent repeatedly blocked in Wave 1 because "
+            "`deployer-sa` lacked data-store roles such as `roles/bigquery.dataEditor`, "
+            "forcing human intervention mid-sprint (Lesson L5, L13). Serverless stores also "
+            "remove instance sizing and idle cost from the factory's blast radius."
         ),
         "lessons": ["L5", "L13", "L23"],
         "challenge_prompt": (
-            "Don't say 'standard GCP permissions'. List the exact `roles/...` strings "
-            "the `deployer-sa` service account needs to provision schemas and deploy Cloud Run."
+            "Don't say 'standard GCP permissions'. List the exact `roles/...` strings the "
+            "`deployer-sa` service account needs to create indexes or datasets and deploy "
+            "Cloud Run. If you want a provisioned store (Spanner, AlloyDB, Cloud SQL) instead "
+            "of a serverless one such as Firestore, state the requirement that Firestore or "
+            "BigQuery can't meet."
         ),
     },
     {
@@ -708,6 +712,15 @@ def _render_role_system_prompt(spec: dict[str, Any], role_spec: dict[str, Any], 
         )
         where = "in `/workspace` while holding the edit slot when required"
         handoff = "reporting results to the lead"
+    factory_data = ""
+    if is_eval:
+        factory_data = f"""## Factory Data (Firestore)
+The control plane is serverless Firestore; see `config/firestore/README.md` in the kit for the data contract.
+- Agent status of both teams: `python3 /workspace/tools/factory_store.py list-agents --project-slug {proj['slug']}`
+- Recent evaluation runs: `python3 /workspace/tools/factory_store.py list-eval-runs --project-slug {proj['slug']}`
+- Record each evaluation run as one JSON object (`run_id`, `project_slug`, `source`, `overall_status`, `l1_passed`…`l5_passed`, `primary_metric_name` = `{l3['primary_metric']}`, `primary_metric_value`, `p50_ms`/`p95_ms`/`p99_ms`, `requirements`): `python3 /workspace/tools/factory_store.py put-eval-run --file run.json`. Use `--dry-run` first when you change the payload shape.
+
+"""
 
     return f"""# Role: `{role}` ({'Evaluation Team' if is_eval else 'Build Team'} — Project `{project_slug}`)
 
@@ -734,7 +747,7 @@ def _render_role_system_prompt(spec: dict[str, Any], role_spec: dict[str, Any], 
 4. **L4 Safety & Grounding:** {'; '.join(pyramid['l4_safety_grounding']['invariants'])}
 5. **L5 Latency SLO:** `p50 <= {l5.get('p50_ms', 100)}ms`, `p95 <= {l5['p95_ms']}ms`, `p99 <= {l5.get('p99_ms', 500)}ms`
 
-## Operating Loop
+{factory_data}## Operating Loop
 1. Read incoming `scion message` instructions and {intake}.
 2. Read `{kp_index}` and the requirements and ADRs that the work item cites.
 3. Execute your role responsibility {where} while honoring `templates/_shared/agents.md`.
@@ -743,53 +756,105 @@ def _render_role_system_prompt(spec: dict[str, Any], role_spec: dict[str, Any], 
 """
 
 
-def _render_spanner_ddl(spec: dict[str, Any]) -> str:
+FIRESTORE_INDEXES = {
+    "indexes": [
+        {
+            "collectionGroup": "factory_agent_status",
+            "queryScope": "COLLECTION",
+            "fields": [
+                {"fieldPath": "project_slug", "order": "ASCENDING"},
+                {"fieldPath": "agent_name", "order": "ASCENDING"},
+            ],
+        },
+        {
+            "collectionGroup": "eval_runs",
+            "queryScope": "COLLECTION",
+            "fields": [
+                {"fieldPath": "project_slug", "order": "ASCENDING"},
+                {"fieldPath": "evaluated_at", "order": "DESCENDING"},
+            ],
+        },
+    ],
+    "fieldOverrides": [],
+}
+
+FIRESTORE_RULES = """rules_version = '2';
+// The factory control plane is server-side only: the Hub sync, eval agents, and the dashboard
+// use IAM service accounts, which bypass these rules. Deny every client SDK request.
+service cloud.firestore {
+  match /databases/{database}/documents {
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}
+"""
+
+
+def _render_firestore_contract(spec: dict[str, Any]) -> str:
     proj = spec["project"]
     l3 = spec["evaluation_pyramid"]["l3_domain_quality"]
-    return f"""-- Scion Software Factory Control Plane & Evaluation Telemetry Schema
--- Project: {proj['name']} ({proj['slug']} / {proj['eval_slug']})
--- Domain-agnostic L1-L5 Evaluation Pyramid + Agent Heartbeat Sync
--- Primary L3 Metric: {l3['primary_metric']} (target >= {l3['target_threshold']})
+    return f"""# Factory control plane on Firestore
 
-CREATE TABLE IF NOT EXISTS factory_agent_status (
-  agent_id STRING(64) NOT NULL,
-  name STRING(128) NOT NULL,
-  project_slug STRING(128) NOT NULL,
-  role STRING(128),
-  harness STRING(64),
-  model STRING(128),
-  phase STRING(64),
-  activity STRING(64),
-  container_status STRING(128),
-  task_summary STRING(MAX),
-  last_seen TIMESTAMP,
-  synced_at TIMESTAMP NOT NULL OPTIONS (allow_commit_timestamp=true),
-) PRIMARY KEY (agent_id);
+{proj['name']} (`{proj['slug']}` and `{proj['eval_slug']}`) stores agent status and evaluation runs in Firestore
+(Native mode). Firestore is serverless: there is no instance to size, and idle cost is zero.
 
-CREATE TABLE IF NOT EXISTS eval_runs (
-  run_id STRING(64) NOT NULL,
-  project_slug STRING(128) NOT NULL,
-  git_sha STRING(64),
-  wave INT64,
-  overall_status STRING(32) NOT NULL,
-  l1_passed BOOL,
-  l2_passed BOOL,
-  l3_passed BOOL,
-  l4_passed BOOL,
-  l5_passed BOOL,
-  primary_metric_name STRING(128) NOT NULL,
-  primary_metric_value FLOAT64,
-  primary_metric_target FLOAT64,
-  secondary_metric_name STRING(128),
-  secondary_metric_value FLOAT64,
-  p50_latency_ms FLOAT64,
-  p95_latency_ms FLOAT64,
-  p99_latency_ms FLOAT64,
-  layer_results_json STRING(MAX),
-  requirements_json STRING(MAX),
-  diagnostics_json STRING(MAX),
-  evaluated_at TIMESTAMP NOT NULL OPTIONS (allow_commit_timestamp=true),
-) PRIMARY KEY (run_id);
+- **Project:** `FIRESTORE_PROJECT` (default: the application project)
+- **Database:** `FIRESTORE_DATABASE` (default: `(default)`)
+- **Access:** server side only, through IAM. [`firestore.rules`](firestore.rules) denies every client SDK request.
+- **Indexes:** [`firestore.indexes.json`](firestore.indexes.json)
+
+## `factory_agent_status`
+
+One document per live agent, upserted every minute by the Hub sync (`scripts/sync-factory-agents.py` in
+scion-defaults). Document ID: `<project_slug>__<agent_name>`. Documents not refreshed for `PRUNE_MINUTES` are deleted.
+
+| Field | Type | Notes |
+|---|---|---|
+| `project_slug`, `agent_name`, `agent_id` | string | Identity |
+| `template`, `harness`, `phase`, `activity` | string | Hub state |
+| `parent_agent` | string or null | The agent that created this agent |
+| `current_turns`, `model_calls` | integer or null | Null means unknown, not zero (L9) |
+| `last_summary` | string | Up to 500 characters |
+| `last_activity_at` | timestamp or null | Last Hub activity event |
+| `synced_at` | timestamp | Server time of the last sync |
+
+## `eval_runs`
+
+One document per evaluation run, written by the evaluation team with `tools/factory_store.py put-eval-run`.
+Document ID: `run_id`.
+
+| Field | Type | Notes |
+|---|---|---|
+| `run_id`, `project_slug` | string | Required |
+| `source` | string | Commit SHA (with Git) or snapshot SHA-256 (without Git) of the deployed service |
+| `wave` | integer | Backlog wave under evaluation |
+| `overall_status` | string | Required: `pass`, `fail`, or `error` |
+| `l1_passed` … `l5_passed` | boolean | One per pyramid layer |
+| `primary_metric_name`, `primary_metric_value` | string, number | Required. For this project: `{l3['primary_metric']}`, target `{l3['target_threshold']}` |
+| `primary_metric_target` | number | The threshold used for this run |
+| `secondary_metric_name`, `secondary_metric_value` | string, number | Optional |
+| `p50_ms`, `p95_ms`, `p99_ms` | number | Measured latency |
+| `layer_results` | map | Per-layer details |
+| `requirements` | array of `{{id, status}}` | One entry per `REQ-` ID evaluated |
+| `diagnostics` | map | Free-form evidence |
+| `evaluated_at` | timestamp | Server time of the write |
+
+## Set up
+
+```bash
+gcloud firestore databases create --database="$FIRESTORE_DATABASE" --location=REGION --type=firestore-native \
+  --project="$FIRESTORE_PROJECT"
+gcloud firestore indexes composite create --project="$FIRESTORE_PROJECT" --database="$FIRESTORE_DATABASE" \
+  --collection-group=factory_agent_status --field-config=field-path=project_slug,order=ascending \
+  --field-config=field-path=agent_name,order=ascending
+gcloud firestore indexes composite create --project="$FIRESTORE_PROJECT" --database="$FIRESTORE_DATABASE" \
+  --collection-group=eval_runs --field-config=field-path=project_slug,order=ascending \
+  --field-config=field-path=evaluated_at,order=descending
+```
+
+Grant `roles/datastore.user` to the identities that write (the Hub VM service account) and `roles/datastore.viewer`
+to the dashboard's runtime service account.
 """
 
 
@@ -812,6 +877,8 @@ export HUB_OS_USER="scion"
 export HUB_URL="http://127.0.0.1:8080"
 
 export APP_GCP_PROJECT="your-app-gcp-project"
+export FIRESTORE_PROJECT="${{APP_GCP_PROJECT}}"   # Factory control plane: agent status and eval runs
+export FIRESTORE_DATABASE="(default)"
 export APP_GCP_REGION="us-central1"
 export DEPLOYER_SA_NAME="deployer-sa"
 export DEPLOYER_IAM_ROLES="{iam_roles}"
@@ -867,7 +934,9 @@ EVAL_URL="${{EVAL_URL:-}}"
 
 echo "[1/4] Verifying generated factory artifacts for $BUILD_PROJECT_SLUG and $EVAL_PROJECT_SLUG..."
 test -f "$ROOT_DIR/factory.yaml"
-test -f "$ROOT_DIR/config/spanner-factory-ddl.sql"
+test -f "$ROOT_DIR/config/firestore/README.md"
+test -f "$ROOT_DIR/config/firestore/firestore.indexes.json"
+test -f "$ROOT_DIR/eval-workspace/tools/factory_store.py"
 test -f "$ROOT_DIR/waves/issues.json"
 test -f "$ROOT_DIR/templates/_shared/agents.md"
 test -f "$ROOT_DIR/knowledge-plane/INDEX.md"
@@ -1197,7 +1266,12 @@ def compile_factory_boilerplate(
 
     # 2. Config files
     _write("config/factory.env.example", _render_factory_env_example(spec))
-    _write("config/spanner-factory-ddl.sql", _render_spanner_ddl(spec))
+    _write("config/firestore/README.md", _render_firestore_contract(spec))
+    _write("config/firestore/firestore.indexes.json", json.dumps(FIRESTORE_INDEXES, indent=2) + "\n")
+    _write("config/firestore/firestore.rules", FIRESTORE_RULES)
+    # The eval team's Firestore client; refreshed on every compile (it's code, not knowledge).
+    _write("eval-workspace/tools/factory_store.py",
+           (Path(__file__).resolve().parent / "factory_store.py").read_text(), executable=True)
     _write(
         "config/heartbeat-message.txt",
         (
