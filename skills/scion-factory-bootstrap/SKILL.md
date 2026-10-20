@@ -1,21 +1,23 @@
 ---
 name: scion-factory-bootstrap
-description: Use when a user wants to bootstrap a new Scion autonomous software factory for any repository or domain, or asks to be grilled or interviewed to generate Scion agent templates, an evaluation pyramid, and backlog waves from the scion-defaults lessons.
+description: Use when a user wants to bootstrap a new Scion autonomous software factory for any repository or domain, or asks to be grilled or interviewed to generate Scion agent templates, a knowledge plane, an evaluation pyramid, and backlog waves from the scion-defaults lessons.
 ---
 
 # Scion factory bootstrap
 
 You conduct a structured interview with the human product owner, record the answers in `factory.yaml`, and compile a
 Scion software factory kit with the deterministic tool in this repository. The tool never interviews the human and
-never waits for keyboard input. You own the conversation; the tool owns detection, validation, and compilation.
+never waits for keyboard input. You own the conversation and the reading of prose; the tool owns detection,
+validation, and compilation.
 
 Run all commands from the root of the `scion-defaults` repository.
 
 ## Rules
 
 - Ask about one topic per turn. Don't send the whole question bank at once.
-- Never invent intent. Mission, non-goals, IAM roles, metrics, thresholds, latency targets, and backlog issues come
-  from the human. You can propose candidates, but the human must confirm each one.
+- Never invent intent. Mission, non-goals, Git choice, IAM roles, requirements, invariants, decisions, metrics,
+  thresholds, latency targets, and backlog items come from the human. You can propose candidates, including ones you
+  extracted from the repository, but the human must confirm each one.
 - Challenge vague answers. When an answer isn't testable, quote the question's `challenge_prompt` and cite its
   lessons from `docs/lessons-learned.md`.
 - Don't ask about static facts that the tool already detected. Ask the human to confirm them instead.
@@ -33,7 +35,8 @@ exists yet:
 The JSON output contains:
 
 - `draft_path`: The draft specification. Static facts are filled in; intent fields are empty.
-- `detected`: The language, commands, port, and cloud stores found in the repository.
+- `detected`: The language, commands, port, cloud stores, `knowledge_sources` (requirements, ADRs, contracts, design
+  docs, and guides found in the repository), and `vcs` (whether the repository uses Git, and its GitHub remote).
 - `readiness`: The current readiness report. It fails for a new draft.
 - `questions`: The unresolved interview questions, each with `pillar`, `question`, `why_we_ask`, `lessons`,
   `challenge_prompt`, and `field_path`.
@@ -52,14 +55,43 @@ Work through the `questions` in pillar order. For each question:
 
 | Pillar | Fields to fill |
 |---|---|
-| `1_mission_and_boundaries` | `project.name`, `project.github_repo`, `project.mission`, `project.non_goals`, branches |
+| `1_mission_and_boundaries` | `project.name`, `project.mission`, `project.non_goals`, and the `vcs` section |
 | `2_runtime_data_and_iam` | `stack.*` commands, `infrastructure.cloud_stores`, `infrastructure.deployer_iam_roles` |
 | `3_roster_models_and_cost` | `team.build_roles[*].responsibility`, `team.eval_roles[*].responsibility`, `team.heartbeat_mode`, `team.max_wip`, `infrastructure.budget_usd` |
 | `4_evaluation_pyramid_oracle` | `evaluation_pyramid.l1_health` through `evaluation_pyramid.l5_latency_slo` |
-| `5_backlog_waves_and_autonomy` | `waves[*].issues[*]` with `owner_role` and `acceptance_criteria` |
+| `5_backlog_waves_and_autonomy` | `waves[*].issues[*]` with `owner_role`, `acceptance_criteria`, and `requirements` (REQ- IDs) |
+| `6_knowledge_plane` | `knowledge_plane.sources`, `knowledge_plane.requirements`, `knowledge_plane.invariants`, `knowledge_plane.decisions`, `knowledge_plane.glossary` |
 
 The draft includes the proven default roster. Ask the human whether to keep, rename, add, or remove roles before you
 fill in responsibilities. Use `presets/*.factory.yaml` as worked examples when the human needs inspiration.
+
+### Git is optional
+
+Ask whether the human wants Git and GitHub now. If the repository already has a GitHub remote, the draft enables Git
+and pre-fills `vcs.repo`; confirm it.
+
+- **With Git:** set `vcs.enabled: true`, `vcs.repo: OWNER/NAME`, and two different branches. The backlog is GitHub
+  issues, and the evaluation team uses an orphan branch.
+- **Without Git:** set `vcs.enabled: false`. The backlog is `backlog/issues.json` (the lead is the only writer),
+  deploys use workspace snapshots, and the evaluation team gets its own Hub project workspace. Tell the human that
+  they can add Git later; see [Add Git later](#add-git-later).
+
+### Build the knowledge plane
+
+The knowledge plane is what agents read before they plan, implement, review, or deploy. Build it in one of two ways,
+or combine them:
+
+- **Learn it from the repository.** For every path in `detected.knowledge_sources`, confirm with the human that it's
+  current, and keep it in `knowledge_plane.sources`. The kit links these files in place; it never moves them. Then
+  read the files and propose requirements (with `REQ-NNN` IDs and acceptance criteria), invariants, and glossary
+  terms that you extracted. Quote the source line for each proposal so the human can verify it. Don't copy existing
+  ADRs into `knowledge_plane.decisions`; they're already linked through `sources.adrs`.
+- **Generate it with the human.** When sources are missing or stale, elicit requirements, invariants, and
+  architecture decisions in the interview. Record each decision with an `ADR-NNN` ID, a title, the context, the
+  decision, and its consequences.
+
+Every requirement needs at least one testable acceptance criterion. Every invariant must be something a reviewer can
+verify in a diff or with a command. Every wave issue should cite the `REQ-` IDs it delivers.
 
 ## Step 3: Pass the readiness gate
 
@@ -77,6 +109,40 @@ Ask the human for an output directory, `OUTPUT_DIR`, and then run:
 ```bash
 ./scripts/scion-factory compile factory.yaml --out OUTPUT_DIR
 OUTPUT_DIR/scripts/verify-factory.sh
+python3 OUTPUT_DIR/knowledge-plane/kp-check.py
 ```
 
+`kp-check.py` reports broken links to learned sources when it runs outside the target repository. That's expected:
+the links resolve after the human copies `knowledge-plane/` to the root of the build workspace. Tell the human to copy
+with `cp -Rn` so that an existing knowledge plane in the repository is merged, never overwritten, and to run
+`kp-check.py` again from the workspace.
+
+Recompiling never overwrites `knowledge-plane/`, `backlog/`, or `eval-workspace/`, because agents edit them after
+bootstrap. Add `--force-knowledge` only when the human asks to reseed them.
+
 Summarize what was generated, and point the human to `docs/setup-runbook.md` to deploy the factory to a Scion Hub.
+
+## Add Git later
+
+When a factory that started without Git needs Git:
+
+1. Ask the human to create an empty GitHub repository and to confirm that the Hub OS user can push to it.
+1. Run the generated script in dry-run mode on the Hub VM, and review its plan with the human:
+
+   ```bash
+   GITHUB_REPO=OWNER/NAME OUTPUT_DIR/scripts/enable-git.sh
+   ```
+
+   The script migrates `backlog/issues.json` to GitHub issues with their current status, repoints the knowledge plane
+   index to GitHub issues, imports the build workspace into the build branch, and imports the evaluation workspace as
+   an orphan branch with no shared history.
+
+1. After the human approves, run it with `DRY_RUN=0`.
+1. Switch the specification to Git mode, and recompile the kit:
+
+   ```bash
+   ./scripts/scion-factory enable-git factory.yaml --repo OWNER/NAME
+   ./scripts/scion-factory compile factory.yaml --out OUTPUT_DIR
+   ```
+
+1. Push the regenerated templates to the Hub, and restart the agents so they pick up the Git protocol.
