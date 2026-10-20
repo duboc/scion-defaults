@@ -94,7 +94,29 @@ flowchart TB
 
 ---
 
-## 2. How to Replicate This Setup (Step-by-Step Quickstart)
+## 2. Bootstrap Any New Project: Socratic "Grill-Me" & Boilerplate Compiler
+
+Instead of hand-editing templates from `psearch`, use [`scripts/scion-factory`](scripts/scion_factory.py) (or the portable agent skill [`skills/scion-factory-bootstrap/SKILL.md`](skills/scion-factory-bootstrap/SKILL.md)) to inspect any target repository, run a 5-pillar Socratic "Grill-Me" interview grounded in Lessons `L1`–`L27`, validate readiness, and compile a zero-leak factory kit:
+
+```bash
+# 1. Auto-detect stack, test commands, ports, and cloud stores from an existing repo
+./scripts/scion-factory inspect /path/to/target-repo
+
+# 2. Run the 5-pillar Socratic Grill-Me inquiry (or start from presets/starter-service.factory.yaml)
+./scripts/scion-factory grill --repo /path/to/target-repo --out factory.yaml
+
+# 3. Verify readiness gate (blocks if L1-L5 oracle, deployer IAM roles, or Wave 1 criteria are vague)
+./scripts/scion-factory check factory.yaml
+
+# 4. Compile a complete, domain-agnostic factory kit (templates, Spanner DDL, Wave 1..N seeds, verify-factory.sh)
+./scripts/scion-factory compile factory.yaml --out ./my-project-factory
+```
+
+See [`docs/grill-me-playbook.md`](docs/grill-me-playbook.md) and the three reference presets ([`presets/starter-service.factory.yaml`](presets/starter-service.factory.yaml), [`presets/psearch.factory.yaml`](presets/psearch.factory.yaml), and [`presets/acme-airlines.factory.yaml`](presets/acme-airlines.factory.yaml)).
+
+---
+
+## 3. How to Replicate This Setup on GCP (Step-by-Step Quickstart)
 
 Follow [`docs/setup-runbook.md`](docs/setup-runbook.md) for full verification checks after every step.
 
@@ -172,10 +194,14 @@ source config/factory.env
 
 ---
 
-## 3. Repository Map
+## 4. Repository Map
 
 | Directory / File | Description |
 |---|---|
+| **[`docs/grill-me-playbook.md`](docs/grill-me-playbook.md)** | 5-pillar Socratic "Grill-Me" inquiry & boilerplate compiler guide (`scion-factory inspect/grill/check/compile`) |
+| **[`skills/scion-factory-bootstrap/SKILL.md`](skills/scion-factory-bootstrap/SKILL.md)** | Portable Agent Skill for interviewing a user and compiling a new Scion software factory |
+| **[`presets/`](presets/)** | Reference `FactorySpec` presets: `starter-service.factory.yaml` (Pulse Ledger), `psearch.factory.yaml`, and `acme-airlines.factory.yaml` |
+| **[`config/factory.schema.json`](config/factory.schema.json)** | JSON Schema separating invariant Scion factory mechanics from project-specific domain contracts |
 | **[`docs/architecture.md`](docs/architecture.md)** | System architecture, components, identities, data flows, and design trade-offs |
 | **[`docs/setup-runbook.md`](docs/setup-runbook.md)** | Complete step-by-step build guide from a clean GCP project to a running 10-agent factory |
 | **[`docs/operations-runbook.md`](docs/operations-runbook.md)** | Day-2 operations: checking status, rotating tokens, rollbacks, and handling Scion upgrades |

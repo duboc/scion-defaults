@@ -1,0 +1,83 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ScionFactorySpec",
+  "description": "Declarative domain-agnostic specification for an autonomous Scion multi-agent software factory.",
+  "type": "object",
+  "required": ["project", "stack", "infrastructure", "team", "evaluation_pyramid", "waves"],
+  "properties": {
+    "project": {
+      "type": "object",
+      "required": ["name", "slug", "eval_slug", "github_repo", "build_branch", "eval_branch", "mission", "non_goals"],
+      "properties": {
+        "name": { "type": "string" },
+        "slug": { "type": "string" },
+        "eval_slug": { "type": "string" },
+        "github_repo": { "type": "string" },
+        "build_branch": { "type": "string", "default": "main" },
+        "eval_branch": { "type": "string", "default": "eval-dashboard" },
+        "mission": { "type": "string" },
+        "non_goals": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "stack": {
+      "type": "object",
+      "required": ["primary_language", "build_command", "test_command", "port"],
+      "properties": {
+        "primary_language": { "type": "string" },
+        "framework": { "type": "string" },
+        "build_command": { "type": "string" },
+        "test_command": { "type": "string" },
+        "lint_command": { "type": "string" },
+        "port": { "type": "integer", "default": 8080 }
+      }
+    },
+    "infrastructure": {
+      "type": "object",
+      "required": ["cloud_stores", "serving_service", "eval_service", "budget_usd", "deployer_iam_roles"],
+      "properties": {
+        "cloud_stores": { "type": "array", "items": { "type": "string" } },
+        "serving_service": { "type": "string" },
+        "eval_service": { "type": "string" },
+        "budget_usd": { "type": "integer" },
+        "deployer_iam_roles": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "team": {
+      "type": "object",
+      "required": ["heartbeat_mode", "heartbeat_cron", "max_wip", "build_roles", "eval_roles"],
+      "properties": {
+        "heartbeat_mode": { "type": "string", "enum": ["direct-lead", "dedicated-sensor"] },
+        "heartbeat_cron": { "type": "string" },
+        "watchdog_cron": { "type": "string", "default": "*/5 * * * *" },
+        "max_wip": { "type": "integer", "default": 2 },
+        "build_roles": { "type": "array", "items": { "type": "object" } },
+        "eval_roles": { "type": "array", "items": { "type": "object" } }
+      }
+    },
+    "evaluation_pyramid": {
+      "type": "object",
+      "required": ["l1_health", "l2_contract", "l3_domain_quality", "l4_safety_grounding", "l5_latency_slo"],
+      "properties": {
+        "l1_health": { "type": "object" },
+        "l2_contract": { "type": "object" },
+        "l3_domain_quality": {
+          "type": "object",
+          "required": ["primary_metric", "target_threshold", "probe_description"]
+        },
+        "l4_safety_grounding": { "type": "object" },
+        "l5_latency_slo": {
+          "type": "object",
+          "required": ["p50_ms", "p95_ms", "p99_ms"]
+        }
+      }
+    },
+    "waves": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["wave", "title", "issues"]
+      }
+    }
+  }
+}

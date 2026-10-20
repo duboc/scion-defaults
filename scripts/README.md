@@ -6,6 +6,7 @@ VM at run time, and the GitHub token is only ever piped through stdin.
 
 | Script | Runs on | Changes things? | What it does |
 |---|---|---|---|
+| [`scion-factory`](scion_factory.py) | your machine | writes `--out` | Socratic "Grill-Me" inquiry and domain-agnostic factory compiler (`inspect`, `grill`, `check`, `compile`). Turns a `FactorySpec` YAML into a complete 38-file project factory kit with zero domain leaks. |
 | [`run-on-hub.sh`](run-on-hub.sh) | your machine | no (transport) | Streams a local script to the Hub VM over SSH stdin into a temporary file and runs it as the Hub OS user (`.py` with python3, anything else with bash), forwarding factory variables. Avoids nested quoting and argument length limits (L1, M7). |
 | [`factory-status.sh`](factory-status.sh) | Hub VM | no | One-screen health check: agents with phase/activity/idle minutes, schedules, recent messages, the PO inbox, failed dispatches, workspace git state, containers, optional terminal tails (`--panes N`). |
 | [`factory-watchdog.py`](factory-watchdog.py) | Hub VM (cron) | with `--apply` | Watchdog daemon running every 5 min: checks Antigravity provisioner drift, restores broken heartbeat schedules, wakes suspended agents, auto-restarts failed agents with a 3/hr circuit breaker, and forwards `user:<email>` PO inbox escalations to Cloud Logging. |

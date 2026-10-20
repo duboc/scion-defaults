@@ -1,0 +1,120 @@
+project:
+  name: "Product Search (psearch)"
+  slug: "psearch"
+  eval_slug: "psearch-eval"
+  github_repo: "example-org/scion-experiment"
+  build_branch: "main"
+  eval_branch: "eval-dashboard"
+  mission: "Build a hybrid vector + keyword e-commerce product search service with AI overviews, facets, merchandising rules, and sponsored products."
+  non_goals:
+    - "Payment checkout processing"
+    - "Inventory warehouse ERP"
+
+stack:
+  primary_language: "go"
+  framework: "Go net/http + Cloud Spanner Vector Search + Vertex AI"
+  build_command: "go build -buildvcs=false ./..."
+  test_command: "go test ./..."
+  lint_command: "go vet ./..."
+  port: 8080
+
+infrastructure:
+  cloud_stores:
+    - "spanner"
+    - "bigquery"
+    - "firestore"
+  serving_service: "psearch-serving"
+  eval_service: "psearch-eval-dashboard"
+  budget_usd: 150
+  deployer_iam_roles:
+    - "roles/run.admin"
+    - "roles/cloudbuild.builds.editor"
+    - "roles/spanner.databaseAdmin"
+    - "roles/bigquery.dataEditor"
+    - "roles/aiplatform.user"
+
+team:
+  heartbeat_mode: "direct-lead"
+  heartbeat_cron: "*/15 * * * *"
+  watchdog_cron: "*/5 * * * *"
+  max_wip: 2
+  build_roles:
+    - role: "lead"
+      harness: "claude"
+      model: "opus"
+      responsibility: "Coordinates Wave 1-5 backlog on GitHub Issues and verifies live Cloud Run deployments"
+    - role: "backend"
+      harness: "opencode"
+      model: "google-vertex/gemini-4-argon"
+      responsibility: "Implements Go hybrid search, Spanner CosineDistance queries, facets, and merchandising"
+    - role: "frontend"
+      harness: "antigravity"
+      model: "Gemini 4 Argon (High)"
+      responsibility: "Builds storefront search UI, facet sidebar, and AI overview cards"
+    - role: "reviewer"
+      harness: "hermes"
+      model: "google/gemini-4-argon"
+      responsibility: "Reviews diffs, runs go test ./..., and delivers PASS/FAIL verdicts via scion message"
+    - role: "deployer"
+      harness: "claude"
+      model: "opus"
+      gcp_identity: "deployer-sa"
+      responsibility: "Exports clean git archive and deploys psearch-serving to Cloud Run with --to-latest"
+  eval_roles:
+    - role: "eval-lead"
+      harness: "antigravity"
+      model: "Gemini 4 Argon (High)"
+      responsibility: "Orchestrates 5-layer evaluation sweeps and Control Tower updates"
+    - role: "search-evaluator"
+      harness: "antigravity"
+      model: "Gemini 4 Argon (High)"
+      responsibility: "Executes golden search queries, alpha sweeps, and NDCG@10 / MRR@10 probes"
+    - role: "factory-analyst"
+      harness: "antigravity"
+      model: "Gemini 4 Argon (High)"
+      responsibility: "Tracks factory velocity, issue cycle times, and Spanner telemetry sync"
+    - role: "ui-craftsman"
+      harness: "antigravity"
+      model: "Gemini 4 Argon (High)"
+      responsibility: "Builds the above-the-fold evaluation dashboard and passes impeccable UI checks"
+    - role: "eval-deployer"
+      harness: "antigravity"
+      model: "Gemini 4 Argon (High)"
+      gcp_identity: "deployer-sa"
+      responsibility: "Deploys psearch-eval-dashboard from the disjoint eval-dashboard branch"
+
+evaluation_pyramid:
+  l1_health:
+    endpoint: "/health"
+    checks:
+      - "HTTP 200 and Spanner catalog count >= 15"
+  l2_contract:
+    endpoints:
+      - "GET /api/search"
+      - "GET /api/autocomplete"
+      - "GET /api/catalog"
+    invariants:
+      - "Facet counts, price filters, and sort orders match Spanner ground truth"
+  l3_domain_quality:
+    primary_metric: "ndcg_at_10"
+    target_threshold: 0.90
+    secondary_metric: "mrr_at_10"
+    secondary_threshold: 0.90
+    probe_description: "Run golden query suite across hybrid alpha weights (0.0 to 1.0) and compute NDCG@10 and MRR@10."
+  l4_safety_grounding:
+    invariants:
+      - "AI Overview cites only product IDs returned in retrieval set"
+      - "Sponsored products are capped at 2 slots and labeled is_sponsored=true"
+  l5_latency_slo:
+    p50_ms: 80
+    p95_ms: 250
+    p99_ms: 500
+
+waves:
+  - wave: 1
+    title: "Hybrid Search & 768-dim Embeddings"
+    issues:
+      - title: "Wave 1.1: Hybrid RRF / alpha blending between FTS and vector search"
+        owner_role: "backend"
+        acceptance_criteria:
+          - "GET /api/search?alpha=0.5 blends vector and keyword scores with NDCG@10 >= 0.90"

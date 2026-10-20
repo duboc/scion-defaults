@@ -1,0 +1,134 @@
+project:
+  name: "Acme Airlines IRROPS Recovery Platform"
+  slug: "duboc-acme-airlines"
+  eval_slug: "acme-airlines-eval"
+  github_repo: "example-org/acme-airlines"
+  build_branch: "main"
+  eval_branch: "eval-dashboard"
+  mission: "Build an autonomous airline irregular-operations (IRROPS) crew & passenger recovery platform with deterministic policy guardrails and A2A coordination."
+  non_goals:
+    - "Ticket pricing yield management"
+    - "In-flight entertainment systems"
+
+stack:
+  primary_language: "python"
+  framework: "FastAPI + Vertex AI + Cloud Run"
+  build_command: "uv run python -m compileall ."
+  test_command: "uv run pytest -q"
+  lint_command: "uv run ruff check ."
+  port: 8080
+
+infrastructure:
+  cloud_stores:
+    - "spanner"
+    - "firestore"
+    - "bigquery"
+  serving_service: "acme-irrops-platform"
+  eval_service: "acme-observatory-platform"
+  budget_usd: 2000
+  deployer_iam_roles:
+    - "roles/run.admin"
+    - "roles/cloudbuild.builds.editor"
+    - "roles/spanner.databaseAdmin"
+    - "roles/datastore.user"
+    - "roles/aiplatform.user"
+
+team:
+  heartbeat_mode: "dedicated-sensor"
+  heartbeat_cron: "0 12 * * *"
+  watchdog_cron: "0 12 * * *"
+  max_wip: 2
+  build_roles:
+    - role: "lead"
+      harness: "claude"
+      model: "opus"
+      responsibility: "Orchestrates 6-step GitHub issue workflow and enforces <200k context window cap"
+    - role: "heartbeat"
+      harness: "antigravity"
+      model: "Gemini 3.8 Flash (Medium)"
+      responsibility: "Low-cost daily sensor agent that wakes lead only when actionable GitHub diffs exist"
+    - role: "researcher"
+      harness: "antigravity"
+      model: "Gemini 4 Argon (High)"
+      responsibility: "Researches FAA/FAR Part 117 crew legality rules and grounding references"
+    - role: "product-manager"
+      harness: "claude"
+      model: "claude-haiku-5-5"
+      responsibility: "Authors crisp issue acceptance criteria and scenario matrices"
+    - role: "backend"
+      harness: "opencode"
+      model: "google-vertex/gemini-4-argon"
+      responsibility: "Implements IRROPS solver, A2A endpoints, and deterministic policy guardrails"
+    - role: "frontend"
+      harness: "antigravity"
+      model: "Gemini 4 Argon (High)"
+      responsibility: "Builds NOC dispatch console and scenario visualization"
+    - role: "reviewer"
+      harness: "hermes"
+      model: "google/gemini-4-argon"
+      responsibility: "Verifies deterministic policy compliance and test coverage"
+    - role: "deployer"
+      harness: "claude"
+      model: "claude-haiku-5-5"
+      gcp_identity: "deployer-sa"
+      responsibility: "Deploys clean git archive revisions to Cloud Run and verifies health"
+  eval_roles:
+    - role: "eval-lead"
+      harness: "antigravity"
+      model: "Gemini 4 Argon (High)"
+      responsibility: "Coordinates 4-boundary IRROPS evaluation sweeps"
+    - role: "eval-heartbeat"
+      harness: "antigravity"
+      model: "Gemini 3.8 Flash (Medium)"
+      responsibility: "Daily sensor agent for the evaluation control tower"
+    - role: "factory-analyst"
+      harness: "antigravity"
+      model: "Gemini 4 Argon (High)"
+      responsibility: "Audits factory telemetry, Cloud Trace proofs, and cost guardrails"
+    - role: "search-evaluator"
+      harness: "antigravity"
+      model: "Gemini 4 Argon (High)"
+      responsibility: "Runs 5-preset structural parity and policy guardrail probes"
+    - role: "ui-craftsman"
+      harness: "antigravity"
+      model: "Gemini 4 Argon (High)"
+      responsibility: "Maintains observatory UI and trace waterfall viewer"
+    - role: "eval-deployer"
+      harness: "antigravity"
+      model: "Gemini 4 Argon (High)"
+      gcp_identity: "deployer-sa"
+      responsibility: "Deploys observatory dashboard from eval-dashboard branch"
+
+evaluation_pyramid:
+  l1_health:
+    endpoint: "/health"
+    checks:
+      - "HTTP 200 and all 5 IRROPS scenario presets loaded"
+  l2_contract:
+    endpoints:
+      - "POST /api/v1/recover"
+      - "GET /api/v1/presets"
+    invariants:
+      - "Every recovery plan includes crew legality check, passenger rebooking manifest, and cost breakdown"
+  l3_domain_quality:
+    primary_metric: "policy_compliance_rate"
+    target_threshold: 1.0
+    secondary_metric: "structural_parity_score"
+    secondary_threshold: 0.95
+    probe_description: "Execute all 5 storm/crew-timeout presets and verify 100% FAR 117 legality compliance and structural parity."
+  l4_safety_grounding:
+    invariants:
+      - "Fail-closed deterministic fallback when LLM intent classifier returns invalid tail/flight numbers"
+  l5_latency_slo:
+    p50_ms: 800
+    p95_ms: 2500
+    p99_ms: 4500
+
+waves:
+  - wave: 1
+    title: "Deterministic FAR 117 Guardrails & 5-Preset Parity"
+    issues:
+      - title: "Wave 1.1: Fail-closed crew duty-time validator before plan emission"
+        owner_role: "backend"
+        acceptance_criteria:
+          - "Any recovery plan violating FAR 117 rest minimums is rejected with deterministic fallback"

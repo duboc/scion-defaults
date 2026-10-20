@@ -12,6 +12,9 @@ This repository (`duboc/scion-defaults`) is the canonical blueprint, automation 
 | [`templates/`](templates/README.md) | Shared multi-agent coordination protocol (`_shared/agents.md`) + 10 role templates (`lead`, `backend`, `frontend`, `reviewer`, `deployer`, `eval-lead`, `factory-analyst`, `search-evaluator`, `ui-craftsman`, `eval-deployer`) |
 | [`docs/`](docs/) | Architecture (`architecture.md`), setup runbook (`setup-runbook.md`), operations runbook (`operations-runbook.md`), agent protocol (`agent-protocol.md`), 5-layer evaluation pyramid (`verification-and-eval.md`), 27 lessons learned (`lessons-learned.md`), and v2 orchestration spec (`specs/`) |
 | [`docs/telemetry/`](docs/telemetry/README.md) | ASD-STE100 documentation for reproducing telemetry, the evaluation data pipeline, and harness hooks / stacked Cloud Trace waterfalls |
+| [`docs/grill-me-playbook.md`](docs/grill-me-playbook.md) | 5-pillar Socratic "Grill-Me" inquiry and domain-agnostic boilerplate compiler guide |
+| [`skills/scion-factory-bootstrap/SKILL.md`](skills/scion-factory-bootstrap/SKILL.md) | Portable Agent Skill to interview users, challenge vague specs using L1–L27, and compile new Scion factories |
+| [`presets/`](presets/) | Reference `FactorySpec` presets (`starter-service.factory.yaml`, `psearch.factory.yaml`, `acme-airlines.factory.yaml`) |
 | [`patches/sciontool-stacked-traces/`](patches/sciontool-stacked-traces/README.md) | Source patch (`sciontool-stacked-traces.patch`) and `tracestate.go` for 3-level stacked Cloud Trace waterfalls and Cloud Monitoring `CUMULATIVE` epoch export |
 
 ## Security & Hygiene Rules (Mandatory)

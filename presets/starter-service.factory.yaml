@@ -1,0 +1,130 @@
+project:
+  name: "Pulse Ledger"
+  slug: "pulse-ledger"
+  eval_slug: "pulse-ledger-eval"
+  github_repo: "example-org/pulse-ledger"
+  build_branch: "main"
+  eval_branch: "eval-dashboard"
+  mission: "Build an idempotent double-entry transaction ledger API with real-time anomaly detection and audit trail verification."
+  non_goals:
+    - "Consumer-facing mobile apps"
+    - "External payment gateway settlement"
+
+stack:
+  primary_language: "go"
+  framework: "net/http + Cloud Spanner"
+  build_command: "go build -buildvcs=false ./..."
+  test_command: "go test -race ./..."
+  lint_command: "go vet ./..."
+  port: 8080
+
+infrastructure:
+  cloud_stores:
+    - "spanner"
+    - "bigquery"
+  serving_service: "pulse-ledger-serving"
+  eval_service: "pulse-ledger-eval-dashboard"
+  budget_usd: 200
+  deployer_iam_roles:
+    - "roles/run.admin"
+    - "roles/cloudbuild.builds.editor"
+    - "roles/spanner.databaseAdmin"
+    - "roles/bigquery.dataEditor"
+    - "roles/aiplatform.user"
+
+team:
+  heartbeat_mode: "direct-lead"
+  heartbeat_cron: "*/15 * * * *"
+  watchdog_cron: "*/5 * * * *"
+  max_wip: 2
+  build_roles:
+    - role: "lead"
+      harness: "claude"
+      model: "opus"
+      responsibility: "Triages ledger issues, coordinates specialists, verifies double-entry invariants on live Cloud Run"
+    - role: "backend"
+      harness: "opencode"
+      model: "google-vertex/gemini-4-argon"
+      responsibility: "Implements Go ledger handlers, Spanner transactions, and idempotency keys"
+    - role: "frontend"
+      harness: "antigravity"
+      model: "Gemini 4 Argon (High)"
+      responsibility: "Builds operator audit console and reconciliation ledger explorer"
+    - role: "reviewer"
+      harness: "hermes"
+      model: "google/gemini-4-argon"
+      responsibility: "Reviews diffs for ACID transaction safety, race conditions, and test coverage"
+    - role: "deployer"
+      harness: "claude"
+      model: "opus"
+      gcp_identity: "deployer-sa"
+      responsibility: "Applies Spanner migrations and deploys clean git archives to Cloud Run with --to-latest"
+  eval_roles:
+    - role: "eval-lead"
+      harness: "antigravity"
+      model: "Gemini 4 Argon (High)"
+      responsibility: "Coordinates continuous L1-L5 ledger verification sweeps and dashboard updates"
+    - role: "domain-evaluator"
+      harness: "antigravity"
+      model: "Gemini 4 Argon (High)"
+      responsibility: "Runs synthetic double-entry transfers, replay attacks, and anomaly probes against live API"
+    - role: "factory-analyst"
+      harness: "antigravity"
+      model: "Gemini 4 Argon (High)"
+      responsibility: "Monitors agent throughput, Cloud Trace waterfalls, and Spanner status sync"
+    - role: "ui-craftsman"
+      harness: "antigravity"
+      model: "Gemini 4 Argon (High)"
+      responsibility: "Maintains the evaluation control tower UI and passes zero-finding accessibility checks"
+    - role: "eval-deployer"
+      harness: "antigravity"
+      model: "Gemini 4 Argon (High)"
+      gcp_identity: "deployer-sa"
+      responsibility: "Deploys the evaluation dashboard from the disjoint eval-dashboard orphan branch"
+
+evaluation_pyramid:
+  l1_health:
+    endpoint: "/health"
+    checks:
+      - "HTTP 200 status and Spanner session pool ready"
+  l2_contract:
+    endpoints:
+      - "POST /api/v1/entries"
+      - "GET /api/v1/accounts/{id}/balance"
+    invariants:
+      - "Sum of debits equals sum of credits across every committed transaction"
+      - "Duplicate idempotency_key returns original transaction without double-posting"
+  l3_domain_quality:
+    primary_metric: "reconciliation_accuracy"
+    target_threshold: 0.999
+    secondary_metric: "anomaly_f1_score"
+    secondary_threshold: 0.95
+    probe_description: "Execute 200 synthetic multi-leg journal entries and 25 injected fraud patterns; measure ledger balance conservation and anomaly F1."
+  l4_safety_grounding:
+    invariants:
+      - "AI audit explanations cite only committed transaction IDs from Spanner"
+      - "Fail-closed fallback when Vertex AI is unreachable (transactions still commit deterministically)"
+  l5_latency_slo:
+    p50_ms: 45
+    p95_ms: 120
+    p99_ms: 250
+
+waves:
+  - wave: 1
+    title: "Core Double-Entry Schema & Idempotent Posting"
+    issues:
+      - title: "Wave 1.1: Spanner schema for accounts, journal_entries, and postings with zero-sum check"
+        owner_role: "backend"
+        acceptance_criteria:
+          - "DDL applies cleanly and unit tests verify debit == credit invariant"
+      - title: "Wave 1.2: Idempotent POST /api/v1/entries endpoint with replay protection"
+        owner_role: "backend"
+        acceptance_criteria:
+          - "Concurrent requests with identical idempotency_key produce exactly one journal entry"
+  - wave: 2
+    title: "Operator Audit Console & AI Anomaly Explainer"
+    issues:
+      - title: "Wave 2.1: Ledger explorer UI with account balance drilldown"
+        owner_role: "frontend"
+        acceptance_criteria:
+          - "Renders live account balances and journal legs with zero accessibility findings"
