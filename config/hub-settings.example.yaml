@@ -1,0 +1,68 @@
+# Excerpt of the Hub's ~/.scion/settings.yaml used by this factory (values replaced by variables).
+# HUB_INTERNAL_IP, HUB_PROJECT_NUMBER and HUB_IAP_PROXY_SERVICE are not in factory.env: fill them in by hand.
+# Every harness authenticates to Vertex AI with the Hub VM's identity ("vertex-ai").
+schema_version: "1"
+default_harness_config: antigravity
+default_gcp_identity_mode: passthrough        # agents use the VM's service account unless "assign" is set per agent
+image_registry: localhost/scion
+telemetry:                                     # NOTE: the Hub injects SCION_TELEMETRY_ENABLED from here into every
+  enabled: true                                # agent and it overrides template-level telemetry settings. With cloud
+  cloud:                                       # export on, `sciontool hook` hangs and Antigravity aborts every tool
+    enabled: true                              # call; see lessons-learned.md (L6) and scripts/patch-antigravity-hooks.py.
+    provider: gcp
+    endpoint: monitoring.googleapis.com:443
+server:
+  hub:
+    admin_emails:
+      - ${PO_EMAIL}
+    agent_endpoint: http://${HUB_INTERNAL_IP}:8080
+  auth:
+    mode: proxy                                # the Hub sits behind an IAP proxy on Cloud Run
+    proxy:
+      provider: iap
+      iap:
+        audience: /projects/${HUB_PROJECT_NUMBER}/locations/us-central1/services/${HUB_IAP_PROXY_SERVICE}
+  secrets:
+    backend: local
+  maintenance:
+    release_channel: nightly
+    update_policy: notify                      # Set to 'notify' (not 'auto') so Scion updates do not restart the Hub or overwrite managed harness files unannounced; see operations-runbook.md
+harness_configs:
+  antigravity:
+    harness: antigravity
+    image: scion-antigravity:latest
+    auth_selected_type: vertex-ai
+    env:
+      GOOGLE_CLOUD_PROJECT: ${HUB_PROJECT}
+      GOOGLE_CLOUD_LOCATION: us-central1
+      GOOGLE_CLOUD_REGION: us-central1
+  claude:
+    harness: claude
+    image: scion-claude:latest
+    auth_selected_type: vertex-ai
+    env:
+      ANTHROPIC_VERTEX_PROJECT_ID: ${HUB_PROJECT}
+      CLOUD_ML_REGION: global
+      GOOGLE_CLOUD_PROJECT: ${HUB_PROJECT}
+      GOOGLE_CLOUD_REGION: global
+      CLAUDE_CODE_USE_VERTEX: "1"
+  opencode:
+    harness: opencode
+    image: scion-opencode:latest
+    auth_selected_type: vertex-ai
+    env:
+      GOOGLE_CLOUD_PROJECT: ${HUB_PROJECT}
+      VERTEXAI_PROJECT: ${HUB_PROJECT}
+      GOOGLE_CLOUD_LOCATION: us-central1
+      GOOGLE_CLOUD_REGION: us-central1
+      VERTEX_LOCATION: us-central1
+  hermes:
+    harness: hermes
+    image: scion-hermes:latest
+    auth_selected_type: vertex-ai
+    env:
+      GOOGLE_CLOUD_PROJECT: ${HUB_PROJECT}
+      VERTEX_PROJECT_ID: ${HUB_PROJECT}
+      GOOGLE_CLOUD_LOCATION: us-central1
+      GOOGLE_CLOUD_REGION: us-central1
+      VERTEX_REGION: us-central1

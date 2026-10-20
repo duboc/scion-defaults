@@ -1,0 +1,11 @@
+schema_version: "1"
+description: "Tech lead and orchestrator of the ${BUILD_PROJECT} factory (Claude Code). Plans and delegates GitHub issues; never writes product code."
+default_harness_config: claude
+agent_instructions: agents.md
+system_prompt: system-prompt.md
+env:
+  FACTORY_ROLE: lead
+# The Hub injects SCION_TELEMETRY_ENABLED from its own settings and that currently wins over this block
+# (lessons-learned.md L6). It is kept so the opt-out applies once Scion honors template-level telemetry.
+telemetry:
+  enabled: false

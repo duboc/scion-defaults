@@ -1,0 +1,16 @@
+# Rendered templates (scripts/render-templates.py) contain your real project IDs and emails.
+build/
+# Real environment values; only config/factory.env.example is tracked.
+config/factory.env
+*.env
+*.local.env
+!.env.example
+!config/factory.env.example
+# Python & OS caches
+__pycache__/
+*.py[cod]
+.DS_Store
+# Ephemeral keys or backups
+*.key.json
+*-credentials.json
+*.bak*

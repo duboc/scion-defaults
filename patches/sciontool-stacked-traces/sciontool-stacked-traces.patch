@@ -1,0 +1,1394 @@
+diff --git a/cmd/sciontool/commands/hook.go b/cmd/sciontool/commands/hook.go
+index bcfbbfb9..b8bf659f 100644
+--- a/cmd/sciontool/commands/hook.go
++++ b/cmd/sciontool/commands/hook.go
+@@ -286,6 +286,8 @@ func runAskUser(message string) {
+ 		}
+ 	}
+ 
++	handlers.EmitStatusTelemetry(string(state.ActivityWaitingForInput), message)
++
+ 	fmt.Fprintf(os.Stderr, "[sciontool] Agent asked: %s\n", message)
+ }
+ 
+@@ -313,5 +315,7 @@ func runTaskCompleted(message string) {
+ 		}
+ 	}
+ 
++	handlers.EmitStatusTelemetry(string(state.ActivityCompleted), message)
++
+ 	fmt.Fprintf(os.Stderr, "[sciontool] Agent completed: %s\n", message)
+ }
+diff --git a/cmd/sciontool/commands/status.go b/cmd/sciontool/commands/status.go
+index 97877cf9..cb96d74e 100644
+--- a/cmd/sciontool/commands/status.go
++++ b/cmd/sciontool/commands/status.go
+@@ -125,6 +125,8 @@ func runStatusUpdate(definition statusDefinition, message string) {
+ 		}
+ 	}
+ 
++	handlers.EmitStatusTelemetry(string(definition.activity), message)
++
+ 	log.Info("%s: %s", definition.outputPrefix, message)
+ }
+ 
+diff --git a/pkg/sciontool/hooks/handlers/telemetry.go b/pkg/sciontool/hooks/handlers/telemetry.go
+index d270c7b6..237f6820 100644
+--- a/pkg/sciontool/hooks/handlers/telemetry.go
++++ b/pkg/sciontool/hooks/handlers/telemetry.go
+@@ -231,19 +231,69 @@ func (h *TelemetryHandler) spanKey(eventType, toolName string) string {
+ 	return eventType
+ }
+ 
+-// startSpan creates a new in-progress span.
++// startSpan creates a new in-progress span and persists cross-process trace state.
+ func (h *TelemetryHandler) startSpan(event *hooks.Event, spanName string) {
++	now := time.Now()
++	nowNano := now.UnixNano()
+ 	ctx := context.Background()
+-	attrs := h.eventToAttributes(event)
+ 
+-	ctx, span := h.tracer.Start(ctx, spanName, trace.WithAttributes(attrs...))
++	var prevTurn *telemetry.TraceState
++	var traceIDHex, parentSpanIDHex, childSpanIDHex string
++	_ = telemetry.WithTraceState(func(st *telemetry.TraceState) error {
++		forceNew := event.Name == hooks.EventAgentStart
++		prevTurn = st.EnsureActiveTurn(nowNano, event.Data.SessionID, forceNew)
++		traceIDHex = st.TraceID
++		switch event.Name {
++		case hooks.EventAgentStart:
++			childSpanIDHex = st.TurnSpanID
++		case hooks.EventModelStart:
++			parentSpanIDHex = st.TurnSpanID
++			childSpanIDHex = telemetry.NewRandomSpanIDHex()
++			st.PendingModel = &telemetry.PendingSpan{
++				SpanID:    childSpanIDHex,
++				Name:      os.Getenv("SCION_MODEL"),
++				StartNano: nowNano,
++			}
++		case hooks.EventToolStart:
++			parentSpanIDHex = st.TurnSpanID
++			childSpanIDHex = telemetry.NewRandomSpanIDHex()
++			st.PendingTools = append(st.PendingTools, telemetry.PendingSpan{
++				SpanID:    childSpanIDHex,
++				Name:      event.Data.ToolName,
++				StartNano: nowNano,
++			})
++		}
++		st.LastActivityNano = nowNano
++		return nil
++	})
++	if prevTurn != nil {
++		h.emitTurnRootSpan(prevTurn, prevTurn.LastActivityNano)
++	}
++
++	if tid, okT := telemetry.ParseTraceIDHex(traceIDHex); okT {
++		if sid, okS := telemetry.ParseSpanIDHex(childSpanIDHex); okS {
++			if pid, okP := telemetry.ParseSpanIDHex(parentSpanIDHex); okP {
++				parentSC := trace.NewSpanContext(trace.SpanContextConfig{
++					TraceID:    tid,
++					SpanID:     pid,
++					TraceFlags: trace.FlagsSampled,
++					Remote:     true,
++				})
++				ctx = trace.ContextWithRemoteSpanContext(ctx, parentSC)
++			}
++			ctx = telemetry.ContextWithExplicitIDs(ctx, tid, sid)
++		}
++	}
++
++	attrs := h.eventToAttributes(event)
++	ctx, span := h.tracer.Start(ctx, spanName, trace.WithTimestamp(now), trace.WithAttributes(attrs...))
+ 	h.emitLogRecord(ctx, event, spanName)
+ 
+ 	key := h.spanKey(event.Name, event.Data.ToolName)
+ 	h.spanStore.Store(key, &inProgressSpan{
+ 		span:      span,
+ 		ctx:       ctx,
+-		startTime: time.Now(),
++		startTime: now,
+ 		toolName:  event.Data.ToolName,
+ 	})
+ }
+@@ -254,15 +304,18 @@ func (h *TelemetryHandler) endSpan(event *hooks.Event, spanName, startEventType
+ 
+ 	val, ok := h.spanStore.LoadAndDelete(key)
+ 	if !ok {
+-		// No matching start event — common in hook-per-process mode where
+-		// each hook invocation is a separate process. Record metrics from
+-		// the end event alone and emit a single span.
+-		h.singleSpan(event, spanName)
++		// No matching in-memory start event — normal in hook-per-process mode where
++		// each hook invocation is a separate process. Pair against the persisted
++		// cross-process TraceState and emit a hierarchical span.
++		h.crossProcessEndSpan(event, spanName, startEventType)
+ 		h.recordUnpairedEndMetrics(event, startEventType)
+ 		return
+ 	}
+ 
+ 	inProgress := val.(*inProgressSpan)
++	if event.Data.ToolName == "" && inProgress.toolName != "" {
++		event.Data.ToolName = inProgress.toolName
++	}
+ 
+ 	// Add end-event attributes
+ 	attrs := h.eventToEndAttributes(event, inProgress.startTime)
+@@ -282,17 +335,307 @@ func (h *TelemetryHandler) endSpan(event *hooks.Event, spanName, startEventType
+ 	h.recordEndMetrics(event, startEventType, inProgress)
+ }
+ 
+-// singleSpan creates and immediately ends a span.
+-func (h *TelemetryHandler) singleSpan(event *hooks.Event, spanName string) {
++// crossProcessEndSpan pairs an end hook event with its persisted start state in TraceState
++// and emits a hierarchical child span (or finalized root turn span on agent-end).
++func (h *TelemetryHandler) crossProcessEndSpan(event *hooks.Event, spanName, startEventType string) {
++	now := time.Now()
++	nowNano := now.UnixNano()
++
++	var traceIDHex, parentSpanIDHex, spanIDHex string
++	var startNano int64
++	var turnIdx int64
++	var finalizedTurn *telemetry.TraceState
++
++	_ = telemetry.WithTraceState(func(st *telemetry.TraceState) error {
++		st.EnsureActiveTurn(nowNano, event.Data.SessionID, false)
++		traceIDHex = st.TraceID
++		turnIdx = st.TurnIndex
++
++		switch startEventType {
++		case hooks.EventToolStart:
++			parentSpanIDHex = st.TurnSpanID
++			var popped telemetry.PendingSpan
++			foundIdx := -1
++			if event.Data.ToolName != "" {
++				for i := len(st.PendingTools) - 1; i >= 0; i-- {
++					if st.PendingTools[i].Name == event.Data.ToolName {
++						foundIdx = i
++						break
++					}
++				}
++			}
++			if foundIdx == -1 && len(st.PendingTools) > 0 {
++				foundIdx = len(st.PendingTools) - 1
++			}
++			if foundIdx >= 0 {
++				popped = st.PendingTools[foundIdx]
++				st.PendingTools = append(st.PendingTools[:foundIdx], st.PendingTools[foundIdx+1:]...)
++			}
++			if event.Data.ToolName == "" && popped.Name != "" {
++				event.Data.ToolName = popped.Name
++			}
++			if popped.SpanID != "" {
++				spanIDHex = popped.SpanID
++				startNano = popped.StartNano
++			} else {
++				spanIDHex = telemetry.NewRandomSpanIDHex()
++				startNano = nowNano - int64(25*time.Millisecond)
++			}
++			if startNano < st.TurnStartNano {
++				st.TurnStartNano = startNano
++			}
++			st.ToolCalls++
++			st.LastActivityNano = nowNano
++
++		case hooks.EventModelStart:
++			parentSpanIDHex = st.TurnSpanID
++			if st.PendingModel != nil && st.PendingModel.SpanID != "" {
++				spanIDHex = st.PendingModel.SpanID
++				startNano = st.PendingModel.StartNano
++				st.PendingModel = nil
++			} else {
++				spanIDHex = telemetry.NewRandomSpanIDHex()
++				if st.ModelCalls == 0 && st.ToolCalls == 0 && (nowNano-st.TurnStartNano) < int64(50*time.Millisecond) {
++					startNano = nowNano - int64(500*time.Millisecond)
++					st.TurnStartNano = startNano
++				} else if st.LastActivityNano > 0 && st.LastActivityNano < nowNano {
++					startNano = st.LastActivityNano
++				} else {
++					startNano = nowNano - int64(250*time.Millisecond)
++				}
++			}
++			if startNano < st.TurnStartNano {
++				st.TurnStartNano = startNano
++			}
++			st.ModelCalls++
++			st.InputTokens += event.Data.InputTokens
++			st.OutputTokens += event.Data.OutputTokens
++			st.CachedTokens += event.Data.CachedTokens + event.Data.CacheWriteTokens
++			st.LastActivityNano = nowNano
++
++		case hooks.EventAgentStart:
++			spanIDHex = st.TurnSpanID
++			parentSpanIDHex = ""
++			startNano = st.TurnStartNano
++			st.LastActivityNano = nowNano
++			st.TurnFinalized = true
++			st.PendingModel = nil
++			st.PendingTools = nil
++			cp := *st
++			finalizedTurn = &cp
++		}
++		return nil
++	})
++
++	if finalizedTurn != nil {
++		if event.Data.SessionID == "" && finalizedTurn.SessionID != "" {
++			event.Data.SessionID = finalizedTurn.SessionID
++		}
++		h.emitTurnRootSpanWithEvent(finalizedTurn, event, spanName, now)
++		return
++	}
++
++	if startNano <= 0 || startNano >= nowNano {
++		startNano = nowNano - int64(time.Millisecond)
++	}
++	startTime := time.Unix(0, startNano)
++
++	ctx := context.Background()
++	if tid, okT := telemetry.ParseTraceIDHex(traceIDHex); okT {
++		if sid, okS := telemetry.ParseSpanIDHex(spanIDHex); okS {
++			if pid, okP := telemetry.ParseSpanIDHex(parentSpanIDHex); okP {
++				parentSC := trace.NewSpanContext(trace.SpanContextConfig{
++					TraceID:    tid,
++					SpanID:     pid,
++					TraceFlags: trace.FlagsSampled,
++					Remote:     true,
++				})
++				ctx = trace.ContextWithRemoteSpanContext(ctx, parentSC)
++			}
++			ctx = telemetry.ContextWithExplicitIDs(ctx, tid, sid)
++		}
++	}
++
++	displaySpanName := spanName
++	if os.Getenv("SCION_AGENT_SLUG") != "" {
++		switch startEventType {
++		case hooks.EventToolStart:
++			displaySpanName = telemetry.ToolSpanName(event.Data.ToolName)
++		case hooks.EventModelStart:
++			displaySpanName = telemetry.ModelSpanName(os.Getenv("SCION_MODEL"))
++		}
++	}
++
++	attrs := h.eventToAttributes(event)
++	attrs = append(attrs, h.eventToEndAttributes(event, startTime)...)
++	if turnIdx > 0 {
++		attrs = append(attrs, attribute.Int64("turn.index", turnIdx))
++	}
++	if startEventType == hooks.EventModelStart {
++		if m := os.Getenv("SCION_MODEL"); m != "" {
++			attrs = append(attrs, attribute.String("gen_ai.request.model", m))
++		}
++	}
++
++	ctx, span := h.tracer.Start(ctx, displaySpanName, trace.WithTimestamp(startTime), trace.WithAttributes(attrs...))
++	h.emitLogRecord(ctx, event, spanName)
++
++	if event.Data.Error != "" {
++		span.SetStatus(codes.Error, event.Data.Error)
++	} else if event.Data.Success || event.Data.Error == "" {
++		span.SetStatus(codes.Ok, "")
++	}
++
++	span.End(trace.WithTimestamp(now))
++}
++
++func (h *TelemetryHandler) emitTurnRootSpan(st *telemetry.TraceState, endNano int64) {
++	if st == nil {
++		return
++	}
++	ev := &hooks.Event{
++		Name: hooks.EventAgentEnd,
++		Data: hooks.EventData{
++			SessionID:    st.SessionID,
++			InputTokens:  st.InputTokens,
++			OutputTokens: st.OutputTokens,
++			CachedTokens: st.CachedTokens,
++			Success:      true,
++		},
++	}
++	h.emitTurnRootSpanWithEvent(st, ev, "agent.turn.end", time.Unix(0, endNano))
++}
++
++func (h *TelemetryHandler) emitTurnRootSpanWithEvent(st *telemetry.TraceState, event *hooks.Event, spanName string, endTime time.Time) {
++	startNano := st.TurnStartNano
++	endNano := endTime.UnixNano()
++	if startNano <= 0 || startNano >= endNano {
++		startNano = endNano - int64(5*time.Millisecond)
++	}
++	startTime := time.Unix(0, startNano)
++
+ 	ctx := context.Background()
++	if tid, okT := telemetry.ParseTraceIDHex(st.TraceID); okT {
++		if sid, okS := telemetry.ParseSpanIDHex(st.TurnSpanID); okS {
++			ctx = telemetry.ContextWithExplicitIDs(ctx, tid, sid)
++		}
++	}
++
++	displaySpanName := spanName
++	if os.Getenv("SCION_AGENT_SLUG") != "" {
++		displaySpanName = telemetry.TurnRootSpanName()
++	}
++
+ 	attrs := h.eventToAttributes(event)
++	attrs = append(attrs, h.eventToEndAttributes(event, startTime)...)
++	attrs = append(attrs,
++		attribute.Int64("turn.index", st.TurnIndex),
++		attribute.Int64("turn.model_calls", st.ModelCalls),
++		attribute.Int64("turn.tool_calls", st.ToolCalls),
++	)
++	if st.InputTokens > 0 && event.Data.InputTokens == 0 {
++		attrs = append(attrs, attribute.Int64("gen_ai.usage.input_tokens", st.InputTokens))
++	}
++	if st.OutputTokens > 0 && event.Data.OutputTokens == 0 {
++		attrs = append(attrs, attribute.Int64("gen_ai.usage.output_tokens", st.OutputTokens))
++	}
++	if st.CachedTokens > 0 && event.Data.CachedTokens == 0 {
++		attrs = append(attrs, attribute.Int64("gen_ai.usage.cached_tokens", st.CachedTokens))
++	}
++	if st.LastStatus != "" {
++		attrs = append(attrs, attribute.String("agent.status", st.LastStatus))
++	}
++	if st.PrevTraceID != "" {
++		attrs = append(attrs, attribute.String("scion.previous_trace_id", st.PrevTraceID))
++	}
++
++	startOpts := []trace.SpanStartOption{
++		trace.WithTimestamp(startTime),
++		trace.WithAttributes(attrs...),
++	}
++	if prevTID, okT := telemetry.ParseTraceIDHex(st.PrevTraceID); okT {
++		if prevSID, okS := telemetry.ParseSpanIDHex(st.PrevTurnSpanID); okS {
++			prevSC := trace.NewSpanContext(trace.SpanContextConfig{
++				TraceID:    prevTID,
++				SpanID:     prevSID,
++				TraceFlags: trace.FlagsSampled,
++				Remote:     true,
++			})
++			startOpts = append(startOpts, trace.WithLinks(trace.Link{
++				SpanContext: prevSC,
++				Attributes:  []attribute.KeyValue{attribute.String("link.type", "previous_turn")},
++			}))
++		}
++	}
++
++	ctx, span := h.tracer.Start(ctx, displaySpanName, startOpts...)
++	h.emitLogRecord(ctx, event, spanName)
++
++	if event.Data.Error != "" {
++		span.SetStatus(codes.Error, event.Data.Error)
++	} else {
++		span.SetStatus(codes.Ok, "")
++	}
++	span.End(trace.WithTimestamp(endTime))
++}
++
++// singleSpan creates and immediately ends a span, correlated with the active turn in TraceState.
++func (h *TelemetryHandler) singleSpan(event *hooks.Event, spanName string) {
++	now := time.Now()
++	nowNano := now.UnixNano()
++	ctx := context.Background()
+ 
+ 	// For session-end events, record session metric counters
+ 	if event.Name == hooks.EventSessionEnd {
+ 		h.recordSessionMetrics(event)
+ 	}
+ 
+-	ctx, span := h.tracer.Start(ctx, spanName, trace.WithAttributes(attrs...))
++	isContainerLifecycle := event.Name == hooks.EventPreStart || event.Name == hooks.EventPostStart || event.Name == hooks.EventPreStop
++	var prevTurn *telemetry.TraceState
++	var traceIDHex, parentSpanIDHex, childSpanIDHex string
++	var turnIdx int64
++	if !isContainerLifecycle {
++		_ = telemetry.WithTraceState(func(st *telemetry.TraceState) error {
++			forceNew := event.Name == hooks.EventPromptSubmit || event.Name == hooks.EventSessionStart
++			prevTurn = st.EnsureActiveTurn(nowNano, event.Data.SessionID, forceNew)
++			traceIDHex = st.TraceID
++			parentSpanIDHex = st.TurnSpanID
++			childSpanIDHex = telemetry.NewRandomSpanIDHex()
++			turnIdx = st.TurnIndex
++			st.LastActivityNano = nowNano
++			return nil
++		})
++		if prevTurn != nil {
++			h.emitTurnRootSpan(prevTurn, prevTurn.LastActivityNano)
++		}
++
++		if tid, okT := telemetry.ParseTraceIDHex(traceIDHex); okT {
++			if sid, okS := telemetry.ParseSpanIDHex(childSpanIDHex); okS {
++				if pid, okP := telemetry.ParseSpanIDHex(parentSpanIDHex); okP {
++					parentSC := trace.NewSpanContext(trace.SpanContextConfig{
++						TraceID:    tid,
++						SpanID:     pid,
++						TraceFlags: trace.FlagsSampled,
++						Remote:     true,
++					})
++					ctx = trace.ContextWithRemoteSpanContext(ctx, parentSC)
++				}
++				ctx = telemetry.ContextWithExplicitIDs(ctx, tid, sid)
++			}
++		}
++	}
++
++	displaySpanName := spanName
++	if os.Getenv("SCION_AGENT_SLUG") != "" && event.Name == hooks.EventPromptSubmit {
++		displaySpanName = "agent.turn.prompt"
++	}
++
++	attrs := h.eventToAttributes(event)
++	if turnIdx > 0 {
++		attrs = append(attrs, attribute.Int64("turn.index", turnIdx))
++	}
++
++	ctx, span := h.tracer.Start(ctx, displaySpanName, trace.WithTimestamp(now), trace.WithAttributes(attrs...))
+ 	h.emitLogRecord(ctx, event, spanName)
+ 
+ 	// Set status based on success/error
+@@ -302,7 +645,95 @@ func (h *TelemetryHandler) singleSpan(event *hooks.Event, spanName string) {
+ 		span.SetStatus(codes.Ok, "")
+ 	}
+ 
+-	span.End()
++	span.End(trace.WithTimestamp(now.Add(time.Millisecond)))
++}
++
++// EmitStatusTelemetry emits a child span and correlated log record for `sciontool status <type> <msg>`,
++// nested under the currently executing tool call (if any) or the active turn root span.
++func EmitStatusTelemetry(statusType, message string) {
++	if os.Getenv("SCION_AGENT_ID") == "" && os.Getenv("SCION_AGENT_SLUG") == "" {
++		return
++	}
++	cfg := telemetry.LoadConfig()
++	if cfg == nil || !cfg.Enabled {
++		return
++	}
++	ctx := context.Background()
++	providers, err := telemetry.NewProviders(ctx, cfg, false)
++	if err != nil || providers == nil {
++		return
++	}
++	defer func() {
++		shutdownCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
++		defer cancel()
++		_ = providers.Shutdown(shutdownCtx)
++	}()
++
++	now := time.Now()
++	nowNano := now.UnixNano()
++	var traceIDHex, parentSpanIDHex, spanIDHex, sessionID string
++	var turnIdx int64
++
++	_ = telemetry.WithTraceState(func(st *telemetry.TraceState) error {
++		st.EnsureActiveTurn(nowNano, "", false)
++		traceIDHex = st.TraceID
++		parentSpanIDHex = st.TurnSpanID
++		if len(st.PendingTools) > 0 {
++			parentSpanIDHex = st.PendingTools[len(st.PendingTools)-1].SpanID
++		}
++		spanIDHex = telemetry.NewRandomSpanIDHex()
++		sessionID = st.SessionID
++		turnIdx = st.TurnIndex
++		st.LastStatus = statusType
++		st.LastStatusMsg = message
++		st.LastActivityNano = nowNano
++		return nil
++	})
++
++	h := NewTelemetryHandler(providers.TracerProvider, providers.LoggerProvider, telemetry.NewRedactor(cfg.Redaction))
++	spanCtx := context.Background()
++	if tid, okT := telemetry.ParseTraceIDHex(traceIDHex); okT {
++		if sid, okS := telemetry.ParseSpanIDHex(spanIDHex); okS {
++			if pid, okP := telemetry.ParseSpanIDHex(parentSpanIDHex); okP {
++				parentSC := trace.NewSpanContext(trace.SpanContextConfig{
++					TraceID:    tid,
++					SpanID:     pid,
++					TraceFlags: trace.FlagsSampled,
++					Remote:     true,
++				})
++				spanCtx = trace.ContextWithRemoteSpanContext(spanCtx, parentSC)
++			}
++			spanCtx = telemetry.ContextWithExplicitIDs(spanCtx, tid, sid)
++		}
++	}
++
++	displaySpanName := telemetry.StatusSpanName(statusType)
++	attrs := []attribute.KeyValue{
++		attribute.String("event.name", "agent.status"),
++		attribute.String("agent.status", statusType),
++		attribute.String("message", message),
++		attribute.Bool("success", true),
++	}
++	if sessionID != "" {
++		attrs = append(attrs, attribute.String("session_id", sessionID))
++	}
++	if turnIdx > 0 {
++		attrs = append(attrs, attribute.Int64("turn.index", turnIdx))
++	}
++
++	startTime := now.Add(-2 * time.Millisecond)
++	spanCtx, span := h.tracer.Start(spanCtx, displaySpanName, trace.WithTimestamp(startTime), trace.WithAttributes(attrs...))
++	h.emitLogRecord(spanCtx, &hooks.Event{
++		Name: "agent.status",
++		Data: hooks.EventData{
++			SessionID: sessionID,
++			Message:   message,
++			Reason:    statusType,
++			Success:   true,
++		},
++	}, "agent.status")
++	span.SetStatus(codes.Ok, "")
++	span.End(trace.WithTimestamp(now))
+ }
+ 
+ // emitLogRecord emits a correlated log record for the event.
+diff --git a/pkg/sciontool/hooks/handlers/telemetry_test.go b/pkg/sciontool/hooks/handlers/telemetry_test.go
+index b886d762..0fe4acac 100644
+--- a/pkg/sciontool/hooks/handlers/telemetry_test.go
++++ b/pkg/sciontool/hooks/handlers/telemetry_test.go
+@@ -6,8 +6,10 @@ package handlers
+ 
+ import (
+ 	"context"
++	"path/filepath"
+ 	"sync"
+ 	"testing"
++	"time"
+ 
+ 	"github.com/GoogleCloudPlatform/scion/pkg/sciontool/hooks"
+ 	"github.com/GoogleCloudPlatform/scion/pkg/sciontool/telemetry"
+@@ -17,6 +19,8 @@ import (
+ 	sdklog "go.opentelemetry.io/otel/sdk/log"
+ 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
+ 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
++	sdktrace "go.opentelemetry.io/otel/sdk/trace"
++	"go.opentelemetry.io/otel/sdk/trace/tracetest"
+ )
+ 
+ func TestNewTelemetryHandler(t *testing.T) {
+@@ -1199,3 +1203,100 @@ func TestTelemetryHandler_NoTokenMetricsWhenZero(t *testing.T) {
+ 		}
+ 	}
+ }
++
++func TestTelemetryHandler_CrossProcessStackedTurnWaterfall(t *testing.T) {
++	t.Setenv("SCION_TRACE_STATE_FILE", filepath.Join(t.TempDir(), "trace-state.json"))
++	t.Setenv("SCION_AGENT_SLUG", "frontend")
++	t.Setenv("SCION_MODEL", "Gemini 4 Argon (High)")
++
++	// Simulate separate hook subprocesses by creating a fresh TracerProvider + TelemetryHandler
++	// per event, sharing only SCION_TRACE_STATE_FILE on disk.
++	var exported []tracetest.SpanStub
++	runHookSubprocess := func(ev *hooks.Event) {
++		exp := tracetest.NewInMemoryExporter()
++		tp := sdktrace.NewTracerProvider(
++			sdktrace.WithSyncer(exp),
++			sdktrace.WithIDGenerator(telemetry.NewExplicitIDGenerator()),
++		)
++		h := NewTelemetryHandler(tp, nil, nil)
++		if err := h.Handle(ev); err != nil {
++			t.Fatalf("Handle(%s): %v", ev.Name, err)
++		}
++		exported = append(exported, exp.GetSpans()...)
++		_ = tp.Shutdown(context.Background())
++	}
++
++	runHookSubprocess(&hooks.Event{
++		Name: hooks.EventPromptSubmit,
++		Data: hooks.EventData{SessionID: "conv-1", Prompt: "hello"},
++	})
++	time.Sleep(5 * time.Millisecond)
++	runHookSubprocess(&hooks.Event{
++		Name: hooks.EventModelStart,
++		Data: hooks.EventData{SessionID: "conv-1"},
++	})
++	time.Sleep(10 * time.Millisecond)
++	runHookSubprocess(&hooks.Event{
++		Name: hooks.EventModelEnd,
++		Data: hooks.EventData{SessionID: "conv-1", InputTokens: 500, OutputTokens: 120, Success: true},
++	})
++	time.Sleep(5 * time.Millisecond)
++	runHookSubprocess(&hooks.Event{
++		Name: hooks.EventToolStart,
++		Data: hooks.EventData{SessionID: "conv-1", ToolName: "run_command"},
++	})
++	time.Sleep(15 * time.Millisecond)
++	// Antigravity PostToolUse omits ToolName; crossProcessEndSpan must recover it from PreToolUse.
++	runHookSubprocess(&hooks.Event{
++		Name: hooks.EventToolEnd,
++		Data: hooks.EventData{SessionID: "conv-1", ToolName: "", Success: true},
++	})
++	time.Sleep(5 * time.Millisecond)
++	runHookSubprocess(&hooks.Event{
++		Name: hooks.EventAgentEnd,
++		Data: hooks.EventData{SessionID: "conv-1", Success: true},
++	})
++
++	if len(exported) != 4 {
++		t.Fatalf("expected 4 exported spans (prompt, model-end, tool-end, turn-end), got %d", len(exported))
++	}
++
++	byName := map[string]tracetest.SpanStub{}
++	for _, s := range exported {
++		byName[s.Name] = s
++	}
++
++	root, ok := byName["agent.turn/frontend"]
++	if !ok {
++		t.Fatalf("missing root span agent.turn/frontend in %+v", byName)
++	}
++	if root.Parent.IsValid() {
++		t.Errorf("root span should have no parent, got %s", root.Parent.SpanID())
++	}
++	traceID := root.SpanContext.TraceID()
++	turnSpanID := root.SpanContext.SpanID()
++
++	for _, childName := range []string{
++		"agent.turn.prompt",
++		"gen_ai.api.response/Gemini_4_Argon_High",
++		"agent.tool.result/run_command",
++	} {
++		child, ok := byName[childName]
++		if !ok {
++			t.Fatalf("missing child span %q in %+v", childName, byName)
++		}
++		if child.SpanContext.TraceID() != traceID {
++			t.Errorf("%s TraceID = %s, want %s", childName, child.SpanContext.TraceID(), traceID)
++		}
++		if child.Parent.SpanID() != turnSpanID {
++			t.Errorf("%s ParentSpanID = %s, want %s", childName, child.Parent.SpanID(), turnSpanID)
++		}
++		if child.EndTime.Sub(child.StartTime) <= 0 {
++			t.Errorf("%s should have positive duration, got %v", childName, child.EndTime.Sub(child.StartTime))
++		}
++	}
++	if root.EndTime.Sub(root.StartTime) < 35*time.Millisecond {
++		t.Errorf("root span duration = %v, want >= 35ms covering whole turn", root.EndTime.Sub(root.StartTime))
++	}
++}
++
+diff --git a/pkg/sciontool/telemetry/metric_streams.go b/pkg/sciontool/telemetry/metric_streams.go
+index ea9b26ab..e5b2455d 100644
+--- a/pkg/sciontool/telemetry/metric_streams.go
++++ b/pkg/sciontool/telemetry/metric_streams.go
+@@ -1053,6 +1053,13 @@ func (s *metricStreams) snapshotGCP(observed time.Time, possible map[cloudMetric
+ 		metric := proto.Clone(entry.metric).(*metricpb.Metric)
+ 		if entry.hook {
+ 			point := metric.GetSum().DataPoints[0]
++			if entry.collectorEpoch == 0 {
++				if entry.start > 0 {
++					entry.collectorEpoch = entry.start
++				} else {
++					entry.collectorEpoch = uint64(end) - uint64(time.Second)
++				}
++			}
+ 			point.StartTimeUnixNano = entry.collectorEpoch
+ 			point.TimeUnixNano = ends[entry.cloudKey]
+ 		}
+diff --git a/pkg/sciontool/telemetry/pipeline.go b/pkg/sciontool/telemetry/pipeline.go
+index c3295a54..5d423949 100644
+--- a/pkg/sciontool/telemetry/pipeline.go
++++ b/pkg/sciontool/telemetry/pipeline.go
+@@ -712,9 +712,9 @@ func (p *Pipeline) handleMetrics(ctx context.Context, resourceMetrics []*metricp
+ 		p.metricStateMu.Lock()
+ 		if p.metricStreams == nil {
+ 			p.metricStreams = newMetricStreams()
+-			p.metricStreams.gcp = p.config.IsGCP()
+-			p.metricStreams.now = p.now
+ 		}
++		p.metricStreams.gcp = p.config.IsGCP()
++		p.metricStreams.now = p.now
+ 		candidate := p.metricStreams.clone()
+ 		if err := candidate.add(processed); err != nil {
+ 			p.metricDiagnostics.rejected.Add(int64(records))
+@@ -792,6 +792,11 @@ func (p *Pipeline) metricFlushLoop() {
+ 		case <-p.metricFlushCtx.Done():
+ 			return
+ 		case <-ticker.C:
++			if p.config != nil && p.config.IsGCP() && p.config.CloudEnabled {
++				if idleSpans := CheckIdleTurnFinalization(p.now()); len(idleSpans) > 0 {
++					_ = p.handleSpans(p.metricExportCtx, idleSpans)
++				}
++			}
+ 			p.flushMetricBuffer(p.metricExportCtx, false)
+ 		}
+ 	}
+@@ -915,6 +920,8 @@ func (p *Pipeline) flushMetricBuffer(ctx context.Context, force bool) bool {
+ 	if p.metricStreams == nil {
+ 		p.metricStreams = newMetricStreams()
+ 	}
++	p.metricStreams.gcp = p.config.IsGCP()
++	p.metricStreams.now = p.now
+ 	if len(p.metricPending) == 0 {
+ 		if p.config.IsGCP() {
+ 			batch, ends, eligible := p.metricStreams.snapshotGCP(p.now(), p.metricPossibleEnds)
+@@ -1101,6 +1108,11 @@ func (p *Pipeline) handleLogs(ctx context.Context, resourceLogs []*logspb.Resour
+ 	// deterministic and cheap on typical log batch sizes.
+ 	if err := validateLogs(resourceLogs); err == nil {
+ 		p.usageDeriver.Load().ProcessResourceLogs(ctx, resourceLogs)
++		if p.config != nil && p.config.IsGCP() && p.config.CloudEnabled {
++			if synthSpans := CorrelateAndSynthesizeClaudeSpans(resourceLogs); len(synthSpans) > 0 {
++				_ = p.handleSpans(ctx, synthSpans)
++			}
++		}
+ 	}
+ 	if err := p.budget.reserve(bytes, logCount); err != nil {
+ 		p.logDiagnostics.rejected.Add(int64(logCount))
+diff --git a/pkg/sciontool/telemetry/proto_adapter.go b/pkg/sciontool/telemetry/proto_adapter.go
+index a6ce946c..cf651eda 100644
+--- a/pkg/sciontool/telemetry/proto_adapter.go
++++ b/pkg/sciontool/telemetry/proto_adapter.go
+@@ -7,6 +7,7 @@ package telemetry
+ import (
+ 	"context"
+ 	"encoding/hex"
++	"os"
+ 	"time"
+ 
+ 	"cloud.google.com/go/logging"
+@@ -314,15 +315,21 @@ func protoLogToCloudEntry(lr *logspb.LogRecord, res *resourcepb.Resource, resour
+ 	if len(lr.TraceId) == 16 {
+ 		traceID := hex.EncodeToString(lr.TraceId)
+ 		payload["trace_id"] = traceID
++		if projectID == "" {
++			projectID = os.Getenv(EnvProjectID)
++		}
+ 		if projectID != "" {
+ 			entry.Trace = "projects/" + projectID + "/traces/" + traceID
+ 		} else {
+ 			entry.Trace = traceID
+ 		}
++		entry.TraceSampled = true
+ 		labels["appengine.googleapis.com/trace_id"] = traceID
+ 	}
+ 	if len(lr.SpanId) == 8 {
+-		payload["span_id"] = hex.EncodeToString(lr.SpanId)
++		spanIDHex := hex.EncodeToString(lr.SpanId)
++		payload["span_id"] = spanIDHex
++		entry.SpanID = spanIDHex
+ 	}
+ 
+ 	entry.Payload = payload
+diff --git a/pkg/sciontool/telemetry/providers.go b/pkg/sciontool/telemetry/providers.go
+index ef445fb8..70fc4513 100644
+--- a/pkg/sciontool/telemetry/providers.go
++++ b/pkg/sciontool/telemetry/providers.go
+@@ -151,11 +151,13 @@ func loopbackEndpoint(config *Config) string {
+ // buildProviders constructs TracerProvider, LoggerProvider, and MeterProvider
+ // from the given exporters, using either batch or sync processing.
+ func buildProviders(res *resource.Resource, traceExp trace.SpanExporter, logExp log.Exporter, metricExp metric.Exporter, batch bool) *Providers {
++	idGen := NewExplicitIDGenerator()
+ 	if !batch {
+ 		return &Providers{
+ 			TracerProvider: trace.NewTracerProvider(
+ 				trace.WithResource(res),
+ 				trace.WithSyncer(traceExp),
++				trace.WithIDGenerator(idGen),
+ 			),
+ 			LoggerProvider: log.NewLoggerProvider(
+ 				log.WithResource(res),
+@@ -172,6 +174,7 @@ func buildProviders(res *resource.Resource, traceExp trace.SpanExporter, logExp
+ 		TracerProvider: trace.NewTracerProvider(
+ 			trace.WithResource(res),
+ 			trace.WithBatcher(traceExp),
++			trace.WithIDGenerator(idGen),
+ 		),
+ 		LoggerProvider: log.NewLoggerProvider(
+ 			log.WithResource(res),
+diff --git a/pkg/sciontool/telemetry/tracestate.go b/pkg/sciontool/telemetry/tracestate.go
+new file mode 100644
+index 00000000..0ee86441
+--- /dev/null
++++ b/pkg/sciontool/telemetry/tracestate.go
+@@ -0,0 +1,592 @@
++/*
++Copyright 2026 The Scion Authors.
++*/
++
++package telemetry
++
++import (
++	"bytes"
++	"context"
++	"crypto/rand"
++	"encoding/hex"
++	"encoding/json"
++	"os"
++	"strings"
++	"syscall"
++	"time"
++
++	sdktrace "go.opentelemetry.io/otel/sdk/trace"
++	"go.opentelemetry.io/otel/trace"
++	commonpb "go.opentelemetry.io/proto/otlp/common/v1"
++	logspb "go.opentelemetry.io/proto/otlp/logs/v1"
++	resourcepb "go.opentelemetry.io/proto/otlp/resource/v1"
++	tracepb "go.opentelemetry.io/proto/otlp/trace/v1"
++)
++
++type explicitIDsKey struct{}
++
++type explicitIDs struct {
++	traceID trace.TraceID
++	spanID  trace.SpanID
++}
++
++// ContextWithExplicitIDs attaches an explicit TraceID and/or SpanID to ctx so
++// the TracerProvider's IDGenerator uses them when starting a span.
++func ContextWithExplicitIDs(ctx context.Context, tid trace.TraceID, sid trace.SpanID) context.Context {
++	return context.WithValue(ctx, explicitIDsKey{}, explicitIDs{traceID: tid, spanID: sid})
++}
++
++type explicitIDGenerator struct{}
++
++// NewExplicitIDGenerator returns an IDGenerator that honors ContextWithExplicitIDs.
++func NewExplicitIDGenerator() sdktrace.IDGenerator {
++	return explicitIDGenerator{}
++}
++
++func (explicitIDGenerator) NewIDs(ctx context.Context) (trace.TraceID, trace.SpanID) {
++	if v, ok := ctx.Value(explicitIDsKey{}).(explicitIDs); ok {
++		tid := v.traceID
++		sid := v.spanID
++		if !tid.IsValid() {
++			_, _ = rand.Read(tid[:])
++		}
++		if !sid.IsValid() {
++			_, _ = rand.Read(sid[:])
++		}
++		return tid, sid
++	}
++	var tid trace.TraceID
++	var sid trace.SpanID
++	_, _ = rand.Read(tid[:])
++	_, _ = rand.Read(sid[:])
++	return tid, sid
++}
++
++func (explicitIDGenerator) NewSpanID(ctx context.Context, _ trace.TraceID) trace.SpanID {
++	if v, ok := ctx.Value(explicitIDsKey{}).(explicitIDs); ok && v.spanID.IsValid() {
++		return v.spanID
++	}
++	var sid trace.SpanID
++	_, _ = rand.Read(sid[:])
++	return sid
++}
++
++// PendingSpan represents an in-flight model or tool invocation across hook processes.
++type PendingSpan struct {
++	SpanID    string `json:"span_id"`
++	Name      string `json:"name"`
++	StartNano int64  `json:"start_nano"`
++}
++
++// TraceState persists active conversation/turn trace context across short-lived
++// sciontool hook and sciontool status subprocesses and the PID 1 receiver.
++type TraceState struct {
++	SessionID        string        `json:"session_id"`
++	TurnIndex        int64         `json:"turn_index"`
++	TraceID          string        `json:"trace_id"`
++	PrevTraceID      string        `json:"prev_trace_id,omitempty"`
++	PrevTurnSpanID   string        `json:"prev_turn_span_id,omitempty"`
++	TurnSpanID       string        `json:"turn_span_id"`
++	TurnStartNano    int64         `json:"turn_start_nano"`
++	LastActivityNano int64         `json:"last_activity_nano"`
++	TurnFinalized    bool          `json:"turn_finalized"`
++	ModelCalls       int64         `json:"model_calls"`
++	ToolCalls        int64         `json:"tool_calls"`
++	InputTokens      int64         `json:"input_tokens"`
++	OutputTokens     int64         `json:"output_tokens"`
++	CachedTokens     int64         `json:"cached_tokens"`
++	LastStatus       string        `json:"last_status,omitempty"`
++	LastStatusMsg    string        `json:"last_status_msg,omitempty"`
++	PendingModel     *PendingSpan  `json:"pending_model,omitempty"`
++	PendingTools     []PendingSpan `json:"pending_tools,omitempty"`
++}
++
++// TraceStateFile returns the path to the cross-process trace state file.
++func TraceStateFile() string {
++	if p := os.Getenv("SCION_TRACE_STATE_FILE"); p != "" {
++		return p
++	}
++	if fi, err := os.Stat("/home/scion/.scion"); err == nil && fi.IsDir() {
++		return "/home/scion/.scion/trace-state.json"
++	}
++	return "/tmp/scion-trace-state.json"
++}
++
++// WithTraceState locks, loads, mutates, and saves the cross-process TraceState.
++func WithTraceState(fn func(st *TraceState) error) error {
++	statePath := TraceStateFile()
++	lockPath := statePath + ".lock"
++	lockFile, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0666)
++	if err != nil {
++		var st TraceState
++		return fn(&st)
++	}
++	_ = os.Chmod(lockPath, 0666)
++	defer func() {
++		_ = syscall.Flock(int(lockFile.Fd()), syscall.LOCK_UN)
++		_ = lockFile.Close()
++	}()
++	_ = syscall.Flock(int(lockFile.Fd()), syscall.LOCK_EX)
++
++	var st TraceState
++	rawBefore, err := os.ReadFile(statePath)
++	if err == nil && len(rawBefore) > 0 {
++		_ = json.Unmarshal(rawBefore, &st)
++	}
++
++	if err := fn(&st); err != nil {
++		return err
++	}
++
++	if out, err := json.Marshal(&st); err == nil {
++		if !bytes.Equal(bytes.TrimSpace(rawBefore), bytes.TrimSpace(out)) {
++			if f, err := os.OpenFile(statePath, os.O_CREATE|os.O_RDWR|os.O_TRUNC, 0666); err == nil {
++				_, _ = f.Write(out)
++				_ = f.Close()
++				_ = os.Chmod(statePath, 0666)
++			}
++		}
++	}
++	return nil
++}
++
++// NewRandomTraceIDHex generates a 32-char hex (16-byte) TraceID.
++func NewRandomTraceIDHex() string {
++	var tid trace.TraceID
++	_, _ = rand.Read(tid[:])
++	if !tid.IsValid() {
++		tid[0] = 1
++	}
++	return hex.EncodeToString(tid[:])
++}
++
++// NewRandomSpanIDHex generates a 16-char hex (8-byte) SpanID.
++func NewRandomSpanIDHex() string {
++	var sid trace.SpanID
++	_, _ = rand.Read(sid[:])
++	if !sid.IsValid() {
++		sid[0] = 1
++	}
++	return hex.EncodeToString(sid[:])
++}
++
++// ParseTraceIDHex parses a 32-char hex string into trace.TraceID.
++func ParseTraceIDHex(h string) (trace.TraceID, bool) {
++	var tid trace.TraceID
++	b, err := hex.DecodeString(h)
++	if err != nil || len(b) != 16 {
++		return tid, false
++	}
++	copy(tid[:], b)
++	return tid, tid.IsValid()
++}
++
++// ParseSpanIDHex parses a 16-char hex string into trace.SpanID.
++func ParseSpanIDHex(h string) (trace.SpanID, bool) {
++	var sid trace.SpanID
++	b, err := hex.DecodeString(h)
++	if err != nil || len(b) != 8 {
++		return sid, false
++	}
++	copy(sid[:], b)
++	return sid, sid.IsValid()
++}
++
++// EnsureActiveTurn ensures st has an active unfinalized turn at nowNano.
++// If forceNew is true and an existing unfinalized turn had activity, a copy of
++// that previous turn is returned so the caller can export its root span.
++func (st *TraceState) EnsureActiveTurn(nowNano int64, sessionID string, forceNew bool) *TraceState {
++	if nowNano <= 0 {
++		nowNano = time.Now().UnixNano()
++	}
++	var prevUnfinalized *TraceState
++	sessionChanged := sessionID != "" && st.SessionID != "" && st.SessionID != sessionID
++	idleExpired := st.PendingModel == nil && len(st.PendingTools) == 0 && st.LastActivityNano > 0 && (nowNano-st.LastActivityNano) > int64(3*time.Minute)
++
++	needNew := st.TraceID == "" || st.TurnSpanID == "" || st.TurnFinalized || forceNew || sessionChanged || idleExpired
++	if needNew {
++		if st.TraceID != "" && st.TurnSpanID != "" && !st.TurnFinalized && (st.ModelCalls > 0 || st.ToolCalls > 0 || st.LastStatus != "") {
++			cp := *st
++			if cp.LastActivityNano < cp.TurnStartNano {
++				cp.LastActivityNano = nowNano
++			}
++			prevUnfinalized = &cp
++		}
++		if sessionChanged {
++			st.TurnIndex = 0
++			st.PrevTraceID = ""
++			st.PrevTurnSpanID = ""
++		} else if st.TraceID != "" && st.TurnSpanID != "" {
++			st.PrevTraceID = st.TraceID
++			st.PrevTurnSpanID = st.TurnSpanID
++		}
++		st.TurnIndex++
++		st.TraceID = NewRandomTraceIDHex()
++		st.TurnSpanID = NewRandomSpanIDHex()
++		st.TurnStartNano = nowNano
++		st.LastActivityNano = nowNano
++		st.TurnFinalized = false
++		st.ModelCalls = 0
++		st.ToolCalls = 0
++		st.InputTokens = 0
++		st.OutputTokens = 0
++		st.CachedTokens = 0
++		st.LastStatus = ""
++		st.LastStatusMsg = ""
++		st.PendingModel = nil
++		st.PendingTools = nil
++	}
++	if sessionID != "" {
++		st.SessionID = sessionID
++	}
++	if st.TurnStartNano <= 0 || nowNano < st.TurnStartNano {
++		st.TurnStartNano = nowNano
++	}
++	if nowNano > st.LastActivityNano {
++		st.LastActivityNano = nowNano
++	}
++	return prevUnfinalized
++}
++
++// SanitizeSpanSuffix sanitizes a suffix so "prefix/" + suffix satisfies safeSignalName.
++func SanitizeSpanSuffix(s string) string {
++	s = strings.TrimSpace(s)
++	if s == "" {
++		return ""
++	}
++	var b strings.Builder
++	lastUnderscore := false
++	for i := 0; i < len(s); i++ {
++		c := s[i]
++		valid := (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '_' || c == '.' || c == ':' || c == '-' || c == '/'
++		if valid {
++			b.WriteByte(c)
++			lastUnderscore = (c == '_')
++		} else if !lastUnderscore {
++			b.WriteByte('_')
++			lastUnderscore = true
++		}
++		if b.Len() >= 64 {
++			break
++		}
++	}
++	return strings.Trim(b.String(), "_/-.:")
++}
++
++// TurnRootSpanName returns the root span name for an agent turn.
++func TurnRootSpanName() string {
++	if slug := SanitizeSpanSuffix(os.Getenv("SCION_AGENT_SLUG")); slug != "" {
++		return "agent.turn/" + slug
++	}
++	return "agent.turn.end"
++}
++
++// ModelSpanName returns the child span name for an LLM API response.
++func ModelSpanName(model string) string {
++	if model == "" {
++		model = os.Getenv("SCION_MODEL")
++	}
++	if s := SanitizeSpanSuffix(model); s != "" {
++		return "gen_ai.api.response/" + s
++	}
++	return "gen_ai.api.response"
++}
++
++// ToolSpanName returns the child span name for a tool execution result.
++func ToolSpanName(toolName string) string {
++	if s := SanitizeSpanSuffix(toolName); s != "" {
++		return "agent.tool.result/" + s
++	}
++	return "agent.tool.result"
++}
++
++// StatusSpanName returns the child span name for a sciontool status update.
++func StatusSpanName(statusType string) string {
++	if s := SanitizeSpanSuffix(statusType); s != "" {
++		return "agent.status/" + s
++	}
++	return "agent.status"
++}
++
++// BuildTurnRootProtoSpan constructs an OTLP ResourceSpans for the root span of a finalized turn.
++func BuildTurnRootProtoSpan(st *TraceState, endNano int64) []*tracepb.ResourceSpans {
++	if st == nil || st.TraceID == "" || st.TurnSpanID == "" {
++		return nil
++	}
++	tid, ok1 := ParseTraceIDHex(st.TraceID)
++	sid, ok2 := ParseSpanIDHex(st.TurnSpanID)
++	if !ok1 || !ok2 {
++		return nil
++	}
++	startNano := st.TurnStartNano
++	if startNano <= 0 {
++		startNano = endNano - int64(10*time.Millisecond)
++	}
++	if endNano <= startNano {
++		endNano = startNano + int64(time.Millisecond)
++	}
++	durationMs := (endNano - startNano) / int64(time.Millisecond)
++
++	attrs := []*commonpb.KeyValue{
++		{Key: "event.name", Value: stringProtoValue("agent.turn.end")},
++		{Key: "turn.index", Value: &commonpb.AnyValue{Value: &commonpb.AnyValue_IntValue{IntValue: st.TurnIndex}}},
++		{Key: "turn.model_calls", Value: &commonpb.AnyValue{Value: &commonpb.AnyValue_IntValue{IntValue: st.ModelCalls}}},
++		{Key: "turn.tool_calls", Value: &commonpb.AnyValue{Value: &commonpb.AnyValue_IntValue{IntValue: st.ToolCalls}}},
++		{Key: "duration_ms", Value: &commonpb.AnyValue{Value: &commonpb.AnyValue_IntValue{IntValue: durationMs}}},
++		{Key: "success", Value: &commonpb.AnyValue{Value: &commonpb.AnyValue_BoolValue{BoolValue: true}}},
++	}
++	if st.SessionID != "" {
++		attrs = append(attrs, &commonpb.KeyValue{Key: "session_id", Value: stringProtoValue(st.SessionID)})
++	}
++	if st.InputTokens > 0 {
++		attrs = append(attrs, &commonpb.KeyValue{Key: "gen_ai.usage.input_tokens", Value: &commonpb.AnyValue{Value: &commonpb.AnyValue_IntValue{IntValue: st.InputTokens}}})
++	}
++	if st.OutputTokens > 0 {
++		attrs = append(attrs, &commonpb.KeyValue{Key: "gen_ai.usage.output_tokens", Value: &commonpb.AnyValue{Value: &commonpb.AnyValue_IntValue{IntValue: st.OutputTokens}}})
++	}
++	if st.CachedTokens > 0 {
++		attrs = append(attrs, &commonpb.KeyValue{Key: "gen_ai.usage.cached_tokens", Value: &commonpb.AnyValue{Value: &commonpb.AnyValue_IntValue{IntValue: st.CachedTokens}}})
++	}
++	if st.LastStatus != "" {
++		attrs = append(attrs, &commonpb.KeyValue{Key: "agent.status", Value: stringProtoValue(st.LastStatus)})
++	}
++	if st.LastStatusMsg != "" {
++		attrs = append(attrs, &commonpb.KeyValue{Key: "message", Value: stringProtoValue(st.LastStatusMsg)})
++	}
++	if st.PrevTraceID != "" {
++		attrs = append(attrs, &commonpb.KeyValue{Key: "scion.previous_trace_id", Value: stringProtoValue(st.PrevTraceID)})
++	}
++
++	var links []*tracepb.Span_Link
++	if prevTID, okT := ParseTraceIDHex(st.PrevTraceID); okT {
++		if prevSID, okS := ParseSpanIDHex(st.PrevTurnSpanID); okS {
++			links = append(links, &tracepb.Span_Link{
++				TraceId: prevTID[:],
++				SpanId:  prevSID[:],
++				Attributes: []*commonpb.KeyValue{
++					{Key: "link.type", Value: stringProtoValue("previous_turn")},
++				},
++			})
++		}
++	}
++
++	resAttrs := authoritativeIdentity()
++	resAttrs = append(resAttrs, &commonpb.KeyValue{Key: "service.name", Value: stringProtoValue("sciontool")})
++	if gcpProj := os.Getenv(EnvProjectID); gcpProj != "" {
++		resAttrs = append(resAttrs, &commonpb.KeyValue{Key: "gcp.project_id", Value: stringProtoValue(gcpProj)})
++	}
++
++	span := &tracepb.Span{
++		TraceId:           tid[:],
++		SpanId:            sid[:],
++		Name:              TurnRootSpanName(),
++		Kind:              tracepb.Span_SPAN_KIND_SERVER,
++		StartTimeUnixNano: uint64(startNano),
++		EndTimeUnixNano:   uint64(endNano),
++		Attributes:        attrs,
++		Links:             links,
++		Status:            &tracepb.Status{Code: tracepb.Status_STATUS_CODE_OK},
++	}
++
++	return []*tracepb.ResourceSpans{
++		{
++			Resource: &resourcepb.Resource{Attributes: resAttrs},
++			ScopeSpans: []*tracepb.ScopeSpans{
++				{
++					Scope: &commonpb.InstrumentationScope{Name: hookMetricScope},
++					Spans: []*tracepb.Span{span},
++				},
++			},
++		},
++	}
++}
++
++// CorrelateAndSynthesizeClaudeSpans correlates native Claude Code OTLP log records
++// with the active turn in TraceState and synthesizes child spans for api_request / api_error.
++func CorrelateAndSynthesizeClaudeSpans(resourceLogs []*logspb.ResourceLogs) []*tracepb.ResourceSpans {
++	if os.Getenv("SCION_AGENT_SLUG") == "" && os.Getenv("SCION_AGENT_ID") == "" {
++		return nil
++	}
++	var outSpans []*tracepb.ResourceSpans
++	for _, rl := range resourceLogs {
++		if rl == nil {
++			continue
++		}
++		for _, sl := range rl.ScopeLogs {
++			if sl == nil || sl.GetScope().GetName() != claudeUsageScope {
++				continue
++			}
++			for _, record := range sl.LogRecords {
++				if record == nil {
++					continue
++				}
++				eventName, _ := normalizedLogEventName(record, claudeUsageScope)
++				sessionID := logAttrString(record.Attributes, "session.id")
++				recNano := int64(record.TimeUnixNano)
++				if recNano <= 0 {
++					recNano = int64(record.ObservedTimeUnixNano)
++				}
++				if recNano <= 0 {
++					recNano = time.Now().UnixNano()
++				}
++
++				_ = WithTraceState(func(st *TraceState) error {
++					forceNew := eventName == "user_prompt"
++					if prev := st.EnsureActiveTurn(recNano, sessionID, forceNew); prev != nil {
++						outSpans = append(outSpans, BuildTurnRootProtoSpan(prev, prev.LastActivityNano)...)
++					}
++					tid, okT := ParseTraceIDHex(st.TraceID)
++					turnSID, okS := ParseSpanIDHex(st.TurnSpanID)
++					if !okT || !okS {
++						return nil
++					}
++
++					if eventName == "api_request" || eventName == "api_error" {
++						durMs, _ := logAttrInt(record.Attributes, "duration_ms")
++						if durMs <= 0 {
++							durMs = 250
++						}
++						startNano := recNano - durMs*int64(time.Millisecond)
++						if startNano < st.TurnStartNano {
++							st.TurnStartNano = startNano
++						}
++						modelSpanIDHex := NewRandomSpanIDHex()
++						modelSID, _ := ParseSpanIDHex(modelSpanIDHex)
++
++						record.TraceId = append([]byte(nil), tid[:]...)
++						record.SpanId = append([]byte(nil), modelSID[:]...)
++
++						model := logAttrString(record.Attributes, "model")
++						inTok, _ := logAttrInt(record.Attributes, "input_tokens")
++						outTok, _ := logAttrInt(record.Attributes, "output_tokens")
++						cacheRead, _ := logAttrInt(record.Attributes, "cache_read_tokens")
++						cacheWrite, _ := logAttrInt(record.Attributes, "cache_creation_tokens")
++						ttftMs, _ := logAttrInt(record.Attributes, "ttft_ms")
++
++						st.ModelCalls++
++						st.InputTokens += inTok
++						st.OutputTokens += outTok
++						st.CachedTokens += cacheRead + cacheWrite
++						if recNano > st.LastActivityNano {
++							st.LastActivityNano = recNano
++						}
++
++						attrs := []*commonpb.KeyValue{
++							{Key: "event.name", Value: stringProtoValue("gen_ai.api.response")},
++							{Key: "event.dialect", Value: stringProtoValue("claude")},
++							{Key: "duration_ms", Value: &commonpb.AnyValue{Value: &commonpb.AnyValue_IntValue{IntValue: durMs}}},
++							{Key: "turn.index", Value: &commonpb.AnyValue{Value: &commonpb.AnyValue_IntValue{IntValue: st.TurnIndex}}},
++						}
++						if model != "" {
++							attrs = append(attrs, &commonpb.KeyValue{Key: "gen_ai.request.model", Value: stringProtoValue(model)})
++						}
++						if sessionID != "" {
++							attrs = append(attrs, &commonpb.KeyValue{Key: "session_id", Value: stringProtoValue(sessionID)})
++						}
++						if inTok > 0 {
++							attrs = append(attrs, &commonpb.KeyValue{Key: "gen_ai.usage.input_tokens", Value: &commonpb.AnyValue{Value: &commonpb.AnyValue_IntValue{IntValue: inTok}}})
++						}
++						if outTok > 0 {
++							attrs = append(attrs, &commonpb.KeyValue{Key: "gen_ai.usage.output_tokens", Value: &commonpb.AnyValue{Value: &commonpb.AnyValue_IntValue{IntValue: outTok}}})
++						}
++						if cacheRead+cacheWrite > 0 {
++							attrs = append(attrs, &commonpb.KeyValue{Key: "gen_ai.usage.cached_tokens", Value: &commonpb.AnyValue{Value: &commonpb.AnyValue_IntValue{IntValue: cacheRead + cacheWrite}}})
++						}
++						if ttftMs > 0 {
++							attrs = append(attrs, &commonpb.KeyValue{Key: "gen_ai.response.ttft_ms", Value: &commonpb.AnyValue{Value: &commonpb.AnyValue_IntValue{IntValue: ttftMs}}})
++						}
++
++						statusCode := tracepb.Status_STATUS_CODE_OK
++						if eventName == "api_error" {
++							statusCode = tracepb.Status_STATUS_CODE_ERROR
++							if errStr := logAttrString(record.Attributes, "error"); errStr != "" {
++								attrs = append(attrs, &commonpb.KeyValue{Key: "error", Value: stringProtoValue(errStr)})
++							}
++						} else {
++							attrs = append(attrs, &commonpb.KeyValue{Key: "success", Value: &commonpb.AnyValue{Value: &commonpb.AnyValue_BoolValue{BoolValue: true}}})
++						}
++
++						resAttrs := authoritativeIdentity()
++						resAttrs = append(resAttrs, &commonpb.KeyValue{Key: "service.name", Value: stringProtoValue("sciontool")})
++						if gcpProj := os.Getenv(EnvProjectID); gcpProj != "" {
++							resAttrs = append(resAttrs, &commonpb.KeyValue{Key: "gcp.project_id", Value: stringProtoValue(gcpProj)})
++						}
++
++						span := &tracepb.Span{
++							TraceId:           append([]byte(nil), tid[:]...),
++							SpanId:            append([]byte(nil), modelSID[:]...),
++							ParentSpanId:      append([]byte(nil), turnSID[:]...),
++							Name:              ModelSpanName(model),
++							Kind:              tracepb.Span_SPAN_KIND_CLIENT,
++							StartTimeUnixNano: uint64(startNano),
++							EndTimeUnixNano:   uint64(recNano),
++							Attributes:        attrs,
++							Status:            &tracepb.Status{Code: statusCode},
++						}
++						outSpans = append(outSpans, &tracepb.ResourceSpans{
++							Resource: &resourcepb.Resource{Attributes: resAttrs},
++							ScopeSpans: []*tracepb.ScopeSpans{
++								{
++									Scope: &commonpb.InstrumentationScope{Name: hookMetricScope},
++									Spans: []*tracepb.Span{span},
++								},
++							},
++						})
++					} else if len(record.TraceId) == 0 {
++						record.TraceId = append([]byte(nil), tid[:]...)
++						record.SpanId = append([]byte(nil), turnSID[:]...)
++					}
++					return nil
++				})
++			}
++		}
++	}
++	return outSpans
++}
++
++// CheckIdleTurnFinalization checks if an active turn in TraceState should be
++// auto-finalized due to inactivity (e.g. Antigravity turns that end after PostInvocation).
++func CheckIdleTurnFinalization(now time.Time) []*tracepb.ResourceSpans {
++	if os.Getenv("SCION_AGENT_SLUG") == "" && os.Getenv("SCION_AGENT_ID") == "" {
++		return nil
++	}
++	statePath := TraceStateFile()
++	if _, err := os.Stat(statePath); err != nil {
++		return nil
++	}
++	nowNano := now.UnixNano()
++	var rootSpans []*tracepb.ResourceSpans
++	_ = WithTraceState(func(st *TraceState) error {
++		if st.TraceID == "" || st.TurnSpanID == "" || st.TurnFinalized {
++			return nil
++		}
++		if st.ModelCalls == 0 && st.ToolCalls == 0 && st.LastStatus == "" {
++			return nil
++		}
++		idleDur := time.Duration(nowNano - st.LastActivityNano)
++		hasPending := st.PendingModel != nil || len(st.PendingTools) > 0
++		harness := os.Getenv("SCION_HARNESS")
++
++		shouldFinalize := false
++		if !hasPending {
++			if harness == "antigravity" && idleDur >= 6*time.Second {
++				shouldFinalize = true
++			} else if st.LastStatus != "" && idleDur >= 8*time.Second {
++				shouldFinalize = true
++			} else if idleDur >= 45*time.Second {
++				shouldFinalize = true
++			}
++		} else if idleDur >= 3*time.Minute {
++			shouldFinalize = true
++		}
++
++		if shouldFinalize {
++			st.TurnFinalized = true
++			st.PendingModel = nil
++			st.PendingTools = nil
++			rootSpans = BuildTurnRootProtoSpan(st, st.LastActivityNano)
++		}
++		return nil
++	})
++	return rootSpans
++}

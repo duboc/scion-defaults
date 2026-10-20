@@ -1,0 +1,30 @@
+{
+  "google-vertex": {
+    "id": "google-vertex",
+    "name": "Vertex",
+    "env": ["GOOGLE_CLOUD_PROJECT", "GOOGLE_CLOUD_LOCATION"],
+    "npm": "@ai-sdk/google-vertex",
+    "models": {
+      "gemini-4-argon": {
+        "id": "gemini-4-argon",
+        "name": "Gemini 4 Argon",
+        "tool_call": true,
+        "reasoning": true,
+        "attachment": true,
+        "temperature": true,
+        "cost": {"input": 1.25, "output": 10},
+        "limit": {"context": 1048576, "output": 65536}
+      },
+      "gemini-3.8-flash": {
+        "id": "gemini-3.8-flash",
+        "name": "Gemini 3.8 Flash",
+        "tool_call": true,
+        "reasoning": true,
+        "attachment": true,
+        "temperature": true,
+        "cost": {"input": 0.15, "output": 0.6},
+        "limit": {"context": 1048576, "output": 65536}
+      }
+    }
+  }
+}
