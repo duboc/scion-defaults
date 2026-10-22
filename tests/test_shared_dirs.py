@@ -208,6 +208,14 @@ def test_run_on_hub_forwards_the_knowledge_plane_settings():
     assert "KNOWLEDGE_PLANE_SOURCES" in text and "KNOWLEDGE_PLANE_SOURCE_PROJECT" in text
 
 
+def test_watchdog_projects_default_to_the_factory_env(watchdog):
+    """Without FACTORY_PROJECTS the watchdog used to fall back to the reference factory's psearch projects."""
+    assert watchdog.default_factory_projects({"FACTORY_PROJECTS": "a, b"}) == ["a", "b"]
+    assert watchdog.default_factory_projects({"BUILD_PROJECT": "project1", "EVAL_PROJECT": "project1-eval"}) == [
+        "project1", "project1-eval"]
+    assert watchdog.default_factory_projects({}) == ["psearch", "psearch-eval"]
+
+
 # --- templates: the knowledge plane path follows FACTORY_SUBDIR --------------------------------------------------
 
 def _render(tmp_path, **extra):
