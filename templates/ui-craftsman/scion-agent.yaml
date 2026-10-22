@@ -1,6 +1,6 @@
 schema_version: "1"
 description: "Dashboard design and visualization engineer of the ${EVAL_PROJECT} factory (Antigravity, Impeccable skill). Reports to ${EVAL_LEAD_AGENT}."
-default_harness_config: antigravity
+default_harness_config: ${ANTIGRAVITY_HARNESS}
 model: "Gemini 4 Argon (High)"
 agent_instructions: agents.md
 system_prompt: system-prompt.md

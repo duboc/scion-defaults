@@ -61,11 +61,17 @@ factory: a build team and an eval team. Every agent:
   4. Copy `<root>/.agents/hooks.json` to `<dir>/.agents/hooks.json` when the root has one and the folder doesn't, and
      add `.agents/` to the clone's `info/exclude`, so Antigravity's project-local status hooks still fire.
   5. `exec "$@"`.
-- `scripts/patch-harness-start-dir.py` (runs on the Hub VM, dry run by default, `--apply` to write) installs
-  `factory-cd.sh` into the `home/.local/bin/` of the Hub's `claude`, `antigravity`, `opencode` and `hermes`
-  harness-configs and prefixes their `command.base` with `["sh", "/home/scion/.local/bin/factory-cd.sh"]` once
-  (idempotent). Because the launcher ships in the harness-config's own `home/`, every agent that uses the patched
-  config has it, whatever its template.
+- `scripts/make-factory-harness-configs.py` (runs on the Hub VM as the Hub OS user, dry run by default, `--apply`
+  to write and publish) builds one **custom-named** harness-config per harness, `<harness>-factory`
+  (`claude-factory`, `antigravity-factory`, `opencode-factory`, `hermes-factory`): a fresh copy of the Hub's bundled
+  config with `factory-cd.sh` in its `home/.local/bin/` and `["sh", "/home/scion/.local/bin/factory-cd.sh"]` put in
+  front of `command.base` once. It publishes each with `scion harness-config sync <name> --global`. Scion refreshes
+  bundled configs (`claude`, …) from the binary on every Hub restart and says not to edit them in place
+  (harness-settings reference, "Listing, inspecting, and resetting"), so the bundled configs stay untouched. Re-run
+  the script after a Scion upgrade so the copies pick up provisioner fixes.
+- Templates name their harness-config through derived variables `${CLAUDE_HARNESS}`, `${ANTIGRAVITY_HARNESS}`,
+  `${OPENCODE_HARNESS}`, `${HERMES_HARNESS}`: `<harness>-factory` when `FACTORY_SUBDIR` is not `.`, else the bundled
+  name. Single-factory renders are unchanged.
 
 ### 3. Hub layout per factory
 
@@ -100,7 +106,7 @@ One `factory.env` per factory (`FACTORY_ENV=config/project1.env scripts/render-t
 2. `FACTORY_SUBDIR` set to `../x`, `/abs`, or a folder missing from the clone → harness does not start, stderr says why.
 3. `factory-cd.sh` run twice on the same home (agent restart) → trust lists have no duplicates, exclude line not
    repeated.
-4. Patch script run twice → `command.base` prefixed once.
+4. `make-factory-harness-configs.py` run twice → `command.base` prefixed once; bundled configs never modified.
 5. Templates must not keep a bare `scion message lead` (or other role) once rendered with a prefix → a lint test.
 
 ## Tasks
@@ -147,17 +153,22 @@ One `factory.env` per factory (`FACTORY_ENV=config/project1.env scripts/render-t
 - [ ] Run, watch fail; implement (POSIX sh + `python3` for the JSON edits, both present in every Scion image); pass;
   commit.
 
-### Task 4: `patch-harness-start-dir.py`
+### Task 4: `<harness>-factory` harness-configs
 
-**Files:** create `scripts/patch-harness-start-dir.py`; extend tests.
+**Files:** create `scripts/make-factory-harness-configs.py`; modify `scripts/render-templates.py` (derived
+`<HARNESS>_HARNESS` variables) and every `templates/<role>/scion-agent.yaml` (`default_harness_config:
+${<HARNESS>_HARNESS}`); extend tests.
 
-**Interfaces:** `patch_command_base(config: dict) -> tuple[dict, bool]`; CLI `--root <harness-configs dir>`
-(default: the Hub's global harness-config storage), `--harness claude,antigravity,opencode,hermes`, `--apply`.
+**Interfaces:** `prefix_command_base(config_text: str) -> tuple[str, bool]`; `harness_vars(subdir: str) ->
+dict[str, str]`; CLI `--scion-home <dir>` (default `~/.scion`), `--harness claude,antigravity,opencode,hermes`,
+`--apply`, `--no-sync`.
 
-- [ ] Tests: claude base `["claude", "--no-chrome", ...]` → prefixed; second call unchanged and `changed is False`;
-  opencode `["sh", "/home/scion/.local/bin/opencode-launch.sh"]` → prefixed; config without `command.base` →
-  unchanged; CLI dry run on a temp tree writes nothing and prints the plan; `--apply` writes `config.yaml` and
-  `home/.local/bin/factory-cd.sh` (mode 0755) for each harness.
+- [ ] Tests: claude `base: ["claude", "--no-chrome", ...]` → factory-cd first, other lines untouched; second call
+  unchanged and `changed is False`; opencode `["sh", "/home/scion/.local/bin/opencode-launch.sh"]` → prefixed; text
+  without `command.base` → `ValueError`; dry run on a temp `~/.scion` writes nothing and prints the plan; `--apply
+  --no-sync` writes `harness-configs/claude-factory/config.yaml` and `home/.local/bin/factory-cd.sh` (0755) and
+  keeps the bundled `claude` untouched; `harness_vars("src/project1")["CLAUDE_HARNESS"] == "claude-factory"`,
+  `harness_vars(".")["CLAUDE_HARNESS"] == "claude"`; rendered lead template uses `claude-factory` with a subdir.
 - [ ] Run, watch fail; implement; pass; commit.
 
 ### Task 5: watchdog lead discovery

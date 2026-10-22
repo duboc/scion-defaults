@@ -21,6 +21,7 @@ It fails if a referenced variable has no value, so a half-filled factory.env can
 Upload the result as described in templates/README.md.
 """
 import argparse
+import importlib.util
 import os
 import re
 import shutil
@@ -29,6 +30,17 @@ import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
+
+
+def _sibling(name, filename):
+    spec = importlib.util.spec_from_file_location(name, os.path.join(HERE, filename))
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+# ${CLAUDE_HARNESS} & co.: the <harness>-factory harness-configs when the factory has a product folder.
+harness_vars = _sibling("make_factory_harness_configs", "make-factory-harness-configs.py").harness_vars
 VARS = ("HUB_PROJECT HUB_ZONE HUB_VM HUB_OS_USER HUB_LOCAL_URL SANDBOX_PROJECT SANDBOX_REGION FIRESTORE_PROJECT "
         "FIRESTORE_DATABASE SPANNER_INSTANCE SPANNER_DATABASE BQ_DATASET DATA_BUCKET DEPLOYER_SA_NAME RUNTIME_SA_NAME SERVING_SERVICE DASHBOARD_SERVICE "
         "GITHUB_REPO BUILD_PROJECT EVAL_PROJECT BUILD_BRANCH EVAL_BRANCH PO_EMAIL DEPLOYER_SA RUNTIME_SA "
@@ -89,8 +101,9 @@ def load_env(path):
 def render(text, values, missing, where):
     def repl(match):
         name = match.group(1)
-        # ${<ROLE>_AGENT} always counts as ours, so a misspelled role (${LEED_AGENT}) fails instead of leaking.
-        if name not in VARS and not name.endswith("_AGENT"):
+        # ${<ROLE>_AGENT} / ${<HARNESS>_HARNESS} always count as ours, so a misspelled role (${LEED_AGENT}) fails
+        # instead of leaking into a prompt.
+        if name not in VARS and not name.endswith(("_AGENT", "_HARNESS")):
             return match.group(0)
         if not values.get(name):
             missing.add(f"{name} (in {where})")
@@ -122,6 +135,7 @@ def main():
     except ValueError as e:
         sys.exit(str(e))
     values.update(role_agent_vars(prefix, all_roles))
+    values.update(harness_vars(values["FACTORY_SUBDIR"]))
     if args.agent_names:
         for role in all_roles:
             print(f"{role}\t{agent_name(prefix, role)}")
