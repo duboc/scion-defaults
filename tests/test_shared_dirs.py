@@ -62,8 +62,8 @@ def test_project_body_requires_a_token_for_shared_mode():
 
 def test_read_token_file(tmp_path):
     f = tmp_path / "tok"
-    f.write_text("gho_x\n")
-    assert admin.read_token_file(str(f)) == "gho_x"
+    f.write_text("test-token-value\n")
+    assert admin.read_token_file(str(f)) == "test-token-value"
     assert admin.read_token_file("") == ""
 
 
