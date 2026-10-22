@@ -416,6 +416,20 @@ def test_make_factory_harness_configs_skips_missing_harnesses(scion_home):
     assert "hermes" in res.stderr
 
 
+def test_make_factory_harness_configs_via_hub_ships_the_launcher_inside_the_script(scion_home, tmp_path):
+    """run-on-hub.sh copies only the script to the VM, so --via-hub must embed factory-cd.sh in it."""
+    fake_hub = tmp_path / "fake-run-on-hub.sh"
+    # Like run-on-hub.sh: run the script from a temp copy outside the repository.
+    fake_hub.write_text('#!/bin/sh\nd=$(mktemp -d)\ncp "$1" "$d/remote.py"\nshift\nexec python3 "$d/remote.py" "$@"\n')
+    fake_hub.chmod(0o755)
+    res = subprocess.run([sys.executable, str(ROOT / "scripts" / "make-factory-harness-configs.py"), "--via-hub",
+                          "--scion-home", str(scion_home), "--harness", "claude", "--apply", "--no-sync"],
+                         capture_output=True, text=True, env={**os.environ, "RUN_ON_HUB": str(fake_hub)})
+    assert res.returncode == 0, res.stderr
+    launcher = scion_home / "harness-configs" / "claude-factory" / "home" / ".local" / "bin" / "factory-cd.sh"
+    assert launcher.read_text() == FACTORY_CD.read_text()
+
+
 def test_rendered_templates_use_factory_harness_configs_with_a_subdir(tmp_path):
     files = _render_all(tmp_path, AGENT_PREFIX="project1", FACTORY_SUBDIR="src/project1")
     assert "default_harness_config: claude-factory" in files["lead/scion-agent.yaml"]

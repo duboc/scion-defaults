@@ -77,10 +77,14 @@ factory: a build team and an eval team. Every agent:
 
 | Factory | Hub projects (same git URL, clone-per-agent) | `AGENT_PREFIX` | `FACTORY_SUBDIR` | Branches |
 |---|---|---|---|---|
-| project1 | `project1`, `project1-eval` | `project1` | `src/project1` | build `main`; eval `project1-eval-dashboard` (orphan) |
-| project2 | `project2`, `project2-eval` | `project2` | `src/project2` | build `main`; eval `project2-eval-dashboard` (orphan) |
+| project1 | `project1`, `project1-eval` | `project1` | `src/project1` | build `main`; eval `eval-dashboard` |
+| project2 | `project2`, `project2-eval` | `project2` | `src/project2` | build `main`; eval `eval-dashboard` |
 
 One `factory.env` per factory (`FACTORY_ENV=config/project1.env scripts/render-templates.py ...`).
+
+The eval trunk is one orphan branch (`eval-dashboard`, still never merged with `main`, L25) that **mirrors the
+monorepo layout**: each factory's eval code lives in `src/<product>/` there. One `FACTORY_SUBDIR` then serves both
+teams of a factory, and `factory-cd.sh` fails closed (exit 66) when a checkout lacks the folder.
 
 ## Non-goals
 
