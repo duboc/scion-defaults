@@ -1,11 +1,12 @@
 schema_version: "1"
-description: "Dashboard release engineer of the ${EVAL_PROJECT} factory (Antigravity). Deploys ${DASHBOARD_SERVICE} as ${DEPLOYER_SA}. Reports to eval-lead."
+description: "Dashboard release engineer of the ${EVAL_PROJECT} factory (Antigravity). Deploys ${DASHBOARD_SERVICE} as ${DEPLOYER_SA}. Reports to ${EVAL_LEAD_AGENT}."
 default_harness_config: antigravity
 model: "Gemini 4 Argon (High)"
 agent_instructions: agents.md
 system_prompt: system-prompt.md
 env:
   FACTORY_ROLE: eval-deployer
+  FACTORY_SUBDIR: "${FACTORY_SUBDIR}"   # product folder the harness starts in (factory-cd.sh)
   CLOUDSDK_CORE_PROJECT: "${SANDBOX_PROJECT}"
   CLOUDSDK_CORE_DISABLE_PROMPTS: "1"
 # Antigravity agents need the telemetry-free hook command (scripts/patch-antigravity-hooks.py): this block alone does

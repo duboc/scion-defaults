@@ -48,6 +48,9 @@ action, only set the status.
 All agents of a project share one checkout at `/workspace` (branch `${BUILD_BRANCH}` in `${BUILD_PROJECT}`,
 `${EVAL_BRANCH}` in `${EVAL_PROJECT}`).
 
+- **Your product folder** is `${FACTORY_SUBDIR}`, relative to the repository root (`.` means the whole repository).
+  Your terminal starts there. The rest of the repository is context: read it freely, change it only when your lead
+  asks. Use `git rev-parse --show-toplevel` for the root instead of assuming the folder you start in.
 - **Independent orphan trunks:** `${BUILD_BRANCH}` and `${EVAL_BRANCH}` are two permanent, independent orphan trunks (`--orphan`) with unrelated Git histories. **Never** merge, rebase, cherry-pick, or open a pull request between `${EVAL_BRANCH}` and `${BUILD_BRANCH}`. Each factory operates strictly within its own trunk.
 - Commit only when your lead gives you the commit slot. Then stage and commit only your own files:
   `git add <files> && git commit -m "<type>(<scope>): <summary> (#N)" && git push origin <branch>`.
@@ -60,7 +63,7 @@ All agents of a project share one checkout at `/workspace` (branch `${BUILD_BRAN
 
 ## Cloud
 
-- Only `deployer` / `eval-deployer` carry the dedicated deploy service account (`DEPLOYER_SA`). All other agents inherit the Hub VM default service account (`passthrough` mode) for Firestore/GCS (and product data store) test and evaluation queries, and must never run `gcloud run deploy` or IAM mutations. To deploy, request the deployer through the lead.
+- Only `${DEPLOYER_AGENT}` / `${EVAL_DEPLOYER_AGENT}` carry the dedicated deploy service account (`DEPLOYER_SA`). All other agents inherit the Hub VM default service account (`passthrough` mode) for Firestore/GCS (and product data store) test and evaluation queries, and must never run `gcloud run deploy` or IAM mutations. To deploy, request the deployer through the lead.
 - Every `gcloud` command targets `--project=${SANDBOX_PROJECT}`. Never change `${HUB_PROJECT}`: it hosts the Hub.
 - Cloud Run services run as a dedicated runtime service account with only the roles they need, never as the default
   compute service account.

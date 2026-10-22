@@ -110,3 +110,56 @@ def test_cli_rejects_a_subdir_outside_the_repo(tmp_path):
     res = _run_render(tmp_path, "--out", str(tmp_path / "out"), FACTORY_SUBDIR="../elsewhere")
     assert res.returncode != 0
     assert "FACTORY_SUBDIR" in res.stderr
+
+
+# --- Task 2: templates use the role variables and carry FACTORY_SUBDIR -------------------------------------------
+
+ROLE_ALT = "|".join(re.escape(r) for r in sorted(ROLES, key=len, reverse=True))
+BARE_MESSAGE = re.compile(rf"scion message ({ROLE_ALT})\b(?!-)")
+BARE_REPORT = re.compile(rf"report to `({ROLE_ALT})`", re.IGNORECASE)
+
+
+def _render_all(tmp_path, **env_values):
+    out = tmp_path / "out"
+    res = _run_render(tmp_path, "--out", str(out), **env_values)
+    assert res.returncode == 0, res.stderr
+    return {p.relative_to(out).as_posix(): p.read_text() for p in out.rglob("*") if p.is_file()}
+
+
+def test_prefixed_render_leaves_no_bare_peer_names(tmp_path):
+    files = _render_all(tmp_path, AGENT_PREFIX="project1", FACTORY_SUBDIR="src/project1")
+    offenders = [f"{path}: {m.group(0)}" for path, text in files.items()
+                 for pattern in (BARE_MESSAGE, BARE_REPORT) for m in pattern.finditer(text)]
+    assert offenders == []
+
+
+def test_prefixed_render_names_peers_with_the_factory_slug(tmp_path):
+    files = _render_all(tmp_path, AGENT_PREFIX="project1", FACTORY_SUBDIR="src/project1")
+    lead = files["lead/system-prompt.md"]
+    assert "`project1-reviewer`" in lead
+    assert "`project1-deployer`" in lead
+    assert "scion message project1-eval-lead" in files["search-evaluator/system-prompt.md"]
+    assert "You report to `project1-lead`" in files["backend/system-prompt.md"]
+
+
+def test_every_rendered_template_carries_the_start_folder(tmp_path):
+    files = _render_all(tmp_path, AGENT_PREFIX="project1", FACTORY_SUBDIR="src/project1/")
+    for role in ROLES:
+        assert 'FACTORY_SUBDIR: "src/project1"' in files[f"{role}/scion-agent.yaml"], role
+    assert "`src/project1`" in files["lead/agents.md"]
+
+
+def test_unprefixed_render_keeps_bare_role_names(tmp_path):
+    files = _render_all(tmp_path)
+    assert "scion message lead" in files["backend/system-prompt.md"]
+    assert "You report to `lead`" in files["backend/system-prompt.md"]
+    for role in ROLES:
+        assert 'FACTORY_SUBDIR: "."' in files[f"{role}/scion-agent.yaml"], role
+
+
+def test_rendered_scion_agent_yaml_stays_valid_yaml(tmp_path):
+    yaml = pytest.importorskip("yaml")
+    files = _render_all(tmp_path, AGENT_PREFIX="project1", FACTORY_SUBDIR="src/project1")
+    for role in ROLES:
+        doc = yaml.safe_load(files[f"{role}/scion-agent.yaml"])
+        assert doc["env"]["FACTORY_SUBDIR"] == "src/project1", role
