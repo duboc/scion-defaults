@@ -4,11 +4,16 @@
     scripts/render-templates.py                      # -> build/templates/<role>/ (git-ignored by build/)
     scripts/render-templates.py --out /tmp/tpl --roles lead,backend
     scripts/render-templates.py --file config/heartbeat-message.txt   # render one file to stdout
+    scripts/render-templates.py --agent-names        # "<role>\t<agent name>" per role, for `scion start`
 
 For every role folder in templates/ (folders starting with "_" are shared parts, not roles):
   * copies all files, replacing ${VAR} for the variables in factory.env plus the derived DEPLOYER_SA and
     RUNTIME_SA. Nothing else is touched: "$schema", "$HOME", "$$" and "${GITHUB_TOKEN:-}" stay as they are, so
     shell scripts and JSON files survive. (Python's string.Template would turn "$$" into "$".)
+  * also replaces ${<ROLE>_AGENT} (LEAD_AGENT, EVAL_LEAD_AGENT, ...) with that role's agent name:
+    "<AGENT_PREFIX>-<role>" when factory.env sets AGENT_PREFIX (several factories on one Hub, e.g. one per
+    monorepo product), else the bare role. ${FACTORY_SUBDIR} is the product folder relative to the repository
+    root ("." when unset). See docs/plans/2026-10-22-monorepo-factories.md.
   * writes agents.md (the template's agent_instructions file) from templates/_shared/agents.md, the operating
     protocol every agent follows, followed by the role's own agents.extra.md when it has one.
 It fails if a referenced variable has no value, so a half-filled factory.env can't produce broken prompts.
@@ -26,8 +31,44 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 VARS = ("HUB_PROJECT HUB_ZONE HUB_VM HUB_OS_USER HUB_LOCAL_URL SANDBOX_PROJECT SANDBOX_REGION FIRESTORE_PROJECT "
         "FIRESTORE_DATABASE SPANNER_INSTANCE SPANNER_DATABASE BQ_DATASET DATA_BUCKET DEPLOYER_SA_NAME RUNTIME_SA_NAME SERVING_SERVICE DASHBOARD_SERVICE "
-        "GITHUB_REPO BUILD_PROJECT EVAL_PROJECT BUILD_BRANCH EVAL_BRANCH PO_EMAIL DEPLOYER_SA RUNTIME_SA").split()
+        "GITHUB_REPO BUILD_PROJECT EVAL_PROJECT BUILD_BRANCH EVAL_BRANCH PO_EMAIL DEPLOYER_SA RUNTIME_SA "
+        "AGENT_PREFIX FACTORY_SUBDIR").split()
 PLACEHOLDER = re.compile(r"\$\{([A-Z][A-Z0-9_]*)\}")
+SLUG = re.compile(r"^[a-z0-9]+(-[a-z0-9]+)*$")
+MAX_AGENT_NAME = 63  # Scion slugifies agent names and caps them at 63 characters (pkg/api/slug.go).
+
+
+def agent_name(prefix, role):
+    """The Hub agent name of `role`: "<prefix>-<role>", or the bare role without a prefix."""
+    return f"{prefix}-{role}" if prefix else role
+
+
+def role_agent_vars(prefix, roles):
+    """One ${<ROLE>_AGENT} variable per role, e.g. EVAL_LEAD_AGENT -> "project1-eval-lead"."""
+    return {role.upper().replace("-", "_") + "_AGENT": agent_name(prefix, role) for role in roles}
+
+
+def validate_prefix(prefix, roles):
+    """Fail unless every prefixed name is a valid Scion agent name exactly as written (no silent slugify)."""
+    if not prefix:
+        return
+    if not SLUG.match(prefix):
+        raise ValueError(f"AGENT_PREFIX {prefix!r} must be lowercase letters and digits separated by single dashes "
+                         "(the factory's project slug, e.g. project1)")
+    too_long = [agent_name(prefix, r) for r in roles if len(agent_name(prefix, r)) > MAX_AGENT_NAME]
+    if too_long:
+        raise ValueError(f"AGENT_PREFIX {prefix!r} makes agent names longer than {MAX_AGENT_NAME} characters: "
+                         + ", ".join(too_long))
+
+
+def normalize_subdir(value):
+    """FACTORY_SUBDIR as a clean path relative to the repository root ("." for the root itself)."""
+    value = (value or "").strip()
+    parts = [p for p in value.split("/") if p not in ("", ".")]
+    if value.startswith("/") or ".." in parts:
+        raise ValueError(f"FACTORY_SUBDIR {value!r} must be a folder inside the repository, relative to its root "
+                         "(e.g. src/project1)")
+    return "/".join(parts) or "."
 
 
 def load_env(path):
@@ -48,7 +89,8 @@ def load_env(path):
 def render(text, values, missing, where):
     def repl(match):
         name = match.group(1)
-        if name not in VARS:
+        # ${<ROLE>_AGENT} always counts as ours, so a misspelled role (${LEED_AGENT}) fails instead of leaking.
+        if name not in VARS and not name.endswith("_AGENT"):
             return match.group(0)
         if not values.get(name):
             missing.add(f"{name} (in {where})")
@@ -64,11 +106,26 @@ def main():
     parser.add_argument("--out", default=os.path.join(ROOT, "build", "templates"))
     parser.add_argument("--roles", help="comma-separated subset of roles (default: all)")
     parser.add_argument("--file", help="render this one file to stdout instead of the templates")
+    parser.add_argument("--agent-names", action="store_true",
+                        help='print "<role>\\t<agent name>" for every role and exit')
     args = parser.parse_args()
 
     if not os.path.exists(args.env):
         sys.exit(f"missing {args.env} (copy config/factory.env.example and fill it in)")
     values = load_env(args.env)
+    all_roles = sorted(d for d in os.listdir(args.src)
+                       if os.path.isdir(os.path.join(args.src, d)) and not d.startswith("_"))
+    prefix = values.get("AGENT_PREFIX", "")
+    try:
+        validate_prefix(prefix, all_roles)
+        values["FACTORY_SUBDIR"] = normalize_subdir(values.get("FACTORY_SUBDIR", ""))
+    except ValueError as e:
+        sys.exit(str(e))
+    values.update(role_agent_vars(prefix, all_roles))
+    if args.agent_names:
+        for role in all_roles:
+            print(f"{role}\t{agent_name(prefix, role)}")
+        return 0
     if args.file:
         missing = set()
         text = render(open(args.file).read(), values, missing, args.file)
@@ -76,8 +133,7 @@ def main():
             sys.exit("missing values in factory.env:\n  " + "\n  ".join(sorted(missing)))
         sys.stdout.write(text.rstrip("\n"))
         return 0
-    roles = sorted(d for d in os.listdir(args.src)
-                   if os.path.isdir(os.path.join(args.src, d)) and not d.startswith("_"))
+    roles = all_roles
     if args.roles:
         wanted = args.roles.split(",")
         unknown = set(wanted) - set(roles)
