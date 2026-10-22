@@ -10,7 +10,7 @@ add it later.
 
 The defaults come from two factories that ran in production on a self-hosted Scion Hub: a 10-agent hybrid search
 factory and a 14-agent airline-operations factory. Every interview question traces back to a documented production
-failure in [`docs/lessons-learned.md`](docs/lessons-learned.md) (lessons L1–L27).
+failure in [`docs/lessons-learned.md`](docs/lessons-learned.md) (lessons L1–L28).
 
 > [!IMPORTANT]
 > Always use this repository through an agentic coding agent. The scripts in this repository don't interview you,

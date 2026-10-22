@@ -7,10 +7,10 @@ This repository (`duboc/scion-defaults`) is the canonical blueprint, automation 
 | Path | Purpose |
 |---|---|
 | [`README.md`](README.md) | Overview, architecture, what we built, and 12-step replication quickstart |
-| [`config/`](config/) | Parameterized environment (`factory.env.example`), Hub `settings.yaml`, OpenCode Vertex AI model catalog (`opencode-models.json`), heartbeat prompt, and the Firestore control-plane contract, indexes, and rules (`firestore/`) |
+| [`config/`](config/) | Parameterized environment (`factory.env.example`), the monorepo start-folder launcher (`harness/home/.local/bin/factory-cd.sh`), Hub `settings.yaml`, OpenCode Vertex AI model catalog (`opencode-models.json`), heartbeat prompt, and the Firestore control-plane contract, indexes, and rules (`firestore/`) |
 | [`scripts/`](scripts/README.md) | Idempotent provisioning, admin API client (`scion-admin.py`), template rendering/pushing, telemetry setup, harness patching, 1-minute Firestore status sync (`sync-factory-agents.py` + `factory_store.py`), 5-minute self-healing watchdog, backups, and alerting |
 | [`templates/`](templates/README.md) | Shared multi-agent coordination protocol (`_shared/agents.md`) + 10 role templates (`lead`, `backend`, `frontend`, `reviewer`, `deployer`, `eval-lead`, `factory-analyst`, `search-evaluator`, `ui-craftsman`, `eval-deployer`) |
-| [`docs/`](docs/) | Architecture (`architecture.md`), setup runbook (`setup-runbook.md`), operations runbook (`operations-runbook.md`), agent protocol (`agent-protocol.md`), 5-layer evaluation pyramid (`verification-and-eval.md`), 27 lessons learned (`lessons-learned.md`), and v2 orchestration spec (`specs/`) |
+| [`docs/`](docs/) | Architecture (`architecture.md`), setup runbook (`setup-runbook.md`), operations runbook (`operations-runbook.md`), agent protocol (`agent-protocol.md`), 5-layer evaluation pyramid (`verification-and-eval.md`), 28 lessons learned (`lessons-learned.md`), and v2 orchestration spec (`specs/`) |
 | [`docs/telemetry/`](docs/telemetry/README.md) | ASD-STE100 documentation for reproducing telemetry, the evaluation data pipeline, and harness hooks / stacked Cloud Trace waterfalls |
 | [`docs/grill-me-playbook.md`](docs/grill-me-playbook.md) | 5-pillar Socratic "Grill-Me" inquiry and domain-agnostic boilerplate compiler guide |
 | [`skills/scion-factory-bootstrap/SKILL.md`](skills/scion-factory-bootstrap/SKILL.md) | Portable Agent Skill to interview users, challenge vague specs using L1–L27, and compile new Scion factories |
