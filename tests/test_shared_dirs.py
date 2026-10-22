@@ -27,9 +27,19 @@ admin = _load("scion_admin", ROOT / "scripts" / "scion-admin.py")
 # --- scion-admin.py project-create -------------------------------------------------------------------------------
 
 def test_project_body_for_a_shared_git_project():
-    body = admin.project_create_body("project1", "https://github.com/o/r.git", "main", "shared", "tok")
-    assert body == {"name": "project1", "slug": "project1", "gitRemote": "https://github.com/o/r.git",
-                    "defaultBranch": "main", "workspaceMode": "shared", "githubToken": "tok"}
+    """The Hub takes the branch from the scion.dev/default-branch label; CreateProjectRequest has no branch field
+    (pkg/hub/handlers_projects_core.go), so a top-level branch key is silently ignored and the clone gets `main`."""
+    body = admin.project_create_body("project1-eval", "https://github.com/o/r.git", "eval-dashboard", "shared", "tok")
+    assert body == {"name": "project1-eval", "slug": "project1-eval", "gitRemote": "https://github.com/o/r.git",
+                    "workspaceMode": "shared", "githubToken": "tok",
+                    "labels": {"scion.dev/default-branch": "eval-dashboard",
+                               "scion.dev/clone-url": "https://github.com/o/r.git",
+                               "scion.dev/source-url": "https://github.com/o/r.git"}}
+
+
+def test_project_body_requires_an_https_git_url():
+    with pytest.raises(ValueError, match="https"):
+        admin.project_create_body("p", "git@github.com:o/r.git", "main", "per-agent", "")
 
 
 def test_project_body_without_a_token_leaves_it_out():

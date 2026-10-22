@@ -378,20 +378,23 @@ Create both projects from the same git URL. `shared` (one checkout per Hub proje
 in `_shared/agents.md` and gives the watchdog the checkout it copies the knowledge plane from:
 
 ```bash
-for p in "project1 main" "project1-eval eval-dashboard"; do set -- $p
-  FACTORY_ENV=config/project1.env scripts/run-on-hub.sh scripts/scion-admin.py project-create --slug "$1" \
-    --git-url "https://github.com/$GITHUB_REPO.git" --branch "$2" --mode shared --token-file '~/.factory-github-token'
-done
+FACTORY_ENV=config/project1.env scripts/run-on-hub.sh scripts/scion-admin.py project-create --slug project1 \
+  --git-url "https://github.com/$GITHUB_REPO.git" --branch main --mode shared --token-file '~/.factory-github-token'
+FACTORY_ENV=config/project1.env scripts/run-on-hub.sh scripts/scion-admin.py project-create --slug project1-eval \
+  --git-url "https://github.com/$GITHUB_REPO.git" --branch eval-dashboard --mode shared --token-file '~/.factory-github-token'
 ```
 
-The Hub stores the token as each project's `GITHUB_TOKEN` secret. Make sure it is injected **always** (step 5):
-`scion hub secret update --project=project1 GITHUB_TOKEN --injection-mode always` (note the `=`).
+(Keep `'~/…'` quoted so the path is expanded on the VM, not on your machine.)
+
+The Hub stores the token as each project's `GITHUB_TOKEN` secret with injection mode **always**, so agents can
+push. The branch is sent as the `scion.dev/default-branch` label (the create request has no branch field).
 
 (`--mode per-agent` gives each agent its own clone on `scion/<agent>`; the leads then point out that the
 shared-checkout protocol doesn't match, and there is no host checkout to copy the knowledge plane from.)
 
 **Check:** `scripts/run-on-hub.sh scripts/scion-admin.py projects` lists both slugs, and on the VM
-`git -C ~/.scion/projects/project1 log --oneline -1` shows `main`.
+`git -C ~/.scion/projects/project1 branch --show-current` prints `main` and
+`git -C ~/.scion/projects/project1-eval branch --show-current` prints `eval-dashboard`.
 
 ### M5. Shared directories (per factory)
 

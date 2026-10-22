@@ -194,13 +194,19 @@ def project_create_body(slug, git_url, branch, mode, token):
     """POST /api/v1/projects body for a git-backed Hub project.
 
     `scion hub projects create` has no token flag, and a `shared` project is cloned at creation, so a private
-    repository needs `githubToken` here (the Hub also stores it as the project's GITHUB_TOKEN secret).
+    repository needs `githubToken` here (the Hub stores it as the project's GITHUB_TOKEN secret, injection
+    "always"). The branch travels as the scion.dev/default-branch label, like the CLI sends it: the request has no
+    branch field, and without the label the Hub clones `main` (lessons-learned.md L28).
     """
     if mode not in WORKSPACE_MODES:
         raise ValueError(f"unknown workspace mode {mode!r}: use one of {', '.join(WORKSPACE_MODES)}")
+    if not git_url.startswith("https://"):
+        raise ValueError(f"git URL {git_url!r}: use the https:// clone URL (the Hub clones over HTTPS with the token)")
     if mode == "shared" and not token:
         raise ValueError("a shared project is cloned at creation: pass --token-file with a GitHub token")
-    body = {"name": slug, "slug": slug, "gitRemote": git_url, "defaultBranch": branch, "workspaceMode": mode}
+    body = {"name": slug, "slug": slug, "gitRemote": git_url, "workspaceMode": mode,
+            "labels": {"scion.dev/default-branch": branch, "scion.dev/clone-url": git_url,
+                       "scion.dev/source-url": git_url}}
     if token:
         body["githubToken"] = token
     return body
