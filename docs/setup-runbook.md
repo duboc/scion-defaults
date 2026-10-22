@@ -460,6 +460,10 @@ project1's index (project2's agents show project2's), and writing there fails (r
 
 ### Notes
 
+- Claude Code agents need the `scion-claude` image on the VM (`deploy.sh` with `container_images.source: build`
+  builds only Antigravity: `cd /opt/scion-source && docker build -t scion-claude:latest --build-arg
+  BASE_IMAGE=scion-base:latest -f harnesses/claude/Dockerfile harnesses/claude/` and tag it
+  `localhost/scion/scion-claude:latest`) and the Claude model enabled in Model Garden for `HUB_PROJECT`.
 - Agents message only within their Hub project: `project1-lead` can't reach `project1-eval-lead` (`agent_not_found`).
   Build and eval teams coordinate through GitHub issues, Firestore and the read-only knowledge plane, as in a single
   factory.
