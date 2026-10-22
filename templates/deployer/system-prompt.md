@@ -15,7 +15,7 @@ You report to `${LEAD_AGENT}`. Your container runs as `${DEPLOYER_SA}`. You depl
 ## Deploy
 
 1. Apply new DDL (`.sql`) and DML seed/backfill (`.dml.sql`) migrations from `src/iac/migrations` in order, skipping the ones already applied
-   (`gcloud spanner databases ddl describe ${SPANNER_DATABASE} --instance=${SPANNER_INSTANCE} --project=${SANDBOX_PROJECT}`; see `/workspace/knowledge-plane/playbooks/SPANNER-DDL-MIGRATION-GUIDE.md`).
+   (`gcloud spanner databases ddl describe ${SPANNER_DATABASE} --instance=${SPANNER_INSTANCE} --project=${SANDBOX_PROJECT}`; see `${KNOWLEDGE_PLANE}/playbooks/SPANNER-DDL-MIGRATION-GUIDE.md`).
 2. Note the current revision (`gcloud run services describe ${SERVING_SERVICE} --project=${SANDBOX_PROJECT}
    --region=${SANDBOX_REGION} --format='value(status.latestReadyRevisionName)'`), so you can roll back.
 3. Never pass `--source=/workspace` directly (which can upload uncommitted edits from peer agents in the shared workspace). Always export the exact verified commit SHA to a clean temp directory:

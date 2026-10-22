@@ -12,6 +12,8 @@ Run it from your machine through run-on-hub.sh:
     scripts/run-on-hub.sh scripts/scion-admin.py schedule pause --project psearch --name psearch-lead-heartbeat
     scripts/run-on-hub.sh scripts/scion-admin.py experiments
     scripts/run-on-hub.sh scripts/scion-admin.py experiments --set web.terminal_workspace=false
+    scripts/run-on-hub.sh scripts/scion-admin.py shared-dirs                  # scratchpad + knowledge-plane, dry run
+    scripts/run-on-hub.sh scripts/scion-admin.py shared-dirs --apply
 
 Authentication: mints a 5-minute interactive user JWT for PO_EMAIL, signed with the key the Hub derives from
 SCION_SERVER_SESSION_SECRET in ~/.scion/hub.env (sha256("scion-hub-signing-key:user_signing_key:" + secret)).
@@ -25,6 +27,7 @@ import hashlib
 import hmac
 import json
 import os
+import re
 import sqlite3
 import sys
 import time
@@ -174,6 +177,77 @@ def cmd_agent_start(args):
     print(f"HTTP {status}: {out}")
 
 
+# Shared directories: project-level folders mounted into every agent at /scion-volumes/<name>, shown as tabs next to
+# "workspace" in the project's Files view. The factory uses `scratchpad` (read-write notes and briefs outside Git)
+# and `knowledge-plane` (read-only for agents; factory-watchdog.py keeps it in sync with the factory's knowledge plane).
+DEFAULT_SHARED_DIRS = "scratchpad,knowledge-plane:ro"
+_SLUG = re.compile(r"^[a-z0-9]+(-[a-z0-9]+)*$")  # Scion's shared-dir name rule (pkg/api/types.go isValidSlug)
+
+
+def parse_dir_specs(text):
+    """"scratchpad,knowledge-plane:ro" -> [{"name": "scratchpad", "read_only": False}, {..., "read_only": True}]."""
+    dirs = []
+    for spec in [s.strip() for s in text.split(",") if s.strip()]:
+        name, _, mode = spec.partition(":")
+        if not _SLUG.match(name) or mode not in ("", "ro", "rw"):
+            raise ValueError(f"bad shared-dir spec {spec!r}: use <name>[:ro|:rw], name in lowercase letters, digits, dashes")
+        dirs.append({"name": name, "read_only": mode == "ro"})
+    if not dirs:
+        raise ValueError("no shared directories given")
+    return dirs
+
+
+def plan_shared_dirs(existing, wanted):
+    """Which wanted dirs to create, and the mode mismatches to report (never fixed automatically)."""
+    have = {d["name"]: bool(d.get("read_only")) for d in existing}
+    create, conflicts = [], []
+    for d in wanted:
+        if d["name"] not in have:
+            create.append(d)
+        elif have[d["name"]] != d["read_only"]:
+            mode = lambda ro: "read-only" if ro else "read-write"
+            conflicts.append(f"{d['name']} is {mode(have[d['name']])}, wanted {mode(d['read_only'])} "
+                             "(fix it by hand: removing it deletes its files)")
+    return create, conflicts
+
+
+def default_projects(env):
+    """FACTORY_PROJECTS, else BUILD_PROJECT and EVAL_PROJECT (both forwarded by run-on-hub.sh)."""
+    projects = [p.strip() for p in env.get("FACTORY_PROJECTS", "").split(",") if p.strip()]
+    return projects or [p for p in (env.get("BUILD_PROJECT"), env.get("EVAL_PROJECT")) if p]
+
+
+def cmd_shared_dirs(args):
+    try:
+        wanted = parse_dir_specs(args.dirs)
+    except ValueError as e:
+        sys.exit(str(e))
+    projects = [p for p in (args.projects or "").split(",") if p] or default_projects(os.environ)
+    if not projects:
+        sys.exit("no projects: pass --projects or set FACTORY_PROJECTS / BUILD_PROJECT+EVAL_PROJECT in factory.env")
+    problems = 0
+    for slug in projects:
+        pid = project_id(slug)
+        _, out = api("GET", f"/api/v1/projects/{pid}/shared-dirs")
+        create, conflicts = plan_shared_dirs(out.get("sharedDirs") or [], wanted)
+        for d in create:
+            mode = "read-only" if d["read_only"] else "read-write"
+            if args.apply:
+                status, _ = api("POST", f"/api/v1/projects/{pid}/shared-dirs", d)
+                print(f"{slug}: created {d['name']} ({mode}) HTTP {status}")
+            else:
+                print(f"{slug}: would create {d['name']} ({mode}) at /scion-volumes/{d['name']}")
+        for c in conflicts:
+            print(f"{slug}: CONFLICT {c}")
+            problems += 1
+        if not create and not conflicts:
+            print(f"{slug}: ok ({', '.join(d['name'] for d in wanted)})")
+    if not args.apply:
+        print("dry run: nothing changed (add --apply). Agents get new mounts when their container is next created.")
+    if problems:
+        sys.exit(1)
+
+
 def cmd_experiments(args):
     _, current = api("GET", "/api/v1/admin/experiments")
     if not args.set:
@@ -231,6 +305,13 @@ def main():
     start.add_argument("--agent", required=True)
     start.add_argument("--resume", action="store_true", help="force resume if in error phase")
     start.set_defaults(func=cmd_agent_start)
+
+    sd = sub.add_parser("shared-dirs", help="ensure the factory's shared directories exist in each project")
+    sd.add_argument("--projects", help="comma-separated project slugs (default: FACTORY_PROJECTS, else "
+                                       "BUILD_PROJECT,EVAL_PROJECT)")
+    sd.add_argument("--dirs", default=DEFAULT_SHARED_DIRS, help=f"<name>[:ro|:rw],... (default: {DEFAULT_SHARED_DIRS})")
+    sd.add_argument("--apply", action="store_true", help="create the missing directories (default: dry run)")
+    sd.set_defaults(func=cmd_shared_dirs)
 
     sch = sub.add_parser("schedule", help="manage recurring message schedules (heartbeats)")
     sch.add_argument("action", choices=["list", "create", "update", "pause", "resume"])

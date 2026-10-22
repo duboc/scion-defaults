@@ -557,17 +557,46 @@ def check_po_inbox(conn, state, apply):
             print("    (dry-run: would emit Cloud Logging PO_ESCALATION alert)")
 
 
-def check_shared_knowledge_plane(conn, apply=False):
-    """Ensure Hub shared-dirs/knowledge-plane stays synced with the build project's knowledge-plane/ directory.
+def knowledge_plane_sources(projects, sources_env, legacy_source):
+    """Where each project's shared knowledge-plane copy comes from: {project: (source project, path in its checkout)}.
 
-    The source project is KNOWLEDGE_PLANE_SOURCE_PROJECT (default: the first entry in FACTORY_PROJECTS).
-    Agents in every factory project read the copy at /scion-volumes/knowledge-plane.
+    KNOWLEDGE_PLANE_SOURCES (several factories, e.g. one per monorepo product) maps a factory's build slug to the
+    knowledge plane inside that project's shared checkout: "project1=src/project1/knowledge-plane,project2=...".
+    `<slug>` and `<slug>-eval` both get it; unmapped projects are skipped. Without the map, every project gets
+    `knowledge-plane/` of KNOWLEDGE_PLANE_SOURCE_PROJECT (default: the first project).
     """
-    source_project = os.environ.get("KNOWLEDGE_PLANE_SOURCE_PROJECT") or (FACTORY_PROJECTS[0] if FACTORY_PROJECTS else "")
-    if not source_project:
+    mapping = {}
+    for entry in [e.strip() for e in (sources_env or "").split(",") if e.strip()]:
+        factory, sep, path = entry.partition("=")
+        factory, path = factory.strip(), path.strip().strip("/")
+        parts = path.split("/")
+        if not sep or not factory or not path or entry.split("=", 1)[1].strip().startswith("/") or ".." in parts:
+            raise ValueError(f"KNOWLEDGE_PLANE_SOURCES entry {entry!r}: use <build slug>=<relative path>")
+        mapping[factory] = path
+    if mapping:
+        sources = {}
+        for p in projects:
+            factory = p[:-len("-eval")] if p.endswith("-eval") and p not in mapping else p
+            if factory in mapping:
+                sources[p] = (factory, mapping[factory])
+        return sources
+    source = legacy_source or (projects[0] if projects else "")
+    return {p: (source, "knowledge-plane") for p in projects} if source else {}
+
+
+def check_shared_knowledge_plane(conn, apply=False):
+    """Keep each project's shared directory `knowledge-plane` in sync with its factory's knowledge plane.
+
+    Agents read the copy at /scion-volumes/knowledge-plane. The shared directory must exist (scion-admin.py
+    shared-dirs) and the source must be a shared checkout (~/.scion/projects/<slug>/). See knowledge_plane_sources().
+    """
+    try:
+        sources = knowledge_plane_sources(FACTORY_PROJECTS, os.environ.get("KNOWLEDGE_PLANE_SOURCES", ""),
+                                          os.environ.get("KNOWLEDGE_PLANE_SOURCE_PROJECT", ""))
+    except ValueError as e:
+        print(f"Check 5 (Shared Knowledge Plane): ERROR {e}", file=sys.stderr)
         return
-    src_dir = os.path.join(SCION_HOME, "projects", source_project, "knowledge-plane")
-    if not os.path.isdir(src_dir):
+    if not sources:
         return
 
     cursor = conn.cursor()
@@ -579,20 +608,43 @@ def check_shared_knowledge_plane(conn, apply=False):
 
     for r in rows:
         slug = r["slug"]
-        id8 = r["id"].split("-")[0]
+        if slug not in sources:
+            print(f"Check 5 (Shared Knowledge Plane): {slug}: skipped (not in KNOWLEDGE_PLANE_SOURCES)")
+            continue
+        source_project, rel = sources[slug]
+        src_dir = os.path.join(SCION_HOME, "projects", source_project, rel)
+        id8 = r["id"].replace("-", "")[:8]  # config.SharedDirHostPath: <slug>__<first 8 hex of the project ID>
         dst_dir = os.path.join(SCION_HOME, "project-configs", f"{slug}__{id8}", "shared-dirs", "knowledge-plane")
+        if not os.path.isdir(src_dir):
+            print(f"Check 5 (Shared Knowledge Plane): {slug}: source missing ({src_dir}; needs a shared checkout)")
+            continue
         if not os.path.isdir(os.path.dirname(dst_dir)):
+            print(f"Check 5 (Shared Knowledge Plane): {slug}: skipped (no shared-dirs yet; create them and start an agent)")
             continue
         if apply:
             os.makedirs(dst_dir, exist_ok=True)
             subprocess.run(["rsync", "-a", "--delete", src_dir + "/", dst_dir + "/"], check=False)
-    print(f"Check 5 (Shared Knowledge Plane): {'synced' if apply else 'checked'} from {src_dir}")
+        print(f"Check 5 (Shared Knowledge Plane): {slug}: {'synced' if apply else 'would sync'} from {src_dir}")
 
 
 
 # ---------------------------------------------------------------------------
 # Installation helper
 # ---------------------------------------------------------------------------
+def watchdog_env_content(path):
+    """watchdog.env for the cron runs: every setting the checks read, so cron behaves like the install run."""
+    lines = ["# Factory watchdog configuration",
+             f"ADMIN_EMAIL={ADMIN_EMAIL}",
+             f"HUB_PROJECT_ID={HUB_PROJECT_ID}",
+             f"FACTORY_PROJECTS={','.join(FACTORY_PROJECTS)}",
+             f"MAX_RESTARTS_PER_HOUR={MAX_RESTARTS_PER_HOUR}"]
+    for key in ("KNOWLEDGE_PLANE_SOURCES", "KNOWLEDGE_PLANE_SOURCE_PROJECT"):
+        if os.environ.get(key):
+            lines.append(f"{key}={os.environ[key]}")
+    lines.append(f"PATH={path}")
+    return "\n".join(lines) + "\n"
+
+
 def install_cron():
     os.makedirs(SCION_HOME, exist_ok=True)
     dst_script = os.path.join(SCION_HOME, "factory-watchdog.py")
@@ -614,13 +666,7 @@ def install_cron():
     if "/snap/bin" not in cur_path.split(":"):
         cur_path = f"/snap/bin:{cur_path}"
 
-    env_content = f"""# Factory watchdog configuration
-ADMIN_EMAIL={ADMIN_EMAIL}
-HUB_PROJECT_ID={HUB_PROJECT_ID}
-FACTORY_PROJECTS={','.join(FACTORY_PROJECTS)}
-MAX_RESTARTS_PER_HOUR={MAX_RESTARTS_PER_HOUR}
-PATH={cur_path}
-"""
+    env_content = watchdog_env_content(cur_path)
     with open(WATCHDOG_ENV, "w", encoding="utf-8") as f:
         f.write(env_content)
     os.chmod(WATCHDOG_ENV, 0o600)
