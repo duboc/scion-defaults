@@ -1,6 +1,6 @@
 schema_version: "1"
 description: "Frontend engineer of the ${BUILD_PROJECT} factory (Antigravity on Vertex AI). Reports to ${LEAD_AGENT}."
-default_harness_config: antigravity
+default_harness_config: ${ANTIGRAVITY_HARNESS}
 model: "Gemini 4 Argon (High)"
 agent_instructions: agents.md
 system_prompt: system-prompt.md

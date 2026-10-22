@@ -1,6 +1,6 @@
 schema_version: "1"
 description: "Release engineer of the ${BUILD_PROJECT} factory (Claude Code). Deploys to ${SANDBOX_PROJECT} as ${DEPLOYER_SA}. Reports to ${LEAD_AGENT}."
-default_harness_config: claude
+default_harness_config: ${CLAUDE_HARNESS}
 agent_instructions: agents.md
 system_prompt: system-prompt.md
 env:

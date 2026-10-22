@@ -1,6 +1,6 @@
 schema_version: "1"
 description: "Backend engineer of the ${BUILD_PROJECT} factory (OpenCode on Vertex AI). Reports to ${LEAD_AGENT}."
-default_harness_config: opencode
+default_harness_config: ${OPENCODE_HARNESS}
 model: google-vertex/gemini-4-argon
 agent_instructions: agents.md
 system_prompt: system-prompt.md

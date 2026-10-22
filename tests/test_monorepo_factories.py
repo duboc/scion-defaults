@@ -312,3 +312,124 @@ def test_lead_agent_for_follows_the_naming_convention(watchdog, project, agents,
 
 def test_lead_agent_for_never_picks_another_factorys_lead(watchdog):
     assert watchdog.lead_agent_for("project2", ["project1-lead", "project2-lead"]) == "project2-lead"
+
+
+# --- Task 4: <harness>-factory harness-configs -------------------------------------------------------------------
+
+make_hc = _load("make_factory_harness_configs", ROOT / "scripts" / "make-factory-harness-configs.py")
+
+CLAUDE_CONFIG = """harness: claude
+image: scion-claude:latest
+command:
+  base: ["claude", "--no-chrome", "--dangerously-skip-permissions"]
+  resume_flag: "--continue"
+  task_position: after_base_args
+"""
+OPENCODE_CONFIG = """harness: opencode
+command:
+  # opencode-launch.sh renames GITHUB_TOKEN
+  base: ["sh", "/home/scion/.local/bin/opencode-launch.sh"]
+  resume_flag: "--continue"
+"""
+LAUNCHER = ["sh", "/home/scion/.local/bin/factory-cd.sh"]
+
+
+def _base(text):
+    return json.loads(re.search(r"^\s+base:\s*(\[.*\])\s*$", text, re.M).group(1))
+
+
+def test_prefix_command_base_puts_factory_cd_first():
+    text, changed = make_hc.prefix_command_base(CLAUDE_CONFIG)
+    assert changed is True
+    assert _base(text) == LAUNCHER + ["claude", "--no-chrome", "--dangerously-skip-permissions"]
+    assert text.replace(text.splitlines()[3], "") == CLAUDE_CONFIG.replace(CLAUDE_CONFIG.splitlines()[3], "")
+
+
+def test_prefix_command_base_is_idempotent():
+    once, _ = make_hc.prefix_command_base(CLAUDE_CONFIG)
+    twice, changed = make_hc.prefix_command_base(once)
+    assert changed is False
+    assert twice == once
+
+
+def test_prefix_command_base_wraps_an_existing_launcher():
+    text, _ = make_hc.prefix_command_base(OPENCODE_CONFIG)
+    assert _base(text) == LAUNCHER + ["sh", "/home/scion/.local/bin/opencode-launch.sh"]
+    assert "# opencode-launch.sh renames GITHUB_TOKEN" in text
+
+
+def test_prefix_command_base_requires_a_command_base():
+    with pytest.raises(ValueError, match="command.base"):
+        make_hc.prefix_command_base("harness: x\nimage: y\n")
+
+
+@pytest.mark.parametrize("subdir,expected", [("src/project1", "claude-factory"), (".", "claude")])
+def test_harness_vars_switch_to_factory_configs_only_with_a_subdir(subdir, expected):
+    assert make_hc.harness_vars(subdir)["CLAUDE_HARNESS"] == expected
+    assert set(make_hc.harness_vars(subdir)) == {"CLAUDE_HARNESS", "ANTIGRAVITY_HARNESS", "OPENCODE_HARNESS",
+                                                 "HERMES_HARNESS"}
+
+
+@pytest.fixture
+def scion_home(tmp_path):
+    home = tmp_path / ".scion"
+    for name, text in (("claude", CLAUDE_CONFIG), ("opencode", OPENCODE_CONFIG)):
+        hc = home / "harness-configs" / name
+        (hc / "home" / ".claude").mkdir(parents=True)
+        (hc / "config.yaml").write_text(text)
+        (hc / "provision.py").write_text("# provisioner\n")
+    return home
+
+
+def _make_hc(scion_home, *args):
+    return subprocess.run([sys.executable, str(ROOT / "scripts" / "make-factory-harness-configs.py"),
+                           "--scion-home", str(scion_home), "--harness", "claude,opencode", *args],
+                          capture_output=True, text=True)
+
+
+def test_make_factory_harness_configs_dry_run_writes_nothing(scion_home):
+    res = _make_hc(scion_home)
+    assert res.returncode == 0, res.stderr
+    assert "claude-factory" in res.stdout
+    assert not (scion_home / "harness-configs" / "claude-factory").exists()
+
+
+def test_make_factory_harness_configs_apply_builds_custom_copies(scion_home):
+    for _ in range(2):
+        res = _make_hc(scion_home, "--apply", "--no-sync")
+        assert res.returncode == 0, res.stderr
+    for name, original in (("claude", CLAUDE_CONFIG), ("opencode", OPENCODE_CONFIG)):
+        copy = scion_home / "harness-configs" / f"{name}-factory"
+        assert _base((copy / "config.yaml").read_text())[:2] == LAUNCHER
+        assert (copy / "provision.py").read_text() == "# provisioner\n"
+        launcher = copy / "home" / ".local" / "bin" / "factory-cd.sh"
+        assert launcher.read_text() == FACTORY_CD.read_text()
+        assert stat.S_IMODE(launcher.stat().st_mode) == 0o755
+        assert (scion_home / "harness-configs" / name / "config.yaml").read_text() == original
+
+
+def test_make_factory_harness_configs_skips_missing_harnesses(scion_home):
+    res = subprocess.run([sys.executable, str(ROOT / "scripts" / "make-factory-harness-configs.py"),
+                          "--scion-home", str(scion_home), "--harness", "hermes", "--apply", "--no-sync"],
+                         capture_output=True, text=True)
+    assert res.returncode != 0
+    assert "hermes" in res.stderr
+
+
+def test_rendered_templates_use_factory_harness_configs_with_a_subdir(tmp_path):
+    files = _render_all(tmp_path, AGENT_PREFIX="project1", FACTORY_SUBDIR="src/project1")
+    assert "default_harness_config: claude-factory" in files["lead/scion-agent.yaml"]
+    assert "default_harness_config: antigravity-factory" in files["eval-lead/scion-agent.yaml"]
+
+
+def test_rendered_templates_keep_bundled_harness_configs_without_a_subdir(tmp_path):
+    files = _render_all(tmp_path)
+    assert "default_harness_config: claude\n" in files["lead/scion-agent.yaml"]
+    assert "default_harness_config: opencode\n" in files["backend/scion-agent.yaml"]
+
+
+@pytest.mark.parametrize("config,expected", [("claude-factory", "claude"), ("claude", "claude"),
+                                             ("antigravity-factory", "antigravity"), ("my-hermes", "my-hermes")])
+def test_push_templates_registers_the_harness_type_not_the_config_name(config, expected):
+    push = _load("push_templates", ROOT / "scripts" / "push-templates.py")
+    assert push.harness_type(config) == expected

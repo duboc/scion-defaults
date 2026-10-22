@@ -33,9 +33,18 @@ import tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 
+# Shared by this script and the remote one below: templates rendered for a monorepo factory name a custom
+# harness-config (claude-factory, built by make-factory-harness-configs.py), but the Hub registers the harness type.
+HARNESS_TYPE = r'''
+def harness_type(config_name):
+    """The harness type behind a harness-config name: claude-factory -> claude."""
+    return config_name[:-len("-factory")] if config_name.endswith("-factory") else config_name
+'''
+exec(HARNESS_TYPE)
+
 REMOTE = r'''
 import base64, glob, hashlib, hmac, io, json, os, sqlite3, sys, tarfile, time, urllib.error, urllib.request
-
+__HARNESS_TYPE__
 PAYLOAD, PROJECT, ROLES, APPLY = __ARGS__
 SCION_HOME = os.path.expanduser(os.environ.get("SCION_HOME", "~/.scion"))
 HUB_URL = os.environ.get("HUB_LOCAL_URL", "http://localhost:8080").rstrip("/")
@@ -160,7 +169,7 @@ def main():
         config = files["scion-agent.yaml"][0].decode()
         field = lambda key: next((l.split(":", 1)[1].split("#")[0].strip().strip('"') for l in config.splitlines()
                                   if l.startswith(key + ":")), "")
-        harness, description = field("default_harness_config"), field("description")
+        harness, description = harness_type(field("default_harness_config")), field("description")
 
         row = db().execute("SELECT id, storage_path, storage_uri, files FROM templates WHERE scope='project' AND scope_id=? AND slug=?",
                            (pid, role)).fetchone()
@@ -252,6 +261,7 @@ def main():
                 tar.add(os.path.join(out, role), arcname=role)
         payload = base64.b64encode(buf.getvalue()).decode()
         remote = REMOTE.replace("__ARGS__", repr((payload, args.project, roles, args.apply)))
+        remote = remote.replace("__HARNESS_TYPE__", HARNESS_TYPE)
         script = os.path.join(tmp, "push_templates_remote.py")
         with open(script, "w") as f:
             f.write(remote)

@@ -1,6 +1,6 @@
 schema_version: "1"
 description: "QA and ADR reviewer of the ${BUILD_PROJECT} factory (Hermes on Vertex AI). Reports to ${LEAD_AGENT}."
-default_harness_config: hermes
+default_harness_config: ${HERMES_HARNESS}
 model: google/gemini-4-argon
 agent_instructions: agents.md
 system_prompt: system-prompt.md
