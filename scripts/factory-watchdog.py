@@ -623,8 +623,10 @@ def check_shared_knowledge_plane(conn, apply=False):
         if not os.path.isdir(src_dir):
             print(f"Check 5 (Shared Knowledge Plane): {slug}: source missing ({src_dir}; needs a shared checkout)")
             continue
-        if not os.path.isdir(os.path.dirname(dst_dir)):
-            print(f"Check 5 (Shared Knowledge Plane): {slug}: skipped (no shared-dirs yet; create them and start an agent)")
+        # The Hub creates project-configs/<slug>__<id8>/ with the project; shared-dirs/ appears only when the first
+        # agent starts. Fill it before that, so the first agent already finds the knowledge plane (L28).
+        if not os.path.isdir(os.path.dirname(os.path.dirname(dst_dir))):
+            print(f"Check 5 (Shared Knowledge Plane): {slug}: skipped (project not set up on this broker)")
             continue
         if apply:
             os.makedirs(dst_dir, exist_ok=True)
