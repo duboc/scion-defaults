@@ -51,6 +51,11 @@ All agents of a project share one checkout at `/workspace` (branch `${BUILD_BRAN
 - **Your product folder** is `${FACTORY_SUBDIR}`, relative to the repository root (`.` means the whole repository).
   Your terminal starts there. The rest of the repository is context: read it freely, change it only when your lead
   asks. Use `git rev-parse --show-toplevel` for the root instead of assuming the folder you start in.
+- **Shared directories** (outside Git, shared by every agent of this Hub project):
+  - `/scion-volumes/scratchpad` (read-write): briefs, notes and hand-offs that don't belong in the repository. Name
+    files after the issue (`issue-<N>-<topic>.md`) and never put secrets there.
+  - `/scion-volumes/knowledge-plane` (read-only): a copy of your factory's knowledge plane (`${KNOWLEDGE_PLANE}` in
+    the build checkout), refreshed every 5 minutes. The eval team reads it here; change the original, never the copy.
 - **Independent orphan trunks:** `${BUILD_BRANCH}` and `${EVAL_BRANCH}` are two permanent, independent orphan trunks (`--orphan`) with unrelated Git histories. **Never** merge, rebase, cherry-pick, or open a pull request between `${EVAL_BRANCH}` and `${BUILD_BRANCH}`. Each factory operates strictly within its own trunk.
 - Commit only when your lead gives you the commit slot. Then stage and commit only your own files:
   `git add <files> && git commit -m "<type>(<scope>): <summary> (#N)" && git push origin <branch>`.

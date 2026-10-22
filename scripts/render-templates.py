@@ -44,7 +44,7 @@ harness_vars = _sibling("make_factory_harness_configs", "make-factory-harness-co
 VARS = ("HUB_PROJECT HUB_ZONE HUB_VM HUB_OS_USER HUB_LOCAL_URL SANDBOX_PROJECT SANDBOX_REGION FIRESTORE_PROJECT "
         "FIRESTORE_DATABASE SPANNER_INSTANCE SPANNER_DATABASE BQ_DATASET DATA_BUCKET DEPLOYER_SA_NAME RUNTIME_SA_NAME SERVING_SERVICE DASHBOARD_SERVICE "
         "GITHUB_REPO BUILD_PROJECT EVAL_PROJECT BUILD_BRANCH EVAL_BRANCH PO_EMAIL DEPLOYER_SA RUNTIME_SA "
-        "AGENT_PREFIX FACTORY_SUBDIR").split()
+        "AGENT_PREFIX FACTORY_SUBDIR KNOWLEDGE_PLANE").split()
 PLACEHOLDER = re.compile(r"\$\{([A-Z][A-Z0-9_]*)\}")
 SLUG = re.compile(r"^[a-z0-9]+(-[a-z0-9]+)*$")
 MAX_AGENT_NAME = 63  # Scion slugifies agent names and caps them at 63 characters (pkg/api/slug.go).
@@ -81,6 +81,11 @@ def normalize_subdir(value):
         raise ValueError(f"FACTORY_SUBDIR {value!r} must be a folder inside the repository, relative to its root "
                          "(e.g. src/project1)")
     return "/".join(parts) or "."
+
+
+def knowledge_plane_path(subdir):
+    """${KNOWLEDGE_PLANE}: the factory's knowledge plane in the checkout (each monorepo product keeps its own)."""
+    return "/workspace/knowledge-plane" if subdir == "." else f"/workspace/{subdir}/knowledge-plane"
 
 
 def load_env(path):
@@ -136,6 +141,7 @@ def main():
         sys.exit(str(e))
     values.update(role_agent_vars(prefix, all_roles))
     values.update(harness_vars(values["FACTORY_SUBDIR"]))
+    values["KNOWLEDGE_PLANE"] = knowledge_plane_path(values["FACTORY_SUBDIR"])
     if args.agent_names:
         for role in all_roles:
             print(f"{role}\t{agent_name(prefix, role)}")
