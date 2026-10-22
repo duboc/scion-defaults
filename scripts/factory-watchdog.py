@@ -78,9 +78,14 @@ load_env_file(WATCHDOG_ENV)
 
 ADMIN_EMAIL = os.environ.get("ADMIN_EMAIL") or os.environ.get("PO_EMAIL", "")
 HUB_PROJECT_ID = os.environ.get("HUB_PROJECT_ID") or os.environ.get("HUB_PROJECT", "")
-FACTORY_PROJECTS = [
-    p.strip() for p in os.environ.get("FACTORY_PROJECTS", "psearch,psearch-eval").split(",") if p.strip()
-]
+def default_factory_projects(env):
+    """FACTORY_PROJECTS, else BUILD_PROJECT and EVAL_PROJECT (run-on-hub.sh forwards both), else the psearch reference."""
+    projects = [p.strip() for p in env.get("FACTORY_PROJECTS", "").split(",") if p.strip()]
+    projects = projects or [p for p in (env.get("BUILD_PROJECT"), env.get("EVAL_PROJECT")) if p]
+    return projects or ["psearch", "psearch-eval"]
+
+
+FACTORY_PROJECTS = default_factory_projects(os.environ)
 MAX_RESTARTS_PER_HOUR = int(os.environ.get("MAX_RESTARTS_PER_HOUR", "3"))
 
 

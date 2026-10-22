@@ -173,6 +173,27 @@ scion project service-accounts list          # note the ID; `verify <id>` re-che
 
 **Check:** `scion project service-accounts list` shows the SA as verified in both projects. Inside each project folder, `git status -sb` tracks its respective branch, and `git merge-base "origin/$BUILD_BRANCH" "origin/$EVAL_BRANCH"` exits with code 1 (proving independent orphan trunks with no shared ancestry).
 
+### Shared directories: scratchpad and knowledge plane
+
+Give both projects two shared directories. Every agent of a project mounts them, whatever the workspace mode, and the
+project's **Files** view shows them as tabs next to `workspace`:
+
+| Name | Mount in every agent | Mode | Holds |
+|---|---|---|---|
+| `scratchpad` | `/scion-volumes/scratchpad` | read-write | briefs, notes and hand-offs that don't belong in Git |
+| `knowledge-plane` | `/scion-volumes/knowledge-plane` | read-only for agents | a copy of the build project's `knowledge-plane/`, refreshed every 5 minutes by the watchdog (step 10) |
+
+```bash
+scripts/run-on-hub.sh scripts/scion-admin.py shared-dirs            # plan (BUILD_PROJECT and EVAL_PROJECT)
+scripts/run-on-hub.sh scripts/scion-admin.py shared-dirs --apply
+```
+
+(Same as Project → Settings → **Shared Directories** in the web UI. `scion shared-dir create` edits a local project's
+settings file, not a Hub project.) Agents get the mounts when their container is created, so do this before step 8 or
+restart the agents afterwards.
+
+**Check:** a second run prints `ok (scratchpad, knowledge-plane)` for both projects.
+
 ## 7. Telemetry & Harness Hooks (before agents start)
 
 Configure end-to-end OpenTelemetry (Cloud Logging, Cloud Monitoring, Cloud Trace) and ensure harness hooks run cleanly with sub-second latency (L6):
@@ -264,7 +285,7 @@ Install the watchdog daemon (every 5 minutes):
 scripts/run-on-hub.sh scripts/factory-watchdog.py --install-cron --apply
 ```
 
-**Check:** `crontab -l` on the Hub VM lists `sync_factory_agents.py`, `backup-hub.sh`, and `factory-watchdog.py`. The sync first run prints `synced 10 agents`, `~/.scion/factory-sync.log` gains a line every minute, `~/backups` contains initial database and state archives, and `~/.scion/watchdog-state.json` contains active agent bookmarks.
+**Check:** `crontab -l` on the Hub VM lists `sync_factory_agents.py`, `backup-hub.sh`, and `factory-watchdog.py`. The sync first run prints `synced 10 agents`, `~/.scion/factory-sync.log` gains a line every minute, `~/backups` contains initial database and state archives, and `~/.scion/watchdog-state.json` contains active agent bookmarks. `~/.scion/watchdog.log` shows `Check 5 (Shared Knowledge Plane): <project>: synced` for both projects, and `cat /scion-volumes/knowledge-plane/INDEX.md` works inside an eval agent.
 
 ## 11. Push alerts and billing budgets
 
