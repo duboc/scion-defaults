@@ -1,6 +1,6 @@
 # Spec and plan: several factories in one monorepo
 
-- **Status:** Proposed (2026-10-22)
+- **Status:** Implemented; e2e smoke passed on a throwaway Hub (2026-10-22, see lessons-learned.md L28)
 - **Related:** [setup-runbook.md](../setup-runbook.md), [templates/README.md](../../templates/README.md),
   [Scion agent config reference](https://googlecloudplatform.github.io/scion/reference/agent-config/)
 

@@ -439,3 +439,37 @@ fix now lives. Dates are UTC. "Encoded in" points to the script, template rule o
   3. **Claude Code Log-to-Span Synthesis & Cloud Logging Correlation:** `CorrelateAndSynthesizeClaudeSpans` attaches the active turn's `TraceID`/`SpanID` to native OTLP logs and synthesizes `gen_ai.api.response/<model>` child spans for `api_request`/`api_error`. `protoLogToCloudEntry` sets top-level `entry.SpanID`, `entry.TraceSampled = true`, and `SCION_GCP_PROJECT_ID` fallback so logs appear inline inside Cloud Trace waterfalls.
   4. **Safe Live Deployment:** Update `/usr/local/bin/sciontool.real` in running containers via `docker cp` ([`scripts/patch-sciontool-telemetry.sh`](../scripts/patch-sciontool-telemetry.sh)) — never run `docker restart` on `--rm` Scion containers.
 - **Encoded in:** [`scripts/patch-sciontool-telemetry.sh`](../scripts/patch-sciontool-telemetry.sh), [`docs/telemetry/reproduce-telemetry.md`](telemetry/reproduce-telemetry.md).
+
+## L28. Several factories in one monorepo: names, start folders, and what the e2e showed
+
+- **When:** 2026-10-22, on a throwaway single-node Hub (Scion `nightly-20261022`) with a private monorepo
+  (`src/project1..3`), two factories × (`lead` on Claude Code, `eval-lead` on Antigravity), plus one shared-mode lead.
+- **Problem:** several factories on one Hub need distinct agent names (bare `lead` in every project makes the CLI exit 2,
+  "agent name found in several projects", and every clone-per-agent lead pushes `scion/lead`), and each agent should
+  start in its product folder while keeping the whole repository. Scion has no working-directory setting: the Docker
+  runtime always sets `--workdir /workspace` (`pkg/runtime/common.go`), and a relative `--workspace <subdir>` mounts only
+  that subtree.
+- **Fix:**
+  1. `AGENT_PREFIX` renders every peer reference as `${<ROLE>_AGENT}` → `<prefix>-<role>`; start agents with
+     `render-templates.py --agent-names`.
+  2. `FACTORY_SUBDIR` + [`factory-cd.sh`](../config/harness/home/.local/bin/factory-cd.sh) in custom-named
+     `<harness>-factory` harness-configs ([`make-factory-harness-configs.py`](../scripts/make-factory-harness-configs.py)).
+     Bundled configs are refreshed from the binary on every Hub restart, so they are never edited.
+- **Evidence (e2e):** `scion list` showed `project1-lead` / `claude-factory` and `project1-eval-lead` /
+  `antigravity-factory`, containers `project1--project1-lead`; `readlink /proc/<pid>/cwd` was `/workspace/src/project1`
+  for both the `claude` and the `agy` process (`/workspace/src/project3` in shared mode); `ls /workspace/src` listed all
+  three products; four distinct `scion/<agent>` branches pushed; no trust prompt; Antigravity status hooks fired from the
+  product folder (activity `completed`), `git status` stayed clean; Claude on Vertex answered an admin message.
+- **Gotchas found:**
+  - Messaging is per Hub project: `scion message project1-eval-lead` from `project1-lead` → `agent_not_found` (404).
+  - `push-templates.py` fails on a fresh Hub (`default home directory not found`): the default template is stored as
+    blobs. `scion templates sync <role> --project=<slug>` works.
+  - `scion hub projects create` from the same URL a second time needs `--yes` when not on a TTY; shared mode clones at
+    creation and needs `githubToken` through the API (the CLI has no token flag).
+  - In clone-per-agent mode the leads flagged that `_shared/agents.md` describes a shared checkout on `main`.
+  - `deploy.sh` in a new org project: enable `cloudresourcemanager.googleapis.com` first, create the `default`
+    network if the org skips it, and re-run after a transient IAP SSH `502` (the script is idempotent).
+- **Encoded in:** [`scripts/render-templates.py`](../scripts/render-templates.py),
+  [`scripts/make-factory-harness-configs.py`](../scripts/make-factory-harness-configs.py),
+  [`config/harness/home/.local/bin/factory-cd.sh`](../config/harness/home/.local/bin/factory-cd.sh),
+  [`scripts/factory-watchdog.py`](../scripts/factory-watchdog.py), [setup-runbook.md](setup-runbook.md#several-factories-in-one-monorepo).
