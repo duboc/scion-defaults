@@ -315,7 +315,7 @@ scripts/run-on-hub.sh scripts/scion-admin.py message --project "$BUILD_PROJECT" 
 Use this when one repository holds several products (`src/project1`, `src/project2`, …) and each product gets its own
 factory (a build team and an eval team) on the same Hub. Every agent clones the whole repository, starts its harness
 in its product folder, is named after its factory (`project1-lead`, `project1-eval-lead`), and reads its own product's
-knowledge plane. Steps 0–5, 7 and 11 above apply once per Hub; this section replaces steps 6, 8, 9 and 10 for each
+knowledge plane. Steps 0–5, 7 and 11 above apply once per Hub; this section replaces steps 6, 8, 9 and the watchdog part of 10 for each
 factory. Design and evidence: [plans/2026-10-22-monorepo-factories.md](plans/2026-10-22-monorepo-factories.md),
 [L28](lessons-learned.md#l28-several-factories-in-one-monorepo-names-start-folders-and-what-the-e2e-showed).
 
@@ -403,36 +403,22 @@ FACTORY_ENV=config/project1.env scripts/run-on-hub.sh scripts/scion-admin.py sha
 FACTORY_ENV=config/project1.env scripts/run-on-hub.sh scripts/scion-admin.py shared-dirs --apply
 ```
 
+New Hub projects already have `scratchpad`; the first run usually creates only `knowledge-plane`.
+
 **Check:** a second run prints `ok (scratchpad, knowledge-plane)` for `project1` and `project1-eval`.
 
-### M6. Templates and agents (per factory)
+### M6. Templates (per factory)
 
 ```bash
 export FACTORY_ENV=config/project1.env
 scripts/push-templates.py --project project1 --roles lead,backend,frontend,reviewer,deployer --apply
 scripts/push-templates.py --project project1-eval \
   --roles eval-lead,factory-analyst,search-evaluator,ui-craftsman,eval-deployer --apply
-scripts/render-templates.py --agent-names          # the names to start
 ```
 
-Then, as the admin on the VM (`--harness-auth vertex-ai` for Claude Code on Vertex AI):
+**Check:** each run ends with `other templates unchanged: yes`.
 
-```bash
-scion start project1-lead -t lead --project=project1 --harness-auth vertex-ai "Read your instructions, then run your wake-up steps."
-scion start project1-eval-lead -t eval-lead --project=project1-eval --harness-auth vertex-ai "Stand by."
-# … one per role, with --service-account <id> for the deployers (step 6)
-```
-
-**Check:** `scion list --project=project1` shows `project1-lead` with harness-config `claude-factory`. Inside its
-container (`project1--project1-lead`): `readlink /proc/<claude pid>/cwd` is `/workspace/src/project1`,
-`ls /workspace/src` lists every product, `ls /scion-volumes` shows `knowledge-plane scratchpad`, and the terminal
-shows no trust prompt.
-
-### M7. Heartbeats, watchdog and knowledge plane (once per Hub, covering every factory)
-
-Heartbeats target the prefixed leads (step 9):
-`scion-admin.py schedule create --project project1 --name project1-lead-heartbeat --agent project1-lead …`, and the
-same for `project1-eval` / `project1-eval-lead`.
+### M7. Watchdog and knowledge planes (once per Hub, covering every factory; before the agents start)
 
 Install the watchdog with every factory project and each factory's knowledge plane (`<build slug>=<path in that
 project's checkout>`; the eval project follows its factory):
@@ -444,11 +430,33 @@ KNOWLEDGE_PLANE_SOURCES=project1=src/project1/knowledge-plane,project2=src/proje
   scripts/run-on-hub.sh scripts/factory-watchdog.py --install-cron --apply
 ```
 
-The install writes both settings into `~/.scion/watchdog.env`, so the cron runs keep them.
+The install run copies the knowledge planes right away (also into projects with no agent yet) and writes both
+settings into `~/.scion/watchdog.env`, so the cron runs every 5 minutes keep them.
 
-**Check:** `~/.scion/watchdog.log` shows `Check 5 (Shared Knowledge Plane): project1-eval: synced from
-…/projects/project1/src/project1/knowledge-plane`, and inside `project1--project1-eval-lead`
-`cat /scion-volumes/knowledge-plane/INDEX.md` shows project1's index while `project2`'s agents show project2's.
+**Check:** the output shows `Check 5 (Shared Knowledge Plane): project1-eval: synced from
+…/projects/project1/src/project1/knowledge-plane` for every project, and `crontab -l` on the VM lists
+`factory-watchdog.py`.
+
+### M8. Agents and heartbeats (per factory)
+
+`FACTORY_ENV=config/project1.env scripts/render-templates.py --agent-names` prints the names. Start them as the admin
+on the VM (`--harness-auth vertex-ai` for Claude Code on Vertex AI):
+
+```bash
+scion start project1-lead -t lead --project=project1 --harness-auth vertex-ai "Read your instructions, then run your wake-up steps."
+scion start project1-eval-lead -t eval-lead --project=project1-eval --harness-auth vertex-ai "Stand by."
+# … one per role, with --service-account <id> for the deployers (step 6)
+```
+
+Heartbeats target the prefixed leads (step 9):
+`scion-admin.py schedule create --project project1 --name project1-lead-heartbeat --agent project1-lead …`, and the
+same for `project1-eval` / `project1-eval-lead`.
+
+**Check:** `scion list --project=project1` shows `project1-lead` with harness-config `claude-factory`. Inside its
+container (`project1--project1-lead`): `readlink /proc/<claude pid>/cwd` is `/workspace/src/project1`,
+`ls /workspace/src` lists every product, `ls /scion-volumes` shows `knowledge-plane scratchpad`, and the terminal
+shows no trust prompt. Inside `project1--project1-eval-lead`, `cat /scion-volumes/knowledge-plane/INDEX.md` shows
+project1's index (project2's agents show project2's), and writing there fails (read-only).
 
 ### Notes
 

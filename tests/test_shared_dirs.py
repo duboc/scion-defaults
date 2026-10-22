@@ -170,7 +170,11 @@ def test_sync_copies_each_factorys_knowledge_plane_into_its_projects(watchdog, t
         kp.mkdir(parents=True)
         (kp / "INDEX.md").write_text(f"KP-{p}\n")
     for slug, pid in ids.items():
-        if slug != "project2-eval":  # no agent has started there yet: its shared-dirs base doesn't exist
+        if slug == "project2-eval":
+            # No agent has started there yet: the Hub has made the project-config folder but no shared-dirs/.
+            # The copy must still land, so the first agent already finds the knowledge plane.
+            (home / "project-configs" / f"{slug}__{pid[:8]}").mkdir(parents=True)
+        else:
             (home / "project-configs" / f"{slug}__{pid[:8]}" / "shared-dirs").mkdir(parents=True)
     stale = home / "project-configs" / "project1-eval__22222222" / "shared-dirs" / "knowledge-plane" / "old.md"
     stale.parent.mkdir()
@@ -188,9 +192,21 @@ def test_sync_copies_each_factorys_knowledge_plane_into_its_projects(watchdog, t
     assert (kp("project1-eval") / "INDEX.md").read_text() == "KP-project1\n"
     assert not (kp("project1-eval") / "old.md").exists()
     assert (kp("project2") / "INDEX.md").read_text() == "KP-project2\n"
-    assert not kp("project2-eval").exists()
-    out = capsys.readouterr().out
-    assert "project2-eval: skipped" in out
+    assert (kp("project2-eval") / "INDEX.md").read_text() == "KP-project2\n"
+
+
+def test_sync_skips_a_project_the_hub_has_not_set_up_on_this_broker(watchdog, tmp_path, monkeypatch, capsys):
+    home = tmp_path / ".scion"
+    conn = _hub(home.mkdir() or home, [("11111111-aaaa", "project1")])
+    kp = home / "projects" / "project1" / "src" / "project1" / "knowledge-plane"
+    kp.mkdir(parents=True)
+    (kp / "INDEX.md").write_text("KP\n")
+    monkeypatch.setattr(watchdog, "SCION_HOME", str(home))
+    monkeypatch.setattr(watchdog, "FACTORY_PROJECTS", ["project1"])
+    monkeypatch.setenv("KNOWLEDGE_PLANE_SOURCES", "project1=src/project1/knowledge-plane")
+    watchdog.check_shared_knowledge_plane(conn, apply=True)
+    assert not (home / "project-configs").exists()
+    assert "project1: skipped" in capsys.readouterr().out
 
 
 def test_sync_reports_a_missing_source(watchdog, tmp_path, monkeypatch, capsys):
