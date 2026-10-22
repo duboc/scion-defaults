@@ -289,3 +289,26 @@ def test_factory_cd_refreshes_stale_antigravity_hooks(monorepo):
     (repo / ".agents" / "hooks.json").write_text('{"v": 2}')
     assert _factory_cd(repo, home, "src/project1").returncode == 0
     assert (repo / "src" / "project1" / ".agents" / "hooks.json").read_text() == '{"v": 2}'
+
+
+# --- Task 5: watchdog lead discovery -----------------------------------------------------------------------------
+
+@pytest.fixture(scope="module")
+def watchdog(tmp_path_factory):
+    os.environ.setdefault("SCION_HOME", str(tmp_path_factory.mktemp("scion-home")))
+    return _load("factory_watchdog", ROOT / "scripts" / "factory-watchdog.py")
+
+
+@pytest.mark.parametrize("project,agents,expected", [
+    ("project1", ["project1-backend", "project1-lead"], "project1-lead"),
+    ("project1-eval", ["project1-factory-analyst", "project1-eval-lead"], "project1-eval-lead"),
+    ("psearch", ["backend", "lead"], "lead"),
+    ("psearch-eval", ["factory-analyst", "eval-lead"], "eval-lead"),
+    ("project2", ["project2-backend"], "lead"),
+])
+def test_lead_agent_for_follows_the_naming_convention(watchdog, project, agents, expected):
+    assert watchdog.lead_agent_for(project, agents) == expected
+
+
+def test_lead_agent_for_never_picks_another_factorys_lead(watchdog):
+    assert watchdog.lead_agent_for("project2", ["project1-lead", "project2-lead"]) == "project2-lead"

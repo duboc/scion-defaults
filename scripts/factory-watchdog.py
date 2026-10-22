@@ -355,6 +355,20 @@ def get_docker_containers():
         return {}
 
 
+def lead_agent_for(project_slug, agent_slugs):
+    """The lead of a factory project, by naming convention (docs/plans/2026-10-22-monorepo-factories.md).
+
+    Monorepo factories prefix agent names with the build slug: `<slug>-lead` in the build project and
+    `<slug>-eval-lead` in `<slug>-eval`. Single-factory setups use bare `lead` / `eval-lead`.
+    """
+    if project_slug.endswith("-eval"):
+        candidates = [f"{project_slug[:-len('-eval')]}-eval-lead", "eval-lead"]
+    else:
+        candidates = [f"{project_slug}-lead", "lead"]
+    present = set(agent_slugs)
+    return next((c for c in candidates if c in present), "lead")
+
+
 def check_agent_liveness(conn, state, apply):
     cursor = conn.cursor()
     placeholders = ",".join("?" for _ in FACTORY_PROJECTS)
@@ -372,7 +386,9 @@ def check_agent_liveness(conn, state, apply):
     restarts_map = state.setdefault("restarts", {})
     alerted_map = state.setdefault("alerted", {})
 
-    lead_names = {"psearch": "lead", "psearch-eval": "eval-lead"}
+    agents_by_project = {}
+    for a in agents:
+        agents_by_project.setdefault(a["project_slug"], []).append(a["agent_slug"])
 
     for a in agents:
         proj_slug = a["project_slug"]
@@ -449,7 +465,7 @@ def check_agent_liveness(conn, state, apply):
 
                     if restarted:
                         restarts_map.setdefault(key, []).append(now)
-                        lead = lead_names.get(proj_slug, "lead")
+                        lead = lead_agent_for(proj_slug, agents_by_project.get(proj_slug, []))
                         if agent_slug != lead:
                             api("POST", f"/api/v1/projects/{pid}/agents/{lead}/message", {
                                 "message": f"PO -> {lead}: watchdog auto-restarted agent {agent_slug} (was {reason}). Please check its status and re-send its active task brief if needed."
