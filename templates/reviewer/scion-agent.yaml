@@ -1,11 +1,12 @@
 schema_version: "1"
-description: "QA and ADR reviewer of the ${BUILD_PROJECT} factory (Hermes on Vertex AI). Reports to lead."
+description: "QA and ADR reviewer of the ${BUILD_PROJECT} factory (Hermes on Vertex AI). Reports to ${LEAD_AGENT}."
 default_harness_config: hermes
 model: google/gemini-4-argon
 agent_instructions: agents.md
 system_prompt: system-prompt.md
 env:
   FACTORY_ROLE: reviewer
+  FACTORY_SUBDIR: "${FACTORY_SUBDIR}"   # product folder the harness starts in (factory-cd.sh)
 # The Hub injects SCION_TELEMETRY_ENABLED from its own settings and that currently wins over this block
 # (lessons-learned.md L6). It is kept so the opt-out applies once Scion honors template-level telemetry.
 telemetry:

@@ -1,10 +1,11 @@
 schema_version: "1"
-description: "Release engineer of the ${BUILD_PROJECT} factory (Claude Code). Deploys to ${SANDBOX_PROJECT} as ${DEPLOYER_SA}. Reports to lead."
+description: "Release engineer of the ${BUILD_PROJECT} factory (Claude Code). Deploys to ${SANDBOX_PROJECT} as ${DEPLOYER_SA}. Reports to ${LEAD_AGENT}."
 default_harness_config: claude
 agent_instructions: agents.md
 system_prompt: system-prompt.md
 env:
   FACTORY_ROLE: deployer
+  FACTORY_SUBDIR: "${FACTORY_SUBDIR}"   # product folder the harness starts in (factory-cd.sh)
   GCP_SANDBOX_PROJECT: "${SANDBOX_PROJECT}"
   CLOUDSDK_CORE_PROJECT: "${SANDBOX_PROJECT}"
   CLOUDSDK_CORE_DISABLE_PROMPTS: "1"

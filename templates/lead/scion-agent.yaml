@@ -5,6 +5,7 @@ agent_instructions: agents.md
 system_prompt: system-prompt.md
 env:
   FACTORY_ROLE: lead
+  FACTORY_SUBDIR: "${FACTORY_SUBDIR}"   # product folder the harness starts in (factory-cd.sh)
 # The Hub injects SCION_TELEMETRY_ENABLED from its own settings and that currently wins over this block
 # (lessons-learned.md L6). It is kept so the opt-out applies once Scion honors template-level telemetry.
 telemetry:
