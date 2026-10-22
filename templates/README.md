@@ -47,6 +47,7 @@ on one Hub (for example one per product of a monorepo):
 |---|---|---|
 | `${LEAD_AGENT}`, `${EVAL_LEAD_AGENT}`, … (one per role folder, `<ROLE>_AGENT`) | `<AGENT_PREFIX>-<role>` (`project1-lead`), or the bare role without `AGENT_PREFIX` | `AGENT_PREFIX` in `factory.env` |
 | `${CLAUDE_HARNESS}`, `${ANTIGRAVITY_HARNESS}`, `${OPENCODE_HARNESS}`, `${HERMES_HARNESS}` | `<harness>-factory` with a `FACTORY_SUBDIR`, else the bundled name | `FACTORY_SUBDIR` in `factory.env` |
+| `${KNOWLEDGE_PLANE}` | `/workspace/<FACTORY_SUBDIR>/knowledge-plane`, or `/workspace/knowledge-plane` without a product folder | `FACTORY_SUBDIR` in `factory.env` |
 | `${FACTORY_SUBDIR}` | the product folder (`src/project1`), `.` by default; also the template `env:` that [`factory-cd.sh`](../config/harness/home/.local/bin/factory-cd.sh) reads | `FACTORY_SUBDIR` in `factory.env` |
 
 Write `${<ROLE>_AGENT}` wherever a prompt names an agent (report lines, `scion message` targets, message signatures,

@@ -86,6 +86,25 @@ The eval trunk is one orphan branch (`eval-dashboard`, still never merged with `
 monorepo layout**: each factory's eval code lives in `src/<product>/` there. One `FACTORY_SUBDIR` then serves both
 teams of a factory, and `factory-cd.sh` fails closed (exit 66) when a checkout lacks the folder.
 
+### 4. Part 2: shared directories and a knowledge plane per factory (added 2026-10-22)
+
+Scion **shared directories** are project-level folders mounted into every agent at `/scion-volumes/<name>`, whatever
+the workspace mode; the web UI shows them as tabs next to `workspace`. On a hosted Hub they are created through
+`POST /api/v1/projects/{id}/shared-dirs {"name", "read_only", "in_workspace"}` or Project Settings (`scion shared-dir
+create` edits a local project's settings file instead). Host path (local backend):
+`~/.scion/project-configs/<slug>__<first 8 hex of the project ID>/shared-dirs/<name>` (`config.SharedDirHostPath`).
+
+| Piece | Design |
+|---|---|
+| `scion-admin.py shared-dirs [--projects] [--dirs scratchpad,knowledge-plane:ro] [--apply]` | Creates the missing directories per project (default projects: `FACTORY_PROJECTS`, else `BUILD_PROJECT,EVAL_PROJECT`). Never changes a directory's mode (that means delete + create, which deletes its files): reports a conflict and exits 1. |
+| `scion-admin.py project-create --slug --git-url --branch --mode shared --token-file` | `scion hub projects create` has no token flag, and a `shared` project is cloned at creation, so private repositories need the API's `githubToken`. Idempotent on the slug. The token file is written on the VM over SSH stdin. |
+| `KNOWLEDGE_PLANE_SOURCES=project1=src/project1/knowledge-plane,…` (watchdog) | Each factory's build slug → its knowledge plane inside that project's shared checkout (`~/.scion/projects/<slug>/`); `<slug>-eval` follows its factory; unmapped projects are skipped. Without it, the single `KNOWLEDGE_PLANE_SOURCE_PROJECT` behaviour stays. Every project prints `synced` / `skipped (why)` / `source missing`. `watchdog.env` keeps the setting for cron runs, and `run-on-hub.sh` forwards it. |
+| `${KNOWLEDGE_PLANE}` (templates) | `/workspace/<FACTORY_SUBDIR>/knowledge-plane`, or `/workspace/knowledge-plane` without a product folder. `_shared/agents.md` tells every agent about `/scion-volumes/scratchpad` and `/scion-volumes/knowledge-plane`. |
+
+Also fixed on the way: the watchdog no longer falls back to the `psearch` projects when `FACTORY_PROJECTS` is unset
+(it uses `BUILD_PROJECT,EVAL_PROJECT`), and `push-templates.py` works when the Hub stores the default template as
+blobs (it uploads the role files only).
+
 ## Non-goals
 
 - Changing the `scion-factory` compiler (`scripts/scion_factory.py`, FactorySpec) to emit monorepo kits. That is a

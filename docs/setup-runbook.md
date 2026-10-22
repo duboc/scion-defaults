@@ -313,66 +313,146 @@ scripts/run-on-hub.sh scripts/scion-admin.py message --project "$BUILD_PROJECT" 
 ## Several factories in one monorepo
 
 Use this when one repository holds several products (`src/project1`, `src/project2`, …) and each product gets its own
-factory (build team + eval team) on the same Hub. Every agent clones the whole repository, starts its harness in its
-product folder, and is named after its factory (`project1-lead`, `project1-eval-lead`). Design and evidence:
-[plans/2026-10-22-monorepo-factories.md](plans/2026-10-22-monorepo-factories.md), [L28](lessons-learned.md#l28-several-factories-in-one-monorepo-names-start-folders-and-what-the-e2e-showed).
+factory (a build team and an eval team) on the same Hub. Every agent clones the whole repository, starts its harness
+in its product folder, is named after its factory (`project1-lead`, `project1-eval-lead`), and reads its own product's
+knowledge plane. Steps 0–5, 7 and 11 above apply once per Hub; this section replaces steps 6, 8, 9 and 10 for each
+factory. Design and evidence: [plans/2026-10-22-monorepo-factories.md](plans/2026-10-22-monorepo-factories.md),
+[L28](lessons-learned.md#l28-several-factories-in-one-monorepo-names-start-folders-and-what-the-e2e-showed).
 
-1. **One env file per factory.** Copy `factory.env` to `config/project1.env` and set `BUILD_PROJECT=project1`,
-   `EVAL_PROJECT=project1-eval`, `AGENT_PREFIX=project1` (the full build slug) and `FACTORY_SUBDIR=src/project1`. Keep
-   `GITHUB_REPO`, `BUILD_BRANCH` and `EVAL_BRANCH` the same for every factory. The eval trunk is one orphan branch
-   that mirrors the monorepo layout (each factory's eval code in `src/<product>/`), so the folder exists for both teams.
+| Per factory | Example for `project1` |
+|---|---|
+| Hub projects | `project1` (branch `main`), `project1-eval` (branch `eval-dashboard`) |
+| Agent names | `project1-lead`, `project1-backend`, …, `project1-eval-lead`, … (templates keep the role names) |
+| Start folder | `/workspace/src/project1` in every agent of both projects |
+| Knowledge plane | `src/project1/knowledge-plane/` in the build checkout, copied read-only to `/scion-volumes/knowledge-plane` in both projects |
+| Scratchpad | `/scion-volumes/scratchpad`, one per Hub project |
 
-   **Check:** `FACTORY_ENV=config/project1.env scripts/render-templates.py --agent-names` prints `project1-lead` for the `lead` role.
+### M1. Repository layout
 
-2. **Harness-configs that start in the product folder** (once per Hub, and again after every Scion upgrade):
+- Each product keeps its knowledge plane in its folder: `src/<product>/knowledge-plane/INDEX.md`.
+- The eval trunk is **one** orphan branch (`EVAL_BRANCH`, never merged with `main`, L25) that mirrors the monorepo
+  layout: each factory's eval code lives in `src/<product>/` there. One start folder then works for both teams;
+  an agent whose checkout lacks the folder doesn't start (`factory-cd: product folder … does not exist`).
+- One GitHub label per factory slug, as in step 5: `gh label create project1 -R "$GITHUB_REPO"`.
 
-   ```bash
-   FACTORY_ENV=config/project1.env scripts/make-factory-harness-configs.py --via-hub            # plan
-   FACTORY_ENV=config/project1.env scripts/make-factory-harness-configs.py --via-hub --apply    # build and publish
-   ```
+### M2. One env file per factory
 
-   It publishes `claude-factory`, `antigravity-factory`, `opencode-factory` and `hermes-factory`; templates rendered
-   with a `FACTORY_SUBDIR` select them. The bundled configs stay untouched.
+Copy `config/factory.env` to `config/project1.env` and set:
 
-   **Check:** on the VM, `scion harness-config list --hub` lists the four `-factory` configs.
+```bash
+BUILD_PROJECT=project1
+EVAL_PROJECT=project1-eval
+AGENT_PREFIX=project1                 # the full build slug
+FACTORY_SUBDIR=src/project1           # also selects the <harness>-factory harness-configs
+```
 
-3. **Hub projects, all from the same git URL.** Each factory gets `<slug>` and `<slug>-eval`. Pick one workspace mode
-   for all of them:
-   - `shared` (one checkout per Hub project; the commit-slot protocol in `_shared/agents.md` is written for it). The
-     Hub clones at creation, so create it through the API with the token
-     (`POST /api/v1/projects {"name", "slug", "gitRemote", "defaultBranch", "workspaceMode": "shared", "githubToken"}`
-     with an admin token, as `scripts/scion-admin.py` mints); `scion hub projects create` has no token flag and fails
-     with `clone_failed`.
-   - `per-agent` (each agent clones and works on `scion/<agent>`). The CLI works:
-     `scion hub projects create <url> --slug project1 --name project1 --branch main --workspace-mode per-agent --yes`
-     (`--yes` is required from the second project on the same URL). The agents then point out that the shared-checkout
-     protocol doesn't match; adapt `_shared/agents.md` before real work.
+Keep `GITHUB_REPO`, `BUILD_BRANCH` and `EVAL_BRANCH` the same for every factory.
 
-   Then set `GITHUB_TOKEN` per project with injection mode **always** (step 5).
+**Check:** `FACTORY_ENV=config/project1.env scripts/render-templates.py --agent-names` prints `project1-lead` for the
+`lead` role, and `FACTORY_ENV=config/project1.env scripts/render-templates.py --out /tmp/p1` renders without
+"missing values".
 
-4. **Templates per project.** `push-templates.py` needs the default template as plain files; a fresh Hub stores it as
-   blobs and the script stops with `default home directory not found`. There, sync the rendered roles with the CLI on
-   the VM, from a folder that holds them under `.scion/templates/<role>/`:
+### M3. Harness-configs that start in the product folder (once per Hub, again after every Scion upgrade)
 
-   ```bash
-   FACTORY_ENV=config/project1.env scripts/render-templates.py --out /tmp/project1/.scion/templates --roles lead,backend,frontend,reviewer,deployer
-   # copy /tmp/project1 to the VM, then as the Hub OS user:
-   cd /tmp/project1 && scion templates sync lead --project=project1     # one per role
-   ```
+```bash
+FACTORY_ENV=config/project1.env scripts/make-factory-harness-configs.py --via-hub            # plan
+FACTORY_ENV=config/project1.env scripts/make-factory-harness-configs.py --via-hub --apply    # build and publish
+```
 
-5. **Start the agents with the prefixed names** (names from `--agent-names`; template names stay the roles):
+It publishes `claude-factory`, `antigravity-factory`, `opencode-factory` and `hermes-factory` with the PO's admin
+rights (`PO_EMAIL` must have signed in to the web UI once). The bundled configs stay untouched.
 
-   ```bash
-   scion start project1-lead -t lead --project=project1 --harness-auth vertex-ai "Read your instructions, then run your wake-up steps."
-   scion start project1-eval-lead -t eval-lead --project=project1-eval --harness-auth vertex-ai "Stand by."
-   ```
+**Check:** on the VM, `scion harness-config list --hub` lists the `-factory` configs.
 
-   Heartbeats target the prefixed lead: `schedule create --project project1 --name project1-lead-heartbeat --agent project1-lead`.
+### M4. Hub projects (per factory)
 
-**Check:** `scion list --project=project1` shows `project1-lead` with harness-config `claude-factory`; inside the
-container (`project1--project1-lead`) `readlink /proc/<claude pid>/cwd` is `/workspace/src/project1`, `ls /workspace/src`
-lists every product, and the terminal shows no trust prompt.
+Put a GitHub token on the VM for the Hub OS user, over SSH stdin so it never lands on a command line:
 
-Agents message only within their Hub project: `project1-lead` can't reach `project1-eval-lead` (`agent_not_found`).
-Build and eval teams coordinate through GitHub issues and Firestore, as in a single factory. The start folder is a
-default, not a sandbox: enforce path boundaries with CODEOWNERS and CI path filters if you need them.
+```bash
+set -a; . config/project1.env; set +a
+read -rs GITHUB_PAT; printf '%s' "$GITHUB_PAT" | gcloud compute ssh "$HUB_VM" --project "$HUB_PROJECT" --zone "$HUB_ZONE" \
+  --command "sudo -u $HUB_OS_USER sh -c 'umask 077; cat > ~/.factory-github-token'"; unset GITHUB_PAT
+```
+
+Create both projects from the same git URL. `shared` (one checkout per Hub project) matches the commit-slot protocol
+in `_shared/agents.md` and gives the watchdog the checkout it copies the knowledge plane from:
+
+```bash
+for p in "project1 main" "project1-eval eval-dashboard"; do set -- $p
+  FACTORY_ENV=config/project1.env scripts/run-on-hub.sh scripts/scion-admin.py project-create --slug "$1" \
+    --git-url "https://github.com/$GITHUB_REPO.git" --branch "$2" --mode shared --token-file '~/.factory-github-token'
+done
+```
+
+The Hub stores the token as each project's `GITHUB_TOKEN` secret. Make sure it is injected **always** (step 5):
+`scion hub secret update --project=project1 GITHUB_TOKEN --injection-mode always` (note the `=`).
+
+(`--mode per-agent` gives each agent its own clone on `scion/<agent>`; the leads then point out that the
+shared-checkout protocol doesn't match, and there is no host checkout to copy the knowledge plane from.)
+
+**Check:** `scripts/run-on-hub.sh scripts/scion-admin.py projects` lists both slugs, and on the VM
+`git -C ~/.scion/projects/project1 log --oneline -1` shows `main`.
+
+### M5. Shared directories (per factory)
+
+```bash
+FACTORY_ENV=config/project1.env scripts/run-on-hub.sh scripts/scion-admin.py shared-dirs            # plan
+FACTORY_ENV=config/project1.env scripts/run-on-hub.sh scripts/scion-admin.py shared-dirs --apply
+```
+
+**Check:** a second run prints `ok (scratchpad, knowledge-plane)` for `project1` and `project1-eval`.
+
+### M6. Templates and agents (per factory)
+
+```bash
+export FACTORY_ENV=config/project1.env
+scripts/push-templates.py --project project1 --roles lead,backend,frontend,reviewer,deployer --apply
+scripts/push-templates.py --project project1-eval \
+  --roles eval-lead,factory-analyst,search-evaluator,ui-craftsman,eval-deployer --apply
+scripts/render-templates.py --agent-names          # the names to start
+```
+
+Then, as the admin on the VM (`--harness-auth vertex-ai` for Claude Code on Vertex AI):
+
+```bash
+scion start project1-lead -t lead --project=project1 --harness-auth vertex-ai "Read your instructions, then run your wake-up steps."
+scion start project1-eval-lead -t eval-lead --project=project1-eval --harness-auth vertex-ai "Stand by."
+# … one per role, with --service-account <id> for the deployers (step 6)
+```
+
+**Check:** `scion list --project=project1` shows `project1-lead` with harness-config `claude-factory`. Inside its
+container (`project1--project1-lead`): `readlink /proc/<claude pid>/cwd` is `/workspace/src/project1`,
+`ls /workspace/src` lists every product, `ls /scion-volumes` shows `knowledge-plane scratchpad`, and the terminal
+shows no trust prompt.
+
+### M7. Heartbeats, watchdog and knowledge plane (once per Hub, covering every factory)
+
+Heartbeats target the prefixed leads (step 9):
+`scion-admin.py schedule create --project project1 --name project1-lead-heartbeat --agent project1-lead …`, and the
+same for `project1-eval` / `project1-eval-lead`.
+
+Install the watchdog with every factory project and each factory's knowledge plane (`<build slug>=<path in that
+project's checkout>`; the eval project follows its factory):
+
+```bash
+FACTORY_ENV=config/project1.env \
+FACTORY_PROJECTS=project1,project1-eval,project2,project2-eval \
+KNOWLEDGE_PLANE_SOURCES=project1=src/project1/knowledge-plane,project2=src/project2/knowledge-plane \
+  scripts/run-on-hub.sh scripts/factory-watchdog.py --install-cron --apply
+```
+
+The install writes both settings into `~/.scion/watchdog.env`, so the cron runs keep them.
+
+**Check:** `~/.scion/watchdog.log` shows `Check 5 (Shared Knowledge Plane): project1-eval: synced from
+…/projects/project1/src/project1/knowledge-plane`, and inside `project1--project1-eval-lead`
+`cat /scion-volumes/knowledge-plane/INDEX.md` shows project1's index while `project2`'s agents show project2's.
+
+### Notes
+
+- Agents message only within their Hub project: `project1-lead` can't reach `project1-eval-lead` (`agent_not_found`).
+  Build and eval teams coordinate through GitHub issues, Firestore and the read-only knowledge plane, as in a single
+  factory.
+- The start folder is a default, not a sandbox. Enforce path boundaries with CODEOWNERS and CI path filters if you
+  need them.
+- Fresh Hubs store the default template as blobs; `push-templates.py` then uploads the role files only (the Hub still
+  layers the default template underneath).

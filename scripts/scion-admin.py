@@ -13,7 +13,7 @@ Run it from your machine through run-on-hub.sh:
     scripts/run-on-hub.sh scripts/scion-admin.py experiments
     scripts/run-on-hub.sh scripts/scion-admin.py experiments --set web.terminal_workspace=false
     scripts/run-on-hub.sh scripts/scion-admin.py project-create --slug project1 --git-url https://github.com/o/r.git \
-        --branch main --mode shared --token-file ~/.factory-github-token
+        --branch main --mode shared --token-file '~/.factory-github-token'
     scripts/run-on-hub.sh scripts/scion-admin.py shared-dirs                  # scratchpad + knowledge-plane, dry run
     scripts/run-on-hub.sh scripts/scion-admin.py shared-dirs --apply
 
