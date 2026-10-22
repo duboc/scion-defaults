@@ -468,8 +468,26 @@ fix now lives. Dates are UTC. "Encoded in" points to the script, template rule o
     creation and needs `githubToken` through the API (the CLI has no token flag).
   - In clone-per-agent mode the leads flagged that `_shared/agents.md` describes a shared checkout on `main`.
   - `deploy.sh` in a new org project: enable `cloudresourcemanager.googleapis.com` first, create the `default`
-    network if the org skips it, and re-run after a transient IAP SSH `502` (the script is idempotent).
+    network if the org skips it, and re-run after a transient IAP SSH `502` or a "service account does not exist"
+    right after creating it (the script is idempotent). Its `build` image source builds only Antigravity; build
+    `scion-claude` on the VM for Claude Code agents, and enable the Claude model in Model Garden per project
+    (otherwise the harness starts but answers "model … is not available on your vertex deployment").
+- **Second e2e (shared directories and knowledge planes, runbook M1–M8 run as written on a fresh Hub):**
+  - `POST /api/v1/projects` has no branch field: the branch goes in the `scion.dev/default-branch` label, else the
+    Hub clones `main` (the eval projects first came up on `main`). `scion-admin.py project-create` sends the labels.
+  - The Hub stores `githubToken` as the project's `GITHUB_TOKEN` secret with injection mode `always`.
+  - New Hub projects already have a `scratchpad` shared directory; `shared-dirs --apply` added `knowledge-plane`.
+  - `shared-dirs/` on the broker appears only when the first agent starts, so the watchdog now fills
+    `knowledge-plane` as soon as the project's `project-configs/<slug>__<id8>/` exists; the agents' first turn
+    already read `KP-project1` / `KP-project2`. Scion keeps the pre-filled folder when it mounts it.
+  - Inside every agent: `/scion-volumes` = `knowledge-plane scratchpad`; each factory saw its own product's
+    knowledge plane; writes to it were refused; the scratchpad is per Hub project and appears in the Hub's Files
+    API (the tabs next to `workspace`); an edit to the source reached a running agent on the next watchdog run;
+    the cron run kept `KNOWLEDGE_PLANE_SOURCES` from `watchdog.env`.
+  - A runbook loop that relied on bash word splitting (`set -- $p`) broke in zsh, macOS's default shell: runbook
+    commands are now written out one per project.
 - **Encoded in:** [`scripts/render-templates.py`](../scripts/render-templates.py),
   [`scripts/make-factory-harness-configs.py`](../scripts/make-factory-harness-configs.py),
   [`config/harness/home/.local/bin/factory-cd.sh`](../config/harness/home/.local/bin/factory-cd.sh),
-  [`scripts/factory-watchdog.py`](../scripts/factory-watchdog.py), [setup-runbook.md](setup-runbook.md#several-factories-in-one-monorepo).
+  [`scripts/factory-watchdog.py`](../scripts/factory-watchdog.py), [`scripts/scion-admin.py`](../scripts/scion-admin.py)
+  (`project-create`, `shared-dirs`), [setup-runbook.md](setup-runbook.md#several-factories-in-one-monorepo).
