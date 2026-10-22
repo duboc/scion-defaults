@@ -163,3 +163,129 @@ def test_rendered_scion_agent_yaml_stays_valid_yaml(tmp_path):
     for role in ROLES:
         doc = yaml.safe_load(files[f"{role}/scion-agent.yaml"])
         assert doc["env"]["FACTORY_SUBDIR"] == "src/project1", role
+
+
+# --- Task 3: factory-cd.sh launcher ------------------------------------------------------------------------------
+
+FACTORY_CD = ROOT / "config" / "harness" / "home" / ".local" / "bin" / "factory-cd.sh"
+
+
+@pytest.fixture
+def monorepo(tmp_path):
+    repo = tmp_path / "repo"
+    for product in ("project1", "project2", "project3"):
+        (repo / "src" / product).mkdir(parents=True)
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    home = tmp_path / "home"
+    home.mkdir()
+    return repo, home
+
+
+def _factory_cd(cwd, home, subdir, *cmd):
+    env = {"PATH": os.environ["PATH"], "HOME": str(home)}
+    if subdir is not None:
+        env["FACTORY_SUBDIR"] = subdir
+    return subprocess.run(["sh", str(FACTORY_CD), *(cmd or ("sh", "-c", "pwd -P"))],
+                          cwd=cwd, env=env, capture_output=True, text=True)
+
+
+def test_factory_cd_starts_the_harness_in_the_product_folder(monorepo):
+    repo, home = monorepo
+    res = _factory_cd(repo, home, "src/project1")
+    assert res.returncode == 0, res.stderr
+    assert res.stdout.strip() == str((repo / "src" / "project1").resolve())
+
+
+def test_factory_cd_resolves_against_the_repo_root_from_a_nested_cwd(monorepo):
+    repo, home = monorepo
+    res = _factory_cd(repo / "src" / "project3", home, "src/project2")
+    assert res.stdout.strip() == str((repo / "src" / "project2").resolve()), res.stderr
+
+
+@pytest.mark.parametrize("subdir", [None, "", "."])
+def test_factory_cd_without_a_subdir_keeps_the_cwd(monorepo, subdir):
+    repo, home = monorepo
+    res = _factory_cd(repo, home, subdir)
+    assert res.returncode == 0, res.stderr
+    assert res.stdout.strip() == str(repo.resolve())
+
+
+def test_factory_cd_passes_arguments_through_unchanged(monorepo):
+    repo, home = monorepo
+    res = _factory_cd(repo, home, "src/project1", "sh", "-c", 'printf "%s|" "$@"', "sh", "a b", "--flag")
+    assert res.stdout == "a b|--flag|"
+
+
+@pytest.mark.parametrize("subdir", ["/etc", "../outside", "src/../../x"])
+def test_factory_cd_refuses_paths_outside_the_repo(monorepo, subdir):
+    repo, home = monorepo
+    res = _factory_cd(repo, home, subdir)
+    assert res.returncode == 64
+    assert "FACTORY_SUBDIR" in res.stderr
+
+
+def test_factory_cd_refuses_a_missing_folder(monorepo):
+    repo, home = monorepo
+    res = _factory_cd(repo, home, "src/project9")
+    assert res.returncode == 66
+    assert "src/project9" in res.stderr
+
+
+def test_factory_cd_outside_git_resolves_against_the_cwd(tmp_path):
+    (tmp_path / "work" / "src" / "project1").mkdir(parents=True)
+    (tmp_path / "home").mkdir()
+    res = _factory_cd(tmp_path / "work", tmp_path / "home", "src/project1")
+    assert res.stdout.strip() == str((tmp_path / "work" / "src" / "project1").resolve()), res.stderr
+
+
+def test_factory_cd_pre_trusts_the_folder_for_claude(monorepo):
+    repo, home = monorepo
+    (home / ".claude.json").write_text(json.dumps({"projects": {"/workspace": {"hasTrustDialogAccepted": True}},
+                                                   "keep": 1}))
+    for _ in range(2):
+        assert _factory_cd(repo, home, "src/project1").returncode == 0
+    cfg = json.loads((home / ".claude.json").read_text())
+    target = str((repo / "src" / "project1").resolve())
+    assert cfg["projects"][target]["hasTrustDialogAccepted"] is True
+    assert cfg["projects"]["/workspace"] == {"hasTrustDialogAccepted": True}
+    assert cfg["keep"] == 1
+
+
+def test_factory_cd_pre_trusts_the_folder_for_antigravity_once(monorepo):
+    repo, home = monorepo
+    settings = home / ".gemini" / "antigravity-cli" / "settings.json"
+    settings.parent.mkdir(parents=True)
+    settings.write_text(json.dumps({"trustedWorkspaces": ["/workspace"], "onboardingComplete": True}))
+    for _ in range(2):
+        assert _factory_cd(repo, home, "src/project1").returncode == 0
+    data = json.loads(settings.read_text())
+    assert data["trustedWorkspaces"] == ["/workspace", str((repo / "src" / "project1").resolve())]
+    assert data["onboardingComplete"] is True
+
+
+def test_factory_cd_leaves_absent_harness_configs_absent(monorepo):
+    repo, home = monorepo
+    assert _factory_cd(repo, home, "src/project1").returncode == 0
+    assert not (home / ".claude.json").exists()
+    assert not (home / ".gemini").exists()
+
+
+def test_factory_cd_carries_antigravity_hooks_into_the_folder(monorepo):
+    repo, home = monorepo
+    (repo / ".agents").mkdir()
+    (repo / ".agents" / "hooks.json").write_text('{"hooks": {}}')
+    for _ in range(2):
+        assert _factory_cd(repo, home, "src/project1").returncode == 0
+    assert (repo / "src" / "project1" / ".agents" / "hooks.json").read_text() == '{"hooks": {}}'
+    exclude = (repo / ".git" / "info" / "exclude").read_text().splitlines()
+    assert exclude.count(".agents/") == 1
+
+
+def test_factory_cd_refreshes_stale_antigravity_hooks(monorepo):
+    repo, home = monorepo
+    (repo / ".agents").mkdir()
+    (repo / ".agents" / "hooks.json").write_text('{"v": 1}')
+    assert _factory_cd(repo, home, "src/project1").returncode == 0
+    (repo / ".agents" / "hooks.json").write_text('{"v": 2}')
+    assert _factory_cd(repo, home, "src/project1").returncode == 0
+    assert (repo / "src" / "project1" / ".agents" / "hooks.json").read_text() == '{"v": 2}'
