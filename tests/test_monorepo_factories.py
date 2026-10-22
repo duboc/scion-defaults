@@ -430,6 +430,41 @@ def test_make_factory_harness_configs_via_hub_ships_the_launcher_inside_the_scri
     assert launcher.read_text() == FACTORY_CD.read_text()
 
 
+def _fake_hub(scion_home, secret="s3cret"):
+    import sqlite3
+    conn = sqlite3.connect(scion_home / "hub.db")
+    conn.execute("CREATE TABLE users (id TEXT, email TEXT, role TEXT)")
+    conn.execute("INSERT INTO users VALUES ('u1', 'po@example.com', 'admin')")
+    conn.commit()
+    conn.close()
+    (scion_home / "hub.env").write_text(f"OTHER=1\nSCION_SERVER_SESSION_SECRET={secret}\n")
+
+
+def test_cli_env_mints_an_admin_token_for_the_scion_cli(scion_home):
+    """`scion harness-config sync --global` needs Hub admin; on the VM the CLI accepts the admin JWT as SCION_HUB_TOKEN."""
+    import base64, hashlib, hmac
+    _fake_hub(scion_home)
+    env = make_hc.cli_env(str(scion_home), "po@example.com", base={"PATH": "/bin"})
+    assert env["SCION_HUB_ENDPOINT"] == "http://localhost:8080"
+    header, payload, signature = env["SCION_HUB_TOKEN"].split(".")
+    claims = json.loads(base64.urlsafe_b64decode(payload + "=" * (-len(payload) % 4)))
+    assert (claims["email"], claims["role"], claims["uid"]) == ("po@example.com", "admin", "u1")
+    key = hashlib.sha256(b"scion-hub-signing-key:user_signing_key:s3cret").digest()
+    expected = base64.urlsafe_b64encode(hmac.new(key, f"{header}.{payload}".encode(), hashlib.sha256).digest())
+    assert signature == expected.rstrip(b"=").decode()
+
+
+def test_cli_env_keeps_an_existing_token(scion_home):
+    env = make_hc.cli_env(str(scion_home), "po@example.com", base={"SCION_HUB_TOKEN": "given"})
+    assert env["SCION_HUB_TOKEN"] == "given"
+
+
+def test_cli_env_fails_clearly_for_an_unknown_user(scion_home):
+    _fake_hub(scion_home)
+    with pytest.raises(SystemExit, match="nobody@example.com"):
+        make_hc.cli_env(str(scion_home), "nobody@example.com", base={})
+
+
 def test_rendered_templates_use_factory_harness_configs_with_a_subdir(tmp_path):
     files = _render_all(tmp_path, AGENT_PREFIX="project1", FACTORY_SUBDIR="src/project1")
     assert "default_harness_config: claude-factory" in files["lead/scion-agent.yaml"]

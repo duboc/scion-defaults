@@ -116,6 +116,46 @@ def via_hub(argv):
         return subprocess.run([runner, script, *[a for a in argv if a != "--via-hub"]]).returncode
 
 
+def cli_env(scion_home, email, base=None):
+    """Environment for `scion harness-config sync --global` on the Hub VM.
+
+    Keeps a SCION_HUB_TOKEN that is already set. Otherwise mints a 10-minute admin JWT for `email` the way
+    scion-admin.py does (key derived from SCION_SERVER_SESSION_SECRET in ~/.scion/hub.env), which the scion CLI
+    accepts as SCION_HUB_TOKEN. The token is never printed.
+    """
+    import base64 as b64mod
+    import hashlib
+    import hmac
+    import sqlite3
+    import time
+
+    env = dict(os.environ if base is None else base)
+    env.setdefault("SCION_HUB_ENDPOINT", os.environ.get("HUB_LOCAL_URL", "http://localhost:8080").rstrip("/"))
+    if env.get("SCION_HUB_TOKEN"):
+        return env
+    conn = sqlite3.connect(f"file:{os.path.join(scion_home, 'hub.db')}?mode=ro", uri=True)
+    user = conn.execute("SELECT id, email, role FROM users WHERE email = ?", (email,)).fetchone()
+    conn.close()
+    if not user:
+        sys.exit(f"no Hub user with email {email} (sign in to the Hub web UI once, or set PO_EMAIL)")
+    with open(os.path.join(scion_home, "hub.env")) as f:
+        secret = next((l.split("=", 1)[1].strip() for l in f if l.startswith("SCION_SERVER_SESSION_SECRET=")), None)
+    if not secret:
+        sys.exit("SCION_SERVER_SESSION_SECRET not found in hub.env")
+    key = hashlib.sha256(("scion-hub-signing-key:user_signing_key:" + secret).encode()).digest()
+
+    def b64(data):
+        return b64mod.urlsafe_b64encode(data).rstrip(b"=").decode()
+
+    now = int(time.time())
+    claims = {"iss": "scion-hub", "sub": user[0], "aud": ["scion-hub-api"], "exp": now + 600, "nbf": now - 10,
+              "iat": now, "uid": user[0], "email": user[1], "name": user[1], "role": user[2], "type": "access",
+              "client": "web"}
+    signing_input = b64(json.dumps({"alg": "HS256", "typ": "JWT"}).encode()) + "." + b64(json.dumps(claims).encode())
+    env["SCION_HUB_TOKEN"] = signing_input + "." + b64(hmac.new(key, signing_input.encode(), hashlib.sha256).digest())
+    return env
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--scion-home", default=os.path.expanduser(os.environ.get("SCION_HOME", "~/.scion")))
@@ -138,7 +178,8 @@ def main(argv=None):
         if args.apply and not args.no_sync:
             cmd = ["scion", "harness-config", "sync", harness + SUFFIX, "--global"]
             print("+ " + " ".join(cmd))
-            if subprocess.run(cmd).returncode != 0:
+            env = cli_env(args.scion_home, os.environ.get("PO_EMAIL", ""))
+            if subprocess.run(cmd, env=env).returncode != 0:
                 failed.append(harness)
     if not args.apply:
         print("dry run: nothing written (add --apply)")

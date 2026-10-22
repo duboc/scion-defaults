@@ -38,6 +38,22 @@ deployer) had the fewest harness-specific problems.
 Harnesses that don't support a native system prompt (OpenCode, Hermes) get the system prompt prepended to the
 instructions file; you don't have to do anything about it.
 
+### Names and harness-configs are variables
+
+Templates never hard-code agent names or harness-config names, so one set of templates serves any number of factories
+on one Hub (for example one per product of a monorepo):
+
+| Variable | Rendered as | Set by |
+|---|---|---|
+| `${LEAD_AGENT}`, `${EVAL_LEAD_AGENT}`, … (one per role folder, `<ROLE>_AGENT`) | `<AGENT_PREFIX>-<role>` (`project1-lead`), or the bare role without `AGENT_PREFIX` | `AGENT_PREFIX` in `factory.env` |
+| `${CLAUDE_HARNESS}`, `${ANTIGRAVITY_HARNESS}`, `${OPENCODE_HARNESS}`, `${HERMES_HARNESS}` | `<harness>-factory` with a `FACTORY_SUBDIR`, else the bundled name | `FACTORY_SUBDIR` in `factory.env` |
+| `${FACTORY_SUBDIR}` | the product folder (`src/project1`), `.` by default; also the template `env:` that [`factory-cd.sh`](../config/harness/home/.local/bin/factory-cd.sh) reads | `FACTORY_SUBDIR` in `factory.env` |
+
+Write `${<ROLE>_AGENT}` wherever a prompt names an agent (report lines, `scion message` targets, message signatures,
+team tables); a test fails on a bare `scion message lead`. Start agents with the names
+`scripts/render-templates.py --agent-names` prints. See
+[docs/plans/2026-10-22-monorepo-factories.md](../docs/plans/2026-10-22-monorepo-factories.md).
+
 The GCP identity is not part of the template: register the service account in Step 6 and assign `${DEPLOYER_SA}` to the deployer agents in Step 8 of the Hub setup (see
 [setup-runbook.md](../docs/setup-runbook.md)).
 
