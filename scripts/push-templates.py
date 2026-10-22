@@ -135,7 +135,10 @@ def main():
     home_matches = sorted(glob.glob(os.path.join(SCION_HOME, "workspace-storage", "hubs", "*", "templates", "global", "default", "home")))
     default_home_dir = home_matches[0] if home_matches and os.path.isdir(home_matches[0]) else os.path.join(SCION_HOME, "templates", "default", "home")
     if not os.path.isdir(default_home_dir):
-        sys.exit(f"default home directory not found (checked workspace-storage and {SCION_HOME}/templates/default/home)")
+        # Newer Hubs store the default template as content-addressed blobs (templates/global/default.<id>.blobs),
+        # not as plain files. The Hub still layers the default template under every template, so the role files
+        # alone are enough there (seen on nightly-20261022; lessons-learned.md L28).
+        print(f"note: no plain-file default template under {SCION_HOME} (blob storage); uploading the role files only")
 
     default_tpl_matches = sorted(glob.glob(os.path.join(SCION_HOME, "workspace-storage", "hubs", "*", "templates", "global", "default")))
     default_dir = default_tpl_matches[0] if default_tpl_matches and os.path.isdir(default_tpl_matches[0]) else f"{SCION_HOME}/templates/default"

@@ -24,6 +24,39 @@ def _load(name, path):
 admin = _load("scion_admin", ROOT / "scripts" / "scion-admin.py")
 
 
+# --- scion-admin.py project-create -------------------------------------------------------------------------------
+
+def test_project_body_for_a_shared_git_project():
+    body = admin.project_create_body("project1", "https://github.com/o/r.git", "main", "shared", "tok")
+    assert body == {"name": "project1", "slug": "project1", "gitRemote": "https://github.com/o/r.git",
+                    "defaultBranch": "main", "workspaceMode": "shared", "githubToken": "tok"}
+
+
+def test_project_body_without_a_token_leaves_it_out():
+    body = admin.project_create_body("project1-eval", "https://github.com/o/r.git", "eval-dashboard", "per-agent", "")
+    assert "githubToken" not in body
+    assert body["workspaceMode"] == "per-agent"
+
+
+@pytest.mark.parametrize("mode", ["shared-plain", "clone", ""])
+def test_project_body_rejects_unknown_modes(mode):
+    with pytest.raises(ValueError, match="workspace mode"):
+        admin.project_create_body("p", "https://github.com/o/r.git", "main", mode, "")
+
+
+def test_project_body_requires_a_token_for_shared_mode():
+    """The Hub clones a shared project at creation; without a token a private repo fails with clone_failed."""
+    with pytest.raises(ValueError, match="token"):
+        admin.project_create_body("p", "https://github.com/o/r.git", "main", "shared", "")
+
+
+def test_read_token_file(tmp_path):
+    f = tmp_path / "tok"
+    f.write_text("gho_x\n")
+    assert admin.read_token_file(str(f)) == "gho_x"
+    assert admin.read_token_file("") == ""
+
+
 # --- scion-admin.py shared-dirs ----------------------------------------------------------------------------------
 
 def test_parse_dir_specs_reads_modes():

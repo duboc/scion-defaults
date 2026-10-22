@@ -12,6 +12,8 @@ Run it from your machine through run-on-hub.sh:
     scripts/run-on-hub.sh scripts/scion-admin.py schedule pause --project psearch --name psearch-lead-heartbeat
     scripts/run-on-hub.sh scripts/scion-admin.py experiments
     scripts/run-on-hub.sh scripts/scion-admin.py experiments --set web.terminal_workspace=false
+    scripts/run-on-hub.sh scripts/scion-admin.py project-create --slug project1 --git-url https://github.com/o/r.git \
+        --branch main --mode shared --token-file ~/.factory-github-token
     scripts/run-on-hub.sh scripts/scion-admin.py shared-dirs                  # scratchpad + knowledge-plane, dry run
     scripts/run-on-hub.sh scripts/scion-admin.py shared-dirs --apply
 
@@ -177,6 +179,46 @@ def cmd_agent_start(args):
     print(f"HTTP {status}: {out}")
 
 
+WORKSPACE_MODES = ("shared", "per-agent", "worktree-per-agent")
+
+
+def read_token_file(path):
+    """The GitHub token from a file on the VM (put there over SSH stdin; never on a command line or in factory.env)."""
+    if not path:
+        return ""
+    with open(os.path.expanduser(path)) as f:
+        return f.read().strip()
+
+
+def project_create_body(slug, git_url, branch, mode, token):
+    """POST /api/v1/projects body for a git-backed Hub project.
+
+    `scion hub projects create` has no token flag, and a `shared` project is cloned at creation, so a private
+    repository needs `githubToken` here (the Hub also stores it as the project's GITHUB_TOKEN secret).
+    """
+    if mode not in WORKSPACE_MODES:
+        raise ValueError(f"unknown workspace mode {mode!r}: use one of {', '.join(WORKSPACE_MODES)}")
+    if mode == "shared" and not token:
+        raise ValueError("a shared project is cloned at creation: pass --token-file with a GitHub token")
+    body = {"name": slug, "slug": slug, "gitRemote": git_url, "defaultBranch": branch, "workspaceMode": mode}
+    if token:
+        body["githubToken"] = token
+    return body
+
+
+def cmd_project_create(args):
+    if _db().execute("SELECT id FROM projects WHERE slug = ?", (args.slug,)).fetchone():
+        print(f"{args.slug}: exists (workspace mode is fixed at creation; delete and recreate to change it)")
+        return
+    try:
+        body = project_create_body(args.slug, args.git_url, args.branch, args.mode, read_token_file(args.token_file))
+    except (OSError, ValueError) as e:
+        sys.exit(str(e))
+    status, out = api("POST", "/api/v1/projects", body)
+    project = out.get("project", out)
+    print(f"{args.slug}: created HTTP {status} id={project.get('id')} mode={args.mode} branch={args.branch}")
+
+
 # Shared directories: project-level folders mounted into every agent at /scion-volumes/<name>, shown as tabs next to
 # "workspace" in the project's Files view. The factory uses `scratchpad` (read-write notes and briefs outside Git)
 # and `knowledge-plane` (read-only for agents; factory-watchdog.py keeps it in sync with the factory's knowledge plane).
@@ -305,6 +347,14 @@ def main():
     start.add_argument("--agent", required=True)
     start.add_argument("--resume", action="store_true", help="force resume if in error phase")
     start.set_defaults(func=cmd_agent_start)
+
+    pc = sub.add_parser("project-create", help="create a git-backed Hub project (idempotent: skips an existing slug)")
+    pc.add_argument("--slug", required=True)
+    pc.add_argument("--git-url", required=True, help="https://github.com/<owner>/<repo>.git")
+    pc.add_argument("--branch", required=True, help="the project's branch (BUILD_BRANCH or EVAL_BRANCH)")
+    pc.add_argument("--mode", default="shared", help=f"workspace mode: {', '.join(WORKSPACE_MODES)} (default: shared)")
+    pc.add_argument("--token-file", default="", help="file on the VM holding a GitHub token (required for shared)")
+    pc.set_defaults(func=cmd_project_create)
 
     sd = sub.add_parser("shared-dirs", help="ensure the factory's shared directories exist in each project")
     sd.add_argument("--projects", help="comma-separated project slugs (default: FACTORY_PROJECTS, else "
