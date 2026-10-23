@@ -63,6 +63,36 @@ def test_kit_verify_script_reads_build_project(kit):
     assert "${BUILD_PROJECT:-pulse-ledger}" in text
 
 
+def _fake_gh(tmp_path):
+    log = tmp_path / "gh.log"
+    gh = tmp_path / "bin" / "gh"
+    gh.parent.mkdir()
+    gh.write_text(f'#!/bin/sh\necho "$@" >> {log}\n')
+    gh.chmod(0o755)
+    return log
+
+
+def test_seed_waves_creates_issues_with_dry_run_0(kit, tmp_path):
+    log = _fake_gh(tmp_path)
+    import os
+    env = {**os.environ, "PATH": f"{tmp_path / 'bin'}:{os.environ['PATH']}", "DRY_RUN": "0",
+           "GITHUB_REPO": "example-org/ledger"}
+    res = subprocess.run(["bash", str(kit / "scripts" / "seed-github-waves.sh")], env=env, capture_output=True, text=True)
+    assert res.returncode == 0, res.stderr
+    created = [line for line in log.read_text().splitlines() if line.startswith("issue create")]
+    assert created and all("--repo example-org/ledger" in line for line in created)
+
+
+def test_seed_waves_is_a_dry_run_by_default(kit, tmp_path):
+    log = _fake_gh(tmp_path)
+    import os
+    env = {k: v for k, v in os.environ.items() if k != "DRY_RUN"}
+    env["PATH"] = f"{tmp_path / 'bin'}:{os.environ['PATH']}"
+    res = subprocess.run(["bash", str(kit / "scripts" / "seed-github-waves.sh")], env=env, capture_output=True, text=True)
+    assert res.returncode == 0, res.stderr
+    assert "issue create" not in (log.read_text() if log.exists() else "")
+
+
 def test_kit_templates_render_with_the_kit_env(kit, tmp_path):
     """The path push-templates.py takes: render-templates.py --src <kit>/templates with the kit's env file."""
     res = subprocess.run([sys.executable, str(ROOT / "scripts" / "render-templates.py"),

@@ -1002,9 +1002,10 @@ for lbl in "status:ready" "status:in-progress" "status:in-review" "status:verifi
   gh label create "$lbl" --repo "$REPO" --force >/dev/null 2>&1 || true
 done
 
-python3 - "$ISSUES_FILE" "$REPO" <<'PY'
+# DRY_RUN goes in as an argument: the quoted heredoc below is not expanded by the shell.
+python3 - "$ISSUES_FILE" "$REPO" "${{DRY_RUN:-1}}" <<'PY'
 import json, subprocess, sys
-issues_path, repo = sys.argv[1], sys.argv[2]
+issues_path, repo, dry_run = sys.argv[1], sys.argv[2], sys.argv[3]
 waves = json.load(open(issues_path))
 for w in waves:
     wave_num = w["wave"]
@@ -1013,7 +1014,7 @@ for w in waves:
         criteria = "\\n".join(f"- [ ] {{c}}" for c in issue.get("acceptance_criteria", []))
         body = f"## Wave {{wave_num}}: {{w['title']}}\\n\\n**Owner Role:** `{{issue['owner_role']}}`\\n\\n### Acceptance Criteria\\n{{criteria}}\\n"
         print(f"[wave-{{wave_num}}] {{title}} (owner={{issue['owner_role']}})")
-        if "${{DRY_RUN:-1}}" == "0":
+        if dry_run == "0":
             subprocess.run(["gh", "issue", "create", "--repo", repo, "--title", title, "--body", body, "--label", "status:ready"], check=True)
 PY
 """
