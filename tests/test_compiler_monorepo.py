@@ -133,3 +133,20 @@ def test_monorepo_knowledge_plane_links_reach_the_repo_root(tmp_path, subdir):
 
     res = subprocess.run([sys.executable, str(kp / "kp-check.py"), str(kp)], capture_output=True, text=True)
     assert res.returncode == 0, res.stdout + res.stderr
+
+
+def test_monorepo_factories_share_one_repo_backlog_through_a_factory_label(mono):
+    """Three factories in one repo must not pick each other's issues (L28 k8s run)."""
+    seed = (mono / "scripts" / "seed-github-waves.sh").read_text()
+    assert '"factory:pulse-ledger"' in seed
+    assert '"--label", "factory:pulse-ledger"' in seed
+    lead = (mono / "templates" / "lead" / "system-prompt.md").read_text()
+    assert "--label status:ready --label factory:pulse-ledger" in lead
+    shared = (mono / "templates" / "_shared" / "agents.md").read_text()
+    assert "`factory:pulse-ledger`" in shared
+
+
+def test_single_repo_factory_has_no_factory_label(tmp_path):
+    out = _compile(tmp_path, _spec())
+    assert "factory:" not in (out / "scripts" / "seed-github-waves.sh").read_text()
+    assert "--label factory:" not in (out / "templates" / "lead" / "system-prompt.md").read_text()

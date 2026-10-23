@@ -593,11 +593,18 @@ def _agent(spec: dict[str, Any], role: str) -> str:
     return f"{prefix}-{role}" if prefix else role
 
 
+def _factory_label(spec: dict[str, Any]) -> str:
+    """GitHub label that scopes a monorepo factory's backlog: factories in one repository share its issues."""
+    prefix, subdir = _monorepo(spec)
+    return f"factory:{prefix or spec['project']['slug']}" if subdir else ""
+
+
 def _monorepo_paths(spec: dict[str, Any], text: str) -> str:
     """Point knowledge-plane and eval-tool paths at the product folder, and name deployers with the prefix."""
     if not _monorepo(spec)[1]:
         return text
     ws = _ws(spec)
+    text = text.replace("--label status:ready`", f"--label status:ready --label {_factory_label(spec)}`")
     text = text.replace("/workspace/knowledge-plane", f"{ws}/knowledge-plane")
     text = text.replace("/workspace/tools/", f"{ws}/tools/")
     return text.replace("(`deployer`, `eval-deployer`)",
@@ -617,6 +624,8 @@ def _render_shared_agents_md(spec: dict[str, Any]) -> str:
   context unless the lead assigns work outside the folder. Use `git rev-parse --show-toplevel` for the root.
 - Agent names carry the factory prefix: build team {team}; evaluation team {evals}. Message them with these names.
 - Build and test only what the work touches, inside `{subdir}`; a whole-repository build is not a verification step.
+- Other factories share this repository's issues. Your backlog is the issues labeled `{_factory_label(spec)}`: add
+  `--label {_factory_label(spec)}` to every `gh issue list` and `gh issue create`, and leave other issues alone.
 """
 
 
@@ -1074,6 +1083,10 @@ echo "[4/4] Verification complete for {proj['name']}."
 def _render_seed_waves_sh(spec: dict[str, Any]) -> str:
     proj = spec["project"]
     repo = spec["vcs"]["repo"]
+    flabel = _factory_label(spec)
+    labels = ["status:ready", "status:in-progress", "status:in-review", "status:verified", "status:blocked"]
+    labels += [flabel] if flabel else []
+    create_labels = '"status:ready"' + (f', "--label", "{flabel}"' if flabel else "")
     return f"""#!/usr/bin/env bash
 # Seed Wave 1..N GitHub Issues for {proj['name']} ({repo})
 set -euo pipefail
@@ -1087,7 +1100,7 @@ if [[ ! -f "$ISSUES_FILE" ]]; then
   exit 1
 fi
 
-for lbl in "status:ready" "status:in-progress" "status:in-review" "status:verified" "status:blocked"; do
+for lbl in {" ".join(f'"{l}"' for l in labels)}; do
   gh label create "$lbl" --repo "$REPO" --force >/dev/null 2>&1 || true
 done
 
@@ -1104,7 +1117,7 @@ for w in waves:
         body = f"## Wave {{wave_num}}: {{w['title']}}\\n\\n**Owner Role:** `{{issue['owner_role']}}`\\n\\n### Acceptance Criteria\\n{{criteria}}\\n"
         print(f"[wave-{{wave_num}}] {{title}} (owner={{issue['owner_role']}})")
         if dry_run == "0":
-            subprocess.run(["gh", "issue", "create", "--repo", repo, "--title", title, "--body", body, "--label", "status:ready"], check=True)
+            subprocess.run(["gh", "issue", "create", "--repo", repo, "--title", title, "--body", body, "--label", {create_labels}], check=True)
 PY
 """
 
