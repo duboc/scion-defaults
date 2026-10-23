@@ -137,6 +137,18 @@ def test_sources_without_a_map_keep_the_single_source(watchdog):
                                                                      "b": ("b", "knowledge-plane")}
 
 
+def test_sources_give_each_factory_its_own_knowledge_plane_on_a_shared_hub(watchdog):
+    """Full e2e: two compiled kits on one Hub, the second kit's env set KNOWLEDGE_PLANE_SOURCE_PROJECT=shop, and the
+    first factory's projects would have received shop's knowledge plane. A factory whose own checkout has
+    knowledge-plane/ keeps it; only projects without one fall back to the single source."""
+    has_kp = {"ledger", "shop"}.__contains__
+    assert watchdog.knowledge_plane_sources(["ledger", "ledger-eval", "shop", "shop-eval", "acme-eval"], "", "shop",
+                                            has_kp) == {
+        "ledger": ("ledger", "knowledge-plane"), "ledger-eval": ("ledger", "knowledge-plane"),
+        "shop": ("shop", "knowledge-plane"), "shop-eval": ("shop", "knowledge-plane"),
+        "acme-eval": ("shop", "knowledge-plane")}
+
+
 def test_sources_with_a_map_skip_unmapped_projects(watchdog):
     assert watchdog.knowledge_plane_sources(["project1", "project3"], "project1=src/project1/kp", "") == {
         "project1": ("project1", "src/project1/kp")}

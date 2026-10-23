@@ -562,13 +562,15 @@ def check_po_inbox(conn, state, apply):
             print("    (dry-run: would emit Cloud Logging PO_ESCALATION alert)")
 
 
-def knowledge_plane_sources(projects, sources_env, legacy_source):
+def knowledge_plane_sources(projects, sources_env, legacy_source, has_knowledge_plane=None):
     """Where each project's shared knowledge-plane copy comes from: {project: (source project, path in its checkout)}.
 
     KNOWLEDGE_PLANE_SOURCES (several factories, e.g. one per monorepo product) maps a factory's build slug to the
     knowledge plane inside that project's shared checkout: "project1=src/project1/knowledge-plane,project2=...".
-    `<slug>` and `<slug>-eval` both get it; unmapped projects are skipped. Without the map, every project gets
-    `knowledge-plane/` of KNOWLEDGE_PLANE_SOURCE_PROJECT (default: the first project).
+    `<slug>` and `<slug>-eval` both get it; unmapped projects are skipped. Without the map, a project whose factory
+    checkout has `knowledge-plane/` (`has_knowledge_plane(<slug>)`, where `<slug>-eval` follows `<slug>`) gets its own,
+    so several compiled kits can share one Hub (L28); every other project gets `knowledge-plane/` of
+    KNOWLEDGE_PLANE_SOURCE_PROJECT (default: the first project).
     """
     mapping = {}
     for entry in [e.strip() for e in (sources_env or "").split(",") if e.strip()]:
@@ -586,7 +588,14 @@ def knowledge_plane_sources(projects, sources_env, legacy_source):
                 sources[p] = (factory, mapping[factory])
         return sources
     source = legacy_source or (projects[0] if projects else "")
-    return {p: (source, "knowledge-plane") for p in projects} if source else {}
+    sources = {}
+    for p in projects:
+        factory = p[:-len("-eval")] if p.endswith("-eval") else p
+        if has_knowledge_plane and has_knowledge_plane(factory):
+            sources[p] = (factory, "knowledge-plane")
+        elif source:
+            sources[p] = (source, "knowledge-plane")
+    return sources
 
 
 def check_shared_knowledge_plane(conn, apply=False):
@@ -596,8 +605,10 @@ def check_shared_knowledge_plane(conn, apply=False):
     shared-dirs) and the source must be a shared checkout (~/.scion/projects/<slug>/). See knowledge_plane_sources().
     """
     try:
-        sources = knowledge_plane_sources(FACTORY_PROJECTS, os.environ.get("KNOWLEDGE_PLANE_SOURCES", ""),
-                                          os.environ.get("KNOWLEDGE_PLANE_SOURCE_PROJECT", ""))
+        sources = knowledge_plane_sources(
+            FACTORY_PROJECTS, os.environ.get("KNOWLEDGE_PLANE_SOURCES", ""),
+            os.environ.get("KNOWLEDGE_PLANE_SOURCE_PROJECT", ""),
+            lambda slug: os.path.isdir(os.path.join(SCION_HOME, "projects", slug, "knowledge-plane")))
     except ValueError as e:
         print(f"Check 5 (Shared Knowledge Plane): ERROR {e}", file=sys.stderr)
         return
