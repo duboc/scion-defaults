@@ -93,3 +93,11 @@ def test_repo_lead_templates_start_their_team():
         text = (ROOT / "templates" / role / "system-prompt.md").read_text()
         assert "scion start" in text, role
         assert "If the admin created your team" not in text, role
+
+
+def test_only_the_po_closes_issues(mono):
+    """kubelet-lead closed #1 itself while the other leads left theirs open: the kit must say who accepts."""
+    _, out = mono
+    shared = (out / "templates" / "_shared" / "agents.md").read_text()
+    assert "The PO accepts work by closing the issue" in shared
+    assert "never close an issue" in shared

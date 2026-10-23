@@ -649,6 +649,8 @@ def _render_shared_agents_md_base(spec: dict[str, Any]) -> str:
         backlog = f"""## 3. Backlog & Status (Lessons L1, L18)
 - The backlog is GitHub issues in `{vcs['repo']}`. Status labels move `status:ready` -> `status:in-progress` -> `status:in-review` -> `status:verified` (or `status:blocked`).
 - The lead assigns work and moves labels. Every issue cites the `REQ-` IDs it delivers.
+- The PO accepts work by closing the issue: at `status:verified`, the lead comments the evidence (commit, review,
+  checks) and messages the PO, and never close an issue yourself.
 """
         integrate = f"""## 4. Pre-Commit Verification & Commit Slot (Lesson L18)
 Before committing or pushing to `{vcs['build_branch']}`, ask the lead for the commit slot, then:
