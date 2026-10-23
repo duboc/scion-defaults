@@ -149,6 +149,16 @@ Some organizations don't create a `default` network in new projects; the last co
    that "does not exist" right after it was created, run the same command again. The installer skips the work that's
    already done.
 
+   The installer always uses the first zone of the region. If it stops with `ZONE_RESOURCE_POOL_EXHAUSTED`, set
+   another `region` in `hub-config.json` and run it again. Then update the proxy firewall rule, which keeps the
+   first region's subnet (the installer only warns about it), or the `Access URL` answers `Bad Gateway`:
+
+   ```bash
+   gcloud compute firewall-rules update scion-hub-factory-allow-proxy --project="$HUB_PROJECT_ID" \
+     --source-ranges="$(gcloud compute networks subnets describe default --region=NEW_REGION \
+       --project="$HUB_PROJECT_ID" --format='value(ipCidrRange)')"
+   ```
+
 1. Open the `Access URL` in your browser, and sign in as `ADMIN_EMAIL`. The Hub creates its admin user at the first
    sign-in, and the scripts in this repository act as that user.
 

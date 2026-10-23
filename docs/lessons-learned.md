@@ -511,3 +511,62 @@ fix now lives. Dates are UTC. "Encoded in" points to the script, template rule o
   [`config/harness/home/.local/bin/factory-cd.sh`](../config/harness/home/.local/bin/factory-cd.sh),
   [`scripts/factory-watchdog.py`](../scripts/factory-watchdog.py), [`scripts/scion-admin.py`](../scripts/scion-admin.py)
   (`project-create`, `shared-dirs`), [setup-runbook.md](setup-runbook.md#several-factories-in-one-monorepo).
+
+## L29. A real monorepo (Kubernetes) as three factories, and leads that start their own teams
+
+- **When:** 2026-10-23, on a new single-node Hub (`nightly-20261022`, `medium`) that three factories then joined
+  through the existing-Hub path. The repository was a fork of `kubernetes/kubernetes` (~1.3 GB). The three factories
+  were `kubelet` (`pkg/kubelet`), `scheduler` (`pkg/scheduler`) and `kubectl` (`staging/src/k8s.io/kubectl`), each
+  compiled from an interview kit with `monorepo: {subdir, agent_prefix}`. That made 6 Hub projects and 15 agents.
+  The build branch was `factory/main` and the orphan eval branch `factory/eval`; `master` was never written.
+- **Problem 1, a flat team:** the PO started all 15 agents, so the Hub showed them side by side. No agent was the
+  team's parent, the leads got none of their team's notifications (L5), and a team member had no explicit reporting
+  line.
+- **Fix 1, chain of command:** the PO starts only `<slug>-lead` and `<slug>-eval-lead`. Each lead's prompt has a
+  "Chain of command" table with the exact `scion start <prefix>-<role> -t <role> --harness-auth vertex-ai …` for
+  every teammate. At each wake-up the lead starts the missing ones, resumes stopped ones, and starts nothing else.
+  Scion records the creator (ancestry `PO -> lead -> backend`), so the project's tree view shows the lead on top and
+  the Hub routes the team's notifications to it. Every team member's prompt says "You report to `<lead>`" and forbids
+  starting agents. The project message mode stays `project`, so a backend can still hand straight to the reviewer
+  when the brief says so.
+- **Evidence:**
+  - Inside the lead's container, `scion list --lineage` listed the backend and reviewer under each of the 6 leads,
+    within 5 minutes of the PO starting only the leads.
+  - Wave 2 (#4–#6) then ran through that hierarchy: the leads posted plans, the backends wrote the tests, the reviewers
+    gave PASS, and commits `32f648d`, `f5db068` and `e2f5737` reached `factory/main`.
+  - An independent `go test` at the head passed for all three packages, and the issues stayed open for the PO.
+  - Wave 1 (flat team) had also delivered: `36a3cc2`, `6119bea` and `9852dd6`. Each factory changed only files under
+    its folder, and the factories rebased on each other's pushes to the shared branch.
+- **Problem 2, who closes:** in wave 1, `kubelet-lead` closed #1 itself while the other leads left theirs open. The
+  compiled kit didn't say that closing the issue is the PO's acceptance.
+- **Fix 2:** the kit's backlog section says it now ("The PO accepts work by closing the issue … never close an
+  issue yourself"). In wave 2 all three issues stayed open at `status:verified`.
+- **Gotchas found and fixed:**
+  - **Knowledge-plane links:** links from `<subdir>/knowledge-plane` to repo-root sources were one level short per
+    path part. `kp-check` now passes at every depth.
+  - **Shared backlog:** three factories share one repository's issues, so seeded issues and every
+    `gh issue list` / `gh issue create` carry `factory:<prefix>`.
+  - **Seed dry run:** `seed-github-waves.sh` created labels even in a dry run.
+  - **Issues on forks:** forks have Issues turned off by default (`gh repo edit --enable-issues`).
+  - **Hub write timeout:** the Hub's HTTP write timeout (60 s) closes `POST /api/v1/projects` while it clones a large
+    repository (~75 s here), but the clone finishes. `scion-admin.py project-create` now waits for the seeded
+    checkout (`.scion/project-id` matching the project row) or reports a rollback, and never posts twice.
+  - **`setup-sandbox.sh` races:** it now retries IAM bindings while a new service account propagates, and treats an
+    index created by a parallel run (`ALREADY_EXISTS`) as done.
+- **Gotchas in `deploy.sh` (documented, not ours to fix):**
+  - It always takes the first zone of the region. On a `ZONE_RESOURCE_POOL_EXHAUSTED` stockout, change the region.
+  - Its proxy firewall rule (`scion-hub-<name>-allow-proxy`) keeps the subnet range of the first attempt's region and
+    only warns about the drift. After a region change, the IAP URL answered `Bad Gateway`, and the Cloud Run log said
+    `dial tcp <vm-ip>:8080: i/o timeout`. Update the rule's source range to the new region's `default` subnet.
+  - With certificate-based access, `gcloud compute scp` failed intermittently (`ECPProxyError`). Re-running the
+    installer was enough.
+- **Kubernetes facts:**
+  - The images ship Go 1.26.1 and the repository needs `go 1.27.0`. `GOTOOLCHAIN=auto` downloaded go1.27.0 on the
+    first `go test` in each container (15–105 s), with no change needed.
+  - Each `go test` of one package compiled in under two minutes on `medium`.
+  - Six shared clones used about 9 GB of disk.
+- **Encoded in:** [`scripts/scion_factory.py`](../scripts/scion_factory.py) (chain of command, `factory:<prefix>`,
+  close rule), [`scripts/knowledge_plane.py`](../scripts/knowledge_plane.py),
+  [`scripts/scion-admin.py`](../scripts/scion-admin.py), [`scripts/setup-sandbox.sh`](../scripts/setup-sandbox.sh),
+  [`templates/lead`](../templates/lead/system-prompt.md), [`templates/eval-lead`](../templates/eval-lead/system-prompt.md),
+  README step 8, [setup-runbook.md](setup-runbook.md) steps 8 and M8.
