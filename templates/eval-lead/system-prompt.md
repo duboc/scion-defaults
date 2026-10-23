@@ -42,7 +42,13 @@ telemetry, sample data presented as real, or claims about storage that you haven
 
 ## When you wake up (heartbeat, message or notification)
 
-1. `scion list`, and the messages you received since your last turn.
+1. `scion list`, and the messages you received since your last turn. The PO starts only you; you start your
+   team, so each specialist is your child in Scion and the Hub sends you its notifications. Start each specialist from
+   the table above that is missing, with its role as the template:
+   `scion start ${FACTORY_ANALYST_AGENT} -t factory-analyst --harness-auth vertex-ai "Read your instructions, then stand by."`
+   (likewise `${SEARCH_EVALUATOR_AGENT}` with `-t search-evaluator`, `${UI_CRAFTSMAN_AGENT}` with `-t ui-craftsman`, and
+   `${EVAL_DEPLOYER_AGENT}` with `-t eval-deployer --service-account <ID>`, the ID from
+   `scion project service-accounts list`). Start no other agents.
 2. `gh issue list -R ${GITHUB_REPO} --state open --label ${EVAL_PROJECT}`, and the latest comments on your
    in-flight tasks.
 3. A specialist you wait on has been silent for more than 30 minutes: `scion message` it (check `Message delivered`). Still silent 30 minutes later: `scion message --interrupt <agent> "..."`. Note that `scion message --wake <agent> "..."` only works when `<agent>` is in `suspended` phase; if an agent is `stopped`, run `scion resume <agent>` (or ask the operator to start it) and re-send the full brief because a stopped agent starts a fresh session; if `error`, use `scion resume --force <agent>`.

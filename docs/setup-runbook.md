@@ -229,21 +229,17 @@ scripts/push-templates.py --project "$EVAL_PROJECT" \
   --roles eval-lead,factory-analyst,search-evaluator,ui-craftsman,eval-deployer --apply
 ```
 
-([templates/README.md](../templates/README.md#uploading-to-the-hub) explains what it does; reviewer uses Gemini 4 Argon via `model: google/gemini-4-argon`, backend uses `google-vertex/gemini-4-argon`, and all Antigravity agents use `Gemini 4 Argon (High)`; L26). Then start the agents as the
-admin, in each project (assigning the deployer service account registered in Step 6 via `--service-account <id>`):
+([templates/README.md](../templates/README.md#uploading-to-the-hub) explains what it does; reviewer uses Gemini 4 Argon via `model: google/gemini-4-argon`, backend uses `google-vertex/gemini-4-argon`, and all Antigravity agents use `Gemini 4 Argon (High)`; L26). Then start the two leads as the admin; each lead starts its own team at its first wake-up:
 
 ```bash
-scion start lead -t lead "Read your instructions, then run your wake-up steps."
-scion start backend -t backend "Stand by for briefs from lead."
-scion start frontend -t frontend "Stand by for briefs from lead."
-scion start reviewer -t reviewer "Stand by for review requests from lead."
-scion start deployer -t deployer --service-account <deployer-sa-id> "Stand by for deploy requests from lead."
-# eval project: eval-lead, factory-analyst, search-evaluator, ui-craftsman, and eval-deployer --service-account <id>
+scion start lead -t lead --project="$BUILD_PROJECT" "Read your instructions, then run your wake-up steps."
+scion start eval-lead -t eval-lead --project="$EVAL_PROJECT" "Read your instructions, then run your wake-up steps."
 ```
 
-Agents started by the admin send their notifications to the admin, not to the leads (L5); the heartbeats in step 9
-cover that. (Having each lead start its own team would route notifications to it, but whether a lead may assign the
-deployer identity was not tested.)
+Every agent a lead starts is its child in Scion (ancestry `admin -> lead -> backend`): the project's tree view shows
+the lead on top of its team, and the Hub sends each teammate's notifications to the lead instead of the admin (L5).
+The leads start the deployers with `--service-account <id>` (the ID from step 6); that step is not yet verified
+end to end, so check that the deployers run as the deployer service account.
 
 **Check:** `scripts/run-on-hub.sh scripts/factory-status.sh --panes 10` shows 10 running agents, each terminal at a
 prompt, the OpenCode one on "Gemini 4 Argon Vertex" (L3, L26), Antigravity ones on "Gemini 4 Argon · high" (L26), and Hermes on "google/gemini-4-argon" (L26).
@@ -452,13 +448,13 @@ settings into `~/.scion/watchdog.env`, so the cron runs every 5 minutes keep the
 
 ### M8. Agents and heartbeats (per factory)
 
-`FACTORY_ENV=config/project1.env scripts/render-templates.py --agent-names` prints the names. Start them as the admin
-on the VM (`--harness-auth vertex-ai` for Claude Code on Vertex AI):
+`FACTORY_ENV=config/project1.env scripts/render-templates.py --agent-names` prints the names. Start the two leads as
+the admin on the VM (`--harness-auth vertex-ai` for Claude Code on Vertex AI); each lead starts its prefixed team
+(`project1-backend`, …) at its first wake-up, as its children:
 
 ```bash
 scion start project1-lead -t lead --project=project1 --harness-auth vertex-ai "Read your instructions, then run your wake-up steps."
-scion start project1-eval-lead -t eval-lead --project=project1-eval --harness-auth vertex-ai "Stand by."
-# … one per role, with --service-account <id> for the deployers (step 6)
+scion start project1-eval-lead -t eval-lead --project=project1-eval --harness-auth vertex-ai "Read your instructions, then run your wake-up steps."
 ```
 
 Heartbeats target the prefixed leads (step 9):

@@ -760,8 +760,61 @@ def _render_scion_agent_yaml(role_spec: dict[str, Any], spec: dict[str, Any] | N
     return "\n".join(lines) + "\n"
 
 
+def _team_lead(roles: list[dict[str, Any]], preferred: str) -> str:
+    """The role that leads a team: `lead` / `eval-lead` when the roster has it, else the first role."""
+    names = [r["role"] for r in roles]
+    return preferred if preferred in names else names[0]
+
+
+def _render_chain_of_command(spec: dict[str, Any], role_spec: dict[str, Any], is_eval: bool) -> str:
+    """The PO starts only the two leads; each lead starts its team, so Scion records the lead as the team's parent.
+
+    Scion keeps each agent's creator (ancestry root -> parent -> child): the Hub's tree view shows the lead on top, and
+    the Hub sends an agent's notifications to its creator, so the lead hears when a teammate stops or fails.
+    """
+    team = spec["team"]["eval_roles"] if is_eval else spec["team"]["build_roles"]
+    lead_role = _team_lead(team, "eval-lead" if is_eval else "lead")
+    lead = _agent(spec, lead_role)
+    if role_spec["role"] != lead_role:
+        return f"""## Chain of command
+- You report to `{lead}`, who started you. Take work from `{lead}` (or the PO), and send every result, blocker and
+  verdict to `{lead}` with `scion message {lead} "<your name> -> {lead}: ..."`.
+- When a brief tells you to hand work straight to a teammate, do it and copy `{lead}`.
+- Never start, stop or delete agents: staffing is `{lead}`'s job.
+
+"""
+    rows = []
+    for r in team:
+        if r["role"] == lead_role:
+            continue
+        cmd = f'scion start {_agent(spec, r["role"])} -t {r["role"]} --harness-auth vertex-ai'
+        if r.get("gcp_identity"):
+            cmd += " --service-account <ID>"
+        rows.append(f'| `{_agent(spec, r["role"])}` | `{cmd} "Read your instructions, then run your wake-up steps."` |')
+    table = "\n".join(rows)
+    sa_note = (
+        "\n- `<ID>` is the deployer service account's ID in `scion project service-accounts list` (the PO registers it, "
+        "setup runbook step 6). Without one, ask the PO before you start that agent."
+        if any(r.get("gcp_identity") for r in team if r["role"] != lead_role) else ""
+    )
+    return f"""## Chain of command
+You lead this team and you start it: the PO starts only you. Every agent you start is your child in Scion, so the
+Hub shows you on top of your team and sends you its notifications (stopped, failed, waiting for input).
+
+| Teammate | Start it with |
+|---|---|
+{table}
+
+- At every wake-up, run `scion list` first. Start each teammate that is missing; `scion resume <name>` a stopped one
+  and re-send its brief (a resumed agent starts a fresh session); `scion resume --force <name>` one in `error`.{sa_note}
+- Start only the agents in this table. Your team reports to you: you assign every task and accept every result.
+
+"""
+
+
 def _render_role_system_prompt(spec: dict[str, Any], role_spec: dict[str, Any], is_eval: bool) -> str:
     text = _monorepo_paths(spec, _render_role_system_prompt_base(spec, role_spec, is_eval))
+    text = text.replace("## Operating Loop\n", _render_chain_of_command(spec, role_spec, is_eval) + "## Operating Loop\n", 1)
     prefix, subdir = _monorepo(spec)
     if not subdir:
         return text

@@ -361,21 +361,20 @@ Each run ends with `other templates unchanged: yes`.
    scripts/install-sync-cron.sh
    ```
 
-1. Start one agent per role. Agent names are the role names:
+1. Start the two leads. Each lead starts its own team at its first wake-up, so every team member is the lead's
+   child in Scion: the project's tree view shows the lead on top, and the Hub sends the lead its team's
+   notifications. Agent names are the role names, with the `AGENT_PREFIX` in a monorepo:
 
    ```bash
-   echo "$BUILD_AGENTS" | tr ' ' '\n' | while read -r role; do
-     scripts/run-on-hub.sh scripts/scion-admin.py scion start "${AGENT_PREFIX:+$AGENT_PREFIX-}$role" -t "$role" --project="$BUILD_PROJECT" \
-       --harness-auth vertex-ai "Read your instructions, then run your wake-up steps."
-   done
-   echo "$EVAL_AGENTS" | tr ' ' '\n' | while read -r role; do
-     scripts/run-on-hub.sh scripts/scion-admin.py scion start "${AGENT_PREFIX:+$AGENT_PREFIX-}$role" -t "$role" --project="$EVAL_PROJECT" \
-       --harness-auth vertex-ai "Read your instructions, then stand by."
-   done
+   scripts/run-on-hub.sh scripts/scion-admin.py scion start "${AGENT_PREFIX:+$AGENT_PREFIX-}lead" -t lead --project="$BUILD_PROJECT" \
+     --harness-auth vertex-ai "Read your instructions, then run your wake-up steps."
+   scripts/run-on-hub.sh scripts/scion-admin.py scion start "${AGENT_PREFIX:+$AGENT_PREFIX-}eval-lead" -t eval-lead --project="$EVAL_PROJECT" \
+     --harness-auth vertex-ai "Read your instructions, then run your wake-up steps."
    ```
 
-   To let the deployer roles act as the deployer service account, register it in each project and pass
-   `--service-account ID` when you start them; see step 6 of the [setup runbook](docs/setup-runbook.md).
+   Within a few minutes, `scripts/run-on-hub.sh scripts/scion-admin.py scion list --all` lists every role in
+   `BUILD_AGENTS` and `EVAL_AGENTS`. The leads start deployer roles with `--service-account ID` when the deployer
+   service account is registered in the project; see step 6 of the [setup runbook](docs/setup-runbook.md).
 
 1. Schedule the lead's heartbeat, and tell the lead to start working:
 
