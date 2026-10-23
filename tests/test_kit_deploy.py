@@ -79,3 +79,18 @@ def test_push_templates_renders_from_a_kit_directory():
     assert cmd[1:] == [str(ROOT / "scripts" / "render-templates.py"), "--out", "/tmp/out", "--roles", "lead,backend",
                        "--src", "/kits/ledger/templates"]
     assert "--src" not in push.render_command("/tmp/out", ["lead"], "")
+
+
+def test_scion_admin_runs_the_scion_cli_as_the_admin(monkeypatch):
+    """`scion-admin.py scion <args>` runs the scion CLI on the VM with the PO's admin token (never printed)."""
+    admin = _load("scion_admin_kit", ROOT / "scripts" / "scion-admin.py")
+    monkeypatch.setattr(admin, "_token", lambda: "minted")
+    ran = {}
+    monkeypatch.setattr(admin.subprocess, "run", lambda cmd, env: ran.update(cmd=cmd, env=env) or
+                        type("R", (), {"returncode": 0})())
+    with pytest.raises(SystemExit) as exit_info:
+        admin.cmd_scion(type("A", (), {"args": ["start", "lead", "-t", "lead", "--project=ledger", "do it"]})())
+    assert exit_info.value.code == 0
+    assert ran["cmd"] == ["scion", "start", "lead", "-t", "lead", "--project=ledger", "do it"]
+    assert ran["env"]["SCION_HUB_TOKEN"] == "minted"
+    assert ran["env"]["SCION_HUB_ENDPOINT"] == admin.HUB_URL

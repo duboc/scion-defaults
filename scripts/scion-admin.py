@@ -16,6 +16,7 @@ Run it from your machine through run-on-hub.sh:
         --branch main --mode shared --token-file '~/.factory-github-token'
     scripts/run-on-hub.sh scripts/scion-admin.py shared-dirs                  # scratchpad + knowledge-plane, dry run
     scripts/run-on-hub.sh scripts/scion-admin.py shared-dirs --apply
+    scripts/run-on-hub.sh scripts/scion-admin.py scion start lead -t lead --project=psearch --harness-auth vertex-ai "Read your instructions."
 
 Authentication: mints a 5-minute interactive user JWT for PO_EMAIL, signed with the key the Hub derives from
 SCION_SERVER_SESSION_SECRET in ~/.scion/hub.env (sha256("scion-hub-signing-key:user_signing_key:" + secret)).
@@ -31,6 +32,7 @@ import json
 import os
 import re
 import sqlite3
+import subprocess
 import sys
 import time
 import urllib.error
@@ -296,6 +298,16 @@ def cmd_shared_dirs(args):
         sys.exit(1)
 
 
+def cmd_scion(args):
+    """Run the scion CLI on the VM as the PO (admin): `scion-admin.py scion start lead -t lead --project=x "task"`.
+
+    The CLI accepts the minted admin JWT as SCION_HUB_TOKEN (verified on nightly-20261022, lessons-learned.md L28);
+    the token only lives in the child's environment and is never printed.
+    """
+    env = dict(os.environ, SCION_HUB_ENDPOINT=HUB_URL, SCION_HUB_TOKEN=_token())
+    sys.exit(subprocess.run(["scion", *args.args], env=env).returncode)
+
+
 def cmd_experiments(args):
     _, current = api("GET", "/api/v1/admin/experiments")
     if not args.set:
@@ -377,6 +389,11 @@ def main():
     sch.add_argument("--agent")
     sch.add_argument("--text")
     sch.set_defaults(func=cmd_schedule)
+
+    cli = sub.add_parser("scion", help="run the scion CLI as the PO (admin), e.g. scion start <agent> -t <template> "
+                                       "--project=<slug> \"<task>\"")
+    cli.add_argument("args", nargs=argparse.REMAINDER, help="arguments for the scion CLI")
+    cli.set_defaults(func=cmd_scion)
 
     exp = sub.add_parser("experiments", help="show or override hub experiments (feature flags)")
     exp.add_argument("--set", metavar="NAME=true|false|default")
