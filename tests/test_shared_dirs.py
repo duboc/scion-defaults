@@ -327,3 +327,77 @@ def test_project_create_waits_long_enough_for_a_large_clone(monkeypatch, tmp_pat
                           "mode": "shared", "token_file": str(tok)})()
     admin.cmd_project_create(args)
     assert seen["timeout"] >= 1800
+
+
+def _hub_home(tmp_path, slug=None, pid="p1", seeded=True):
+    """A fake ~/.scion: hub.db with a projects table, and the shared checkout's .scion/project-id when seeded."""
+    home = tmp_path / "scion-home"
+    home.mkdir()
+    db = sqlite3.connect(home / "hub.db")
+    db.execute("CREATE TABLE projects (id TEXT, slug TEXT)")
+    if slug:
+        db.execute("INSERT INTO projects VALUES (?, ?)", (pid, slug))
+        if seeded:
+            (home / "projects" / slug / ".scion").mkdir(parents=True)
+            (home / "projects" / slug / ".scion" / "project-id").write_text(pid + "\n")
+    db.commit()
+    db.close()
+    return home
+
+
+def _create_with_disconnect(monkeypatch, tmp_path, home, capsys):
+    """The Hub's 60 s write timeout closes the connection while the clone keeps running (L28 Kubernetes run)."""
+    import http.client
+
+    monkeypatch.setattr(admin, "SCION_HOME", str(home))
+    monkeypatch.setattr(admin, "HUB_DB", str(home / "hub.db"))
+    monkeypatch.setattr(admin, "_token", lambda: "t")
+    monkeypatch.setattr(admin, "_TOKEN", None)
+    monkeypatch.setattr(admin.time, "sleep", lambda s: None)
+    calls = {"n": 0}
+
+    def urlopen(req, timeout):
+        calls["n"] += 1
+        raise http.client.RemoteDisconnected("Remote end closed connection without response")
+
+    monkeypatch.setattr(admin.urllib.request, "urlopen", urlopen)
+    tok = tmp_path / "tok"
+    tok.write_text("x")
+    args = type("A", (), {"slug": "kubelet", "git_url": "https://github.com/o/k.git", "branch": "factory/main",
+                          "mode": "shared", "token_file": str(tok), "wait": 5})()
+    try:
+        admin.cmd_project_create(args)
+        code = 0
+    except SystemExit as e:
+        code = e.code
+    return code, capsys.readouterr().out, calls["n"]
+
+
+def test_project_create_reports_a_clone_that_finished_after_the_hub_dropped_the_connection(monkeypatch, tmp_path, capsys):
+    # The DB starts empty (the slug check passes); the clone then finishes on the Hub.
+    home = _hub_home(tmp_path)
+    real_db = admin._db
+    state = {"checks": 0}
+
+    def db():
+        state["checks"] += 1
+        if state["checks"] == 2:  # first poll after the disconnect: the Hub has seeded the checkout
+            conn = sqlite3.connect(home / "hub.db")
+            conn.execute("INSERT INTO projects VALUES ('p1', 'kubelet')")
+            conn.commit()
+            (home / "projects" / "kubelet" / ".scion").mkdir(parents=True)
+            (home / "projects" / "kubelet" / ".scion" / "project-id").write_text("p1\n")
+        return real_db()
+
+    monkeypatch.setattr(admin, "_db", db)
+    code, out, posts = _create_with_disconnect(monkeypatch, tmp_path, home, capsys)
+    assert code == 0, out
+    assert posts == 1  # never re-POSTs: a second create would race the running clone
+    assert "kubelet: created id=p1" in out
+    assert "write timeout" in out
+
+
+def test_project_create_fails_when_the_hub_rolled_the_project_back(monkeypatch, tmp_path, capsys):
+    home = _hub_home(tmp_path)  # the row never appears: the clone failed and the Hub rolled back
+    code, out, _ = _create_with_disconnect(monkeypatch, tmp_path, home, capsys)
+    assert code not in (0, None)

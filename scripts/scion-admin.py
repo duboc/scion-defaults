@@ -28,6 +28,7 @@ import argparse
 import base64
 import hashlib
 import hmac
+import http.client
 import json
 import os
 import re
@@ -223,9 +224,43 @@ def cmd_project_create(args):
     except (OSError, ValueError) as e:
         sys.exit(str(e))
     # A shared project is cloned inside this request: a large monorepo takes minutes.
-    status, out = api("POST", "/api/v1/projects", body, timeout=1800)
+    try:
+        status, out = api("POST", "/api/v1/projects", body, timeout=1800)
+    except (http.client.RemoteDisconnected, ConnectionError, TimeoutError, urllib.error.URLError) as e:
+        # The Hub closes the connection at its write timeout (60 s by default) but keeps cloning. Don't POST
+        # again: wait for the Hub to finish (it seeds .scion/project-id) or to roll the project back.
+        print(f"{args.slug}: the Hub closed the connection ({type(e).__name__}) at its write timeout; "
+              "waiting for the clone to finish")
+        pid = wait_for_shared_clone(args.slug, getattr(args, "wait", 1800))
+        print(f"{args.slug}: created id={pid} mode={args.mode} branch={args.branch}")
+        return
     project = out.get("project", out)
     print(f"{args.slug}: created HTTP {status} id={project.get('id')} mode={args.mode} branch={args.branch}")
+
+
+def wait_for_shared_clone(slug, wait, poll=10):
+    """Return the project ID once the Hub has seeded the shared checkout; exit if it rolled back or ran out of time.
+
+    The Hub inserts the project row, clones, then writes <SCION_HOME>/projects/<slug>/.scion/project-id. A failed
+    clone deletes the row again (handlers_projects_core.go, rollbackCreatedProject).
+    """
+    seen_row = False
+    for _ in range(max(1, int(wait) // poll)):
+        row = _db().execute("SELECT id FROM projects WHERE slug = ?", (slug,)).fetchone()
+        if row:
+            seen_row = True
+            marker = os.path.join(SCION_HOME, "projects", slug, ".scion", "project-id")
+            try:
+                with open(marker) as f:
+                    if f.read().strip() == row["id"]:
+                        return row["id"]
+            except OSError:
+                pass
+        elif seen_row:
+            sys.exit(f"{slug}: the Hub rolled the project back (the clone failed); see journalctl -u scion-hub")
+        time.sleep(poll)
+    sys.exit(f"{slug}: no seeded checkout after {wait}s; check journalctl -u scion-hub and "
+             f"`scion-admin.py projects` before you retry")
 
 
 # Shared directories: project-level folders mounted into every agent at /scion-volumes/<name>, shown as tabs next to
@@ -373,6 +408,8 @@ def main():
     pc.add_argument("--branch", required=True, help="the project's branch (BUILD_BRANCH or EVAL_BRANCH)")
     pc.add_argument("--mode", default="shared", help=f"workspace mode: {', '.join(WORKSPACE_MODES)} (default: shared)")
     pc.add_argument("--token-file", default="", help="file on the VM holding a GitHub token (required for shared)")
+    pc.add_argument("--wait", type=int, default=1800,
+                    help="seconds to wait for a shared clone after the Hub drops the connection (default: 1800)")
     pc.set_defaults(func=cmd_project_create)
 
     sd = sub.add_parser("shared-dirs", help="ensure the factory's shared directories exist in each project")
