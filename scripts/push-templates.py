@@ -3,6 +3,7 @@
 
     scripts/push-templates.py --project psearch-eval --roles eval-lead,ui-craftsman            # dry run (default)
     scripts/push-templates.py --project psearch-eval --roles eval-lead,ui-craftsman --apply
+    scripts/push-templates.py --project ledger --roles lead,backend --templates kits/ledger/templates --apply   # a compiled kit
 
 Renders the roles from ../templates with factory.env (like render-templates.py), ships them to the Hub VM through
 run-on-hub.sh and, for each role, in the given Scion project:
@@ -242,10 +243,21 @@ main()
 '''
 
 
+def render_command(out, roles, templates=""):
+    """render-templates.py for the given roles, from this repository's templates/ or a compiled kit's templates/."""
+    cmd = [sys.executable, os.path.join(HERE, "render-templates.py"), "--out", out, "--roles", ",".join(roles)]
+    if templates:
+        cmd += ["--src", templates]
+    return cmd
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--project", required=True, help="Scion project slug")
-    parser.add_argument("--roles", required=True, help="comma-separated role folders from ../templates")
+    parser.add_argument("--roles", required=True, help="comma-separated role folders from the templates directory")
+    parser.add_argument("--templates", default="",
+                        help="templates directory to push (default: ../templates; e.g. <kit>/templates from "
+                             "`scion-factory compile`)")
     parser.add_argument("--apply", action="store_true", help="make the changes (default: dry run)")
     args = parser.parse_args()
     roles = [r for r in args.roles.split(",") if r]
@@ -256,7 +268,7 @@ def main():
 
     with tempfile.TemporaryDirectory() as tmp:
         out = os.path.join(tmp, "templates")
-        subprocess.run([sys.executable, os.path.join(HERE, "render-templates.py"), "--out", out, "--roles", ",".join(roles)],
+        subprocess.run(render_command(out, roles, os.path.abspath(args.templates) if args.templates else ""),
                        check=True, stdout=subprocess.DEVNULL)
         buf = io.BytesIO()
         with tarfile.open(fileobj=buf, mode="w:gz") as tar:

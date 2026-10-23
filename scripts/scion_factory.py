@@ -867,41 +867,48 @@ def _render_factory_env_example(spec: dict[str, Any]) -> str:
     iam_roles = " ".join(infra.get("deployer_iam_roles", []))
     vcs = spec.get("vcs") or {}
 
-    return f"""# Scion Software Factory Environment Configuration — {proj['name']}
-# Copy to config/factory.env (gitignored) and populate real values before running scripts.
+    return f"""# Scion software factory configuration — {proj['name']}
+# Copy this file to config/factory.env in your scion-defaults checkout (git-ignored), replace the your-* values, and
+# deploy with docs/setup-runbook.md. The names match what scripts/run-on-hub.sh, render-templates.py and
+# push-templates.py read (KEY=value lines, no `export`).
 
-export HUB_GCP_PROJECT="your-hub-gcp-project"
-export HUB_GCE_ZONE="us-central1-c"
-export HUB_VM_NAME="your-scion-hub-vm"
-export HUB_OS_USER="scion"
-export HUB_URL="http://127.0.0.1:8080"
+# --- Scion Hub (self-hosted on a GCE VM) ---
+HUB_PROJECT=your-hub-gcp-project
+HUB_ZONE=us-central1-c
+HUB_VM=scion-hub
+HUB_OS_USER=scion
+HUB_LOCAL_URL=http://localhost:8080
 
-export APP_GCP_PROJECT="your-app-gcp-project"
-export FIRESTORE_PROJECT="${{APP_GCP_PROJECT}}"   # Factory control plane: agent status and eval runs
-export FIRESTORE_DATABASE="(default)"
-export APP_GCP_REGION="us-central1"
-export DEPLOYER_SA_NAME="deployer-sa"
-export DEPLOYER_IAM_ROLES="{iam_roles}"
+# --- GCP sandbox the agents build and deploy into ---
+SANDBOX_PROJECT=your-sandbox-gcp-project
+SANDBOX_REGION=us-central1
+FIRESTORE_PROJECT=your-sandbox-gcp-project   # factory control plane: agent status and eval runs
+FIRESTORE_DATABASE='(default)'
+DEPLOYER_SA_NAME=deployer-sa
+RUNTIME_SA_NAME={infra['serving_service']}
+DEPLOYER_IAM_ROLES="{iam_roles}"
+SERVING_SERVICE={infra['serving_service']}
+DASHBOARD_SERVICE={infra['eval_service']}
 
-export VCS_ENABLED="{'true' if vcs.get('enabled') else 'false'}"
-export GITHUB_REPO="{vcs.get('repo', '')}"
-export BUILD_PROJECT_SLUG="{proj['slug']}"
-export EVAL_PROJECT_SLUG="{proj['eval_slug']}"
-export BUILD_BRANCH="{vcs.get('build_branch', 'main')}"
-export EVAL_BRANCH="{vcs.get('eval_branch', 'eval-dashboard')}"
-export FACTORY_PROJECTS="{proj['slug']},{proj['eval_slug']}"
-export KNOWLEDGE_PLANE_SOURCE_PROJECT="{proj['slug']}"
+# --- Factory ---
+VCS_ENABLED={'true' if vcs.get('enabled') else 'false'}
+GITHUB_REPO={vcs.get('repo', '')}
+BUILD_PROJECT={proj['slug']}
+EVAL_PROJECT={proj['eval_slug']}
+BUILD_BRANCH={vcs.get('build_branch', 'main')}
+EVAL_BRANCH={vcs.get('eval_branch', 'eval-dashboard')}
+PO_EMAIL=po@example.com                      # Hub admin account that acts as the product owner
+FACTORY_PROJECTS={proj['slug']},{proj['eval_slug']}
+KNOWLEDGE_PLANE_SOURCE_PROJECT={proj['slug']}
+MONTHLY_BUDGET_USD={infra.get('budget_usd', 200)}
 
-export SERVING_SERVICE_NAME="{infra['serving_service']}"
-export EVAL_SERVICE_NAME="{infra['eval_service']}"
-export MONTHLY_BUDGET_USD="{infra.get('budget_usd', 200)}"
-
-export BUILD_AGENTS="{build_names}"
-export EVAL_AGENTS="{eval_names}"
-export HEARTBEAT_MODE="{team.get('heartbeat_mode', 'direct-lead')}"
-export HEARTBEAT_CRON="{team.get('heartbeat_cron', '*/15 * * * *')}"
-export WATCHDOG_CRON="{team.get('watchdog_cron', '*/5 * * * *')}"
-export MAX_WIP="{team.get('max_wip', 2)}"
+# --- Roster (agent names = role names; start one agent per role) ---
+BUILD_AGENTS="{build_names}"
+EVAL_AGENTS="{eval_names}"
+HEARTBEAT_MODE={team.get('heartbeat_mode', 'direct-lead')}
+HEARTBEAT_CRON="{team.get('heartbeat_cron', '*/15 * * * *')}"
+WATCHDOG_CRON="{team.get('watchdog_cron', '*/5 * * * *')}"
+MAX_WIP={team.get('max_wip', 2)}
 """
 
 
@@ -927,8 +934,8 @@ if [[ -f "$ROOT_DIR/config/factory.env" ]]; then
   source "$ROOT_DIR/config/factory.env"
 fi
 
-BUILD_PROJECT_SLUG="${{BUILD_PROJECT_SLUG:-{proj['slug']}}}"
-EVAL_PROJECT_SLUG="${{EVAL_PROJECT_SLUG:-{proj['eval_slug']}}}"
+BUILD_PROJECT_SLUG="${{BUILD_PROJECT:-{proj['slug']}}}"
+EVAL_PROJECT_SLUG="${{EVAL_PROJECT:-{proj['eval_slug']}}}"
 SERVING_URL="${{SERVING_URL:-}}"
 EVAL_URL="${{EVAL_URL:-}}"
 
