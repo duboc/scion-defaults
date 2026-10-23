@@ -567,10 +567,10 @@ def knowledge_plane_sources(projects, sources_env, legacy_source, has_knowledge_
 
     KNOWLEDGE_PLANE_SOURCES (several factories, e.g. one per monorepo product) maps a factory's build slug to the
     knowledge plane inside that project's shared checkout: "project1=src/project1/knowledge-plane,project2=...".
-    `<slug>` and `<slug>-eval` both get it; unmapped projects are skipped. Without the map, a project whose factory
-    checkout has `knowledge-plane/` (`has_knowledge_plane(<slug>)`, where `<slug>-eval` follows `<slug>`) gets its own,
-    so several compiled kits can share one Hub (L28); every other project gets `knowledge-plane/` of
-    KNOWLEDGE_PLANE_SOURCE_PROJECT (default: the first project).
+    `<slug>` and `<slug>-eval` both get it. Any other project whose factory checkout has `knowledge-plane/`
+    (`has_knowledge_plane(<slug>)`, where `<slug>-eval` follows `<slug>`) gets its own, so compiled kits and monorepo
+    factories can share one Hub (L28). The rest get `knowledge-plane/` of KNOWLEDGE_PLANE_SOURCE_PROJECT (without the
+    map it defaults to the first project; with the map it must be set explicitly), or are skipped.
     """
     mapping = {}
     for entry in [e.strip() for e in (sources_env or "").split(",") if e.strip()]:
@@ -580,18 +580,15 @@ def knowledge_plane_sources(projects, sources_env, legacy_source, has_knowledge_
         if not sep or not factory or not path or entry.split("=", 1)[1].strip().startswith("/") or ".." in parts:
             raise ValueError(f"KNOWLEDGE_PLANE_SOURCES entry {entry!r}: use <build slug>=<relative path>")
         mapping[factory] = path
-    if mapping:
-        sources = {}
-        for p in projects:
-            factory = p[:-len("-eval")] if p.endswith("-eval") and p not in mapping else p
-            if factory in mapping:
-                sources[p] = (factory, mapping[factory])
-        return sources
-    source = legacy_source or (projects[0] if projects else "")
+    # With a map, the single source applies only when KNOWLEDGE_PLANE_SOURCE_PROJECT is set explicitly.
+    source = legacy_source if mapping else (legacy_source or (projects[0] if projects else ""))
     sources = {}
     for p in projects:
+        mapped = p[:-len("-eval")] if p.endswith("-eval") and p not in mapping else p
         factory = p[:-len("-eval")] if p.endswith("-eval") else p
-        if has_knowledge_plane and has_knowledge_plane(factory):
+        if mapped in mapping:
+            sources[p] = (mapped, mapping[mapped])
+        elif has_knowledge_plane and has_knowledge_plane(factory):
             sources[p] = (factory, "knowledge-plane")
         elif source:
             sources[p] = (source, "knowledge-plane")
@@ -625,7 +622,7 @@ def check_shared_knowledge_plane(conn, apply=False):
     for r in rows:
         slug = r["slug"]
         if slug not in sources:
-            print(f"Check 5 (Shared Knowledge Plane): {slug}: skipped (not in KNOWLEDGE_PLANE_SOURCES)")
+            print(f"Check 5 (Shared Knowledge Plane): {slug}: skipped (no knowledge plane source)")
             continue
         source_project, rel = sources[slug]
         src_dir = os.path.join(SCION_HOME, "projects", source_project, rel)

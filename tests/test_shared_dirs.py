@@ -154,6 +154,18 @@ def test_sources_with_a_map_skip_unmapped_projects(watchdog):
         "project1": ("project1", "src/project1/kp")}
 
 
+def test_sources_with_a_map_keep_other_factories_on_the_hub(watchdog):
+    """Full e2e: a monorepo factory joined a Hub that already ran two compiled kits. Its KNOWLEDGE_PLANE_SOURCES map
+    must not stop the kits' own knowledge planes from syncing."""
+    has_kp = {"ledger", "shop"}.__contains__
+    assert watchdog.knowledge_plane_sources(["ledger", "ledger-eval", "shop", "project1", "project1-eval"],
+                                            "project1=src/project1/knowledge-plane", "", has_kp) == {
+        "ledger": ("ledger", "knowledge-plane"), "ledger-eval": ("ledger", "knowledge-plane"),
+        "shop": ("shop", "knowledge-plane"),
+        "project1": ("project1", "src/project1/knowledge-plane"),
+        "project1-eval": ("project1", "src/project1/knowledge-plane")}
+
+
 @pytest.mark.parametrize("bad", ["project1", "project1=/abs/kp", "project1=../kp", "=src/kp"])
 def test_sources_reject_bad_entries(watchdog, bad):
     with pytest.raises(ValueError, match="KNOWLEDGE_PLANE_SOURCES"):
