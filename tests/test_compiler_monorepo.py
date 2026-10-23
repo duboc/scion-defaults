@@ -110,3 +110,26 @@ def test_schema_allows_the_monorepo_block():
     spec["monorepo"] = {"subdir": "pkg/kubelet", "agent_prefix": "kubelet"}
     jsonschema.validate(spec, schema)
     assert "monorepo" in schema["properties"]
+
+
+@pytest.mark.parametrize("subdir", ["pkg/kubelet", "staging/src/k8s.io/kubectl"])
+def test_monorepo_knowledge_plane_links_reach_the_repo_root(tmp_path, subdir):
+    """Learned sources are repo-root paths; the knowledge plane sits at <subdir>/knowledge-plane (L28 k8s run)."""
+    import subprocess
+
+    spec = _spec(subdir=subdir, agent_prefix="kubelet")
+    spec["knowledge_plane"]["sources"]["guides"] = ["AGENTS.md"]
+    spec["knowledge_plane"]["sources"]["contracts"] = ["api/openapi.yaml"]
+    out = _compile(tmp_path, spec)
+
+    repo = tmp_path / "repo"
+    (repo / "api").mkdir(parents=True)
+    (repo / "AGENTS.md").write_text("# root\n")
+    (repo / "api" / "openapi.yaml").write_text("openapi: 3.0.0\n")
+    kp = repo / subdir / "knowledge-plane"
+    kp.parent.mkdir(parents=True)
+    import shutil
+    shutil.copytree(out / "knowledge-plane", kp)
+
+    res = subprocess.run([sys.executable, str(kp / "kp-check.py"), str(kp)], capture_output=True, text=True)
+    assert res.returncode == 0, res.stdout + res.stderr

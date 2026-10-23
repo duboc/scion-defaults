@@ -190,6 +190,10 @@ def render_knowledge_plane(spec: dict[str, Any], vcs_enabled: bool) -> dict[str,
     vcs = spec.get("vcs") or {}
     decisions = kp.get("decisions") or []
     files: dict[str, str] = {}
+    # Learned sources are repo-root paths. A monorepo factory keeps its knowledge plane at
+    # <subdir>/knowledge-plane, so each link climbs one extra level per subdir part.
+    subdir = str((spec.get("monorepo") or {}).get("subdir") or "").strip().strip("/")
+    up = "../" * len([part for part in subdir.split("/") if part])
 
     backlog_row = (
         f"| Find the backlog | GitHub issues in `{vcs.get('repo', '')}` (`status:*` labels) |"
@@ -207,7 +211,7 @@ def render_knowledge_plane(spec: dict[str, Any], vcs_enabled: bool) -> dict[str,
     }
     for kind in SOURCE_KINDS:
         for src in sources.get(kind) or []:
-            learned_lines.append(f"- {labels[kind]}: [`{src}`](../{src})")
+            learned_lines.append(f"- {labels[kind]}: [`{src}`](../{up}{src})")
     learned = "\n".join(learned_lines) or "- None. Every entry in this knowledge plane came from the bootstrap interview."
 
     adr_rows = "\n".join(
@@ -314,7 +318,7 @@ What becomes easier, what becomes harder, and what to watch.
 {dec.get('consequences', '').strip() or 'To be documented as the decision is implemented.'}
 """
 
-    contract_lines = "\n".join(f"- [`{c}`](../../{c})" for c in sources.get("contracts") or [])
+    contract_lines = "\n".join(f"- [`{c}`](../../{up}{c})" for c in sources.get("contracts") or [])
     l2 = spec.get("evaluation_pyramid", {}).get("l2_contract", {})
     endpoints = "\n".join(f"- `{e}`" for e in l2.get("endpoints") or []) or "- None recorded."
     l2_inv = "\n".join(f"- {i}" for i in l2.get("invariants") or []) or "- None recorded."
