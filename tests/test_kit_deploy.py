@@ -103,6 +103,17 @@ def test_kit_templates_render_with_the_kit_env(kit, tmp_path):
     assert (tmp_path / "out" / "lead" / "agents.md").read_text() == (kit / "templates" / "lead" / "agents.md").read_text()
 
 
+def test_inspect_detects_a_requirements_txt_python_service(tmp_path):
+    """Found in the full e2e: a FastAPI repo with only requirements.txt came out as language `unknown`."""
+    (tmp_path / "requirements.txt").write_text("fastapi==0.115.0\ngoogle-cloud-firestore==2.19.0\n"
+                                               "google-cloud-storage==2.18.0\n")
+    detected = scion_factory.inspect_repository(tmp_path)["detected"]
+    assert detected["primary_language"] == "python"
+    assert detected["test_command"] == "pytest -q"
+    assert detected["framework"] == "FastAPI"
+    assert detected["cloud_stores"] == ["firestore", "gcs"]
+
+
 def test_push_templates_renders_from_a_kit_directory():
     push = _load("push_templates_kit", ROOT / "scripts" / "push-templates.py")
     cmd = push.render_command("/tmp/out", ["lead", "backend"], "/kits/ledger/templates")

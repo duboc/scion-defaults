@@ -381,21 +381,25 @@ def inspect_repository(repo_path: str | Path) -> dict[str, Any]:
         if "firestore" in mod_text:
             cloud_stores.add("firestore")
 
-    # Detect Python
-    pyproject = root / "pyproject.toml"
-    if pyproject.exists():
+    # Detect Python (pyproject.toml and/or requirements.txt)
+    py_files = [p for p in (root / "pyproject.toml", root / "requirements.txt") if p.exists()]
+    if py_files:
         if detected["primary_language"] == "unknown":
             detected["primary_language"] = "python"
             detected["build_command"] = "python3 -m compileall ."
             detected["test_command"] = "pytest -q"
             detected["lint_command"] = "ruff check ."
-        py_text = pyproject.read_text(errors="ignore").lower()
+        py_text = "\n".join(p.read_text(errors="ignore") for p in py_files).lower()
         if "spanner" in py_text:
             cloud_stores.add("spanner")
         if "bigquery" in py_text:
             cloud_stores.add("bigquery")
         if "aiplatform" in py_text or "genai" in py_text or "vertex" in py_text:
             cloud_stores.add("vertex-ai")
+        if "firestore" in py_text:
+            cloud_stores.add("firestore")
+        if "google-cloud-storage" in py_text:
+            cloud_stores.add("gcs")
         if "fastapi" in py_text:
             detected["framework"] = "FastAPI"
 
