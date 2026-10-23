@@ -1356,11 +1356,14 @@ def compile_factory_boilerplate(
 # defaults, and leaves every INTENT field empty so the readiness gate fails
 # until the agent has elicited real answers from the human.
 
+# Claude Code and Antigravity run on a stock Hub without harness patches (full e2e, lessons-learned.md L28): the
+# bundled Hermes config crashes on a fresh image and the bundled OpenCode launcher stops at a permission prompt.
+# The interview can still choose OpenCode or Hermes per role; see docs/setup-runbook.md step 7 for their patches.
 DEFAULT_BUILD_ROLES: list[dict[str, str]] = [
     {"role": "lead", "harness": "claude", "model": "opus"},
-    {"role": "backend", "harness": "opencode", "model": "google-vertex/gemini-4-argon"},
+    {"role": "backend", "harness": "antigravity", "model": "Gemini 4 Argon (High)"},
     {"role": "frontend", "harness": "antigravity", "model": "Gemini 4 Argon (High)"},
-    {"role": "reviewer", "harness": "hermes", "model": "google/gemini-4-argon"},
+    {"role": "reviewer", "harness": "antigravity", "model": "Gemini 4 Argon (High)"},
     {"role": "deployer", "harness": "claude", "model": "opus", "gcp_identity": "deployer-sa"},
 ]
 

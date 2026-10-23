@@ -103,6 +103,15 @@ def test_kit_templates_render_with_the_kit_env(kit, tmp_path):
     assert (tmp_path / "out" / "lead" / "agents.md").read_text() == (kit / "templates" / "lead" / "agents.md").read_text()
 
 
+def test_default_roster_uses_only_harnesses_that_run_unpatched():
+    """Full e2e on nightly-20261022: the bundled Hermes config passes --create-if-missing, which the Hermes CLI in a
+    fresh image rejects (crash, exit 2), and the bundled OpenCode launcher stops at a permission prompt. Claude Code
+    and Antigravity ran without patches, so the draft roster defaults to them; the interview can still pick others."""
+    draft = scion_factory.draft_spec_from_repo(None)
+    harnesses = {r["harness"] for r in draft["team"]["build_roles"] + draft["team"]["eval_roles"]}
+    assert harnesses <= {"claude", "antigravity"}
+
+
 def test_inspect_detects_a_requirements_txt_python_service(tmp_path):
     """Found in the full e2e: a FastAPI repo with only requirements.txt came out as language `unknown`."""
     (tmp_path / "requirements.txt").write_text("fastapi==0.115.0\ngoogle-cloud-firestore==2.19.0\n"
