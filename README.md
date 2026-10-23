@@ -365,11 +365,11 @@ Each run ends with `other templates unchanged: yes`.
 
    ```bash
    echo "$BUILD_AGENTS" | tr ' ' '\n' | while read -r role; do
-     scripts/run-on-hub.sh scripts/scion-admin.py scion start "$role" -t "$role" --project="$BUILD_PROJECT" \
+     scripts/run-on-hub.sh scripts/scion-admin.py scion start "${AGENT_PREFIX:+$AGENT_PREFIX-}$role" -t "$role" --project="$BUILD_PROJECT" \
        --harness-auth vertex-ai "Read your instructions, then run your wake-up steps."
    done
    echo "$EVAL_AGENTS" | tr ' ' '\n' | while read -r role; do
-     scripts/run-on-hub.sh scripts/scion-admin.py scion start "$role" -t "$role" --project="$EVAL_PROJECT" \
+     scripts/run-on-hub.sh scripts/scion-admin.py scion start "${AGENT_PREFIX:+$AGENT_PREFIX-}$role" -t "$role" --project="$EVAL_PROJECT" \
        --harness-auth vertex-ai "Read your instructions, then stand by."
    done
    ```
@@ -382,8 +382,8 @@ Each run ends with `other templates unchanged: yes`.
    ```bash
    hb="$(scripts/render-templates.py --file "$OUTPUT_DIR/config/heartbeat-message.txt")"
    scripts/run-on-hub.sh scripts/scion-admin.py schedule create --project "$BUILD_PROJECT" \
-     --name "$BUILD_PROJECT-lead-heartbeat" --cron "*/15 * * * *" --agent lead --text "$hb"
-   scripts/run-on-hub.sh scripts/scion-admin.py message --project "$BUILD_PROJECT" --agent lead --text \
+     --name "$BUILD_PROJECT-lead-heartbeat" --cron "*/15 * * * *" --agent "${AGENT_PREFIX:+$AGENT_PREFIX-}lead" --text "$hb"
+   scripts/run-on-hub.sh scripts/scion-admin.py message --project "$BUILD_PROJECT" --agent "${AGENT_PREFIX:+$AGENT_PREFIX-}lead" --text \
      "PO -> lead: GO. Work the backlog in wave order, at most 2 issues in flight, evidence on every issue."
    ```
 

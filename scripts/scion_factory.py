@@ -543,6 +543,15 @@ def evaluate_spec_readiness(spec: dict[str, Any]) -> dict[str, Any]:
             if not issue.get("acceptance_criteria"):
                 missing.append(f"waves[0].issues[{idx}] is missing acceptance_criteria")
 
+    if spec.get("monorepo") is not None:
+        prefix, subdir = _monorepo(spec)
+        parts = subdir.split("/")
+        if not subdir or str((spec.get("monorepo") or {}).get("subdir", "")).startswith("/") or ".." in parts:
+            missing.append("monorepo.subdir must be the product folder, relative to the repository root (e.g. pkg/kubelet)")
+        if not _SLUG_RE.match(prefix):
+            missing.append("monorepo.agent_prefix must be a slug (lowercase letters, digits, single dashes), "
+                           "normally the build project slug")
+
     missing.extend(kp.validate_knowledge_plane(spec))
 
     total_checks = 17
@@ -562,7 +571,56 @@ def _vcs_enabled(spec: dict[str, Any]) -> bool:
     return bool((spec.get("vcs") or {}).get("enabled"))
 
 
+# Monorepo factories (docs/plans/2026-10-22-monorepo-factories.md): `monorepo: {subdir, agent_prefix}` makes the kit
+# start every agent in `subdir` (factory-cd.sh in the <harness>-factory harness-configs), read the knowledge plane at
+# `subdir/knowledge-plane`, and name agents `<agent_prefix>-<role>`.
+_SLUG_RE = re.compile(r"^[a-z0-9]+(-[a-z0-9]+)*$")
+
+
+def _monorepo(spec: dict[str, Any]) -> tuple[str, str]:
+    mono = spec.get("monorepo") or {}
+    return str(mono.get("agent_prefix") or ""), str(mono.get("subdir") or "").strip().strip("/")
+
+
+def _ws(spec: dict[str, Any]) -> str:
+    """The factory's root inside the checkout: /workspace, or /workspace/<subdir> for a monorepo factory."""
+    subdir = _monorepo(spec)[1]
+    return f"/workspace/{subdir}" if subdir else "/workspace"
+
+
+def _agent(spec: dict[str, Any], role: str) -> str:
+    prefix = _monorepo(spec)[0]
+    return f"{prefix}-{role}" if prefix else role
+
+
+def _monorepo_paths(spec: dict[str, Any], text: str) -> str:
+    """Point knowledge-plane and eval-tool paths at the product folder, and name deployers with the prefix."""
+    if not _monorepo(spec)[1]:
+        return text
+    ws = _ws(spec)
+    text = text.replace("/workspace/knowledge-plane", f"{ws}/knowledge-plane")
+    text = text.replace("/workspace/tools/", f"{ws}/tools/")
+    return text.replace("(`deployer`, `eval-deployer`)",
+                        f"(`{_agent(spec, 'deployer')}`, `{_agent(spec, 'eval-deployer')}`)")
+
+
 def _render_shared_agents_md(spec: dict[str, Any]) -> str:
+    text = _render_shared_agents_md_base(spec)
+    prefix, subdir = _monorepo(spec)
+    if not subdir:
+        return text
+    team = ", ".join(f"`{_agent(spec, r['role'])}`" for r in spec["team"]["build_roles"])
+    evals = ", ".join(f"`{_agent(spec, r['role'])}`" for r in spec["team"]["eval_roles"])
+    return _monorepo_paths(spec, text) + f"""
+## 8. Monorepo Product Folder
+- This factory owns `{subdir}` in the repository. Your terminal starts there; the rest of the repository is read-only
+  context unless the lead assigns work outside the folder. Use `git rev-parse --show-toplevel` for the root.
+- Agent names carry the factory prefix: build team {team}; evaluation team {evals}. Message them with these names.
+- Build and test only what the work touches, inside `{subdir}`; a whole-repository build is not a verification step.
+"""
+
+
+def _render_shared_agents_md_base(spec: dict[str, Any]) -> str:
     proj = spec["project"]
     stack = spec["stack"]
     infra = spec["infrastructure"]
@@ -671,26 +729,42 @@ Every agent in this Scion software factory MUST follow these operational rules (
 """
 
 
-def _render_scion_agent_yaml(role_spec: dict[str, Any]) -> str:
+def _render_scion_agent_yaml(role_spec: dict[str, Any], spec: dict[str, Any] | None = None) -> str:
     harness = role_spec["harness"]
     model = role_spec["model"]
+    subdir = _monorepo(spec)[1] if spec else ""
     lines = [
         "schema_version: \"1\"",
-        f"default_harness_config: {harness}",
+        f"default_harness_config: {harness}-factory" if subdir else f"default_harness_config: {harness}",
         f"model: \"{model}\"",
         "telemetry:",
         "  enabled: true",
     ]
+    env = []
     if harness == "opencode" and "vertex" in model.lower():
         # Lesson L6: Gemini 4 Argon on Vertex requires global endpoint
-        lines.extend([
-            "env:",
-            "  GOOGLE_CLOUD_LOCATION: \"global\"",
-        ])
+        env.append("  GOOGLE_CLOUD_LOCATION: \"global\"")
+    if subdir:
+        env.append(f"  FACTORY_SUBDIR: \"{subdir}\"   # product folder the harness starts in (factory-cd.sh)")
+    if env:
+        lines.extend(["env:", *env])
     return "\n".join(lines) + "\n"
 
 
 def _render_role_system_prompt(spec: dict[str, Any], role_spec: dict[str, Any], is_eval: bool) -> str:
+    text = _monorepo_paths(spec, _render_role_system_prompt_base(spec, role_spec, is_eval))
+    prefix, subdir = _monorepo(spec)
+    if not subdir:
+        return text
+    team = spec["team"]["eval_roles"] if is_eval else spec["team"]["build_roles"]
+    mates = ", ".join(f"`{_agent(spec, r['role'])}`" for r in team if r["role"] != role_spec["role"])
+    return text.replace("## Identity & Responsibility\n", f"""## Identity & Responsibility
+- **Your agent name is `{_agent(spec, role_spec['role'])}`.** Teammates: {mates}.
+- **Product folder:** `{subdir}` (you start in `/workspace/{subdir}`).
+""", 1)
+
+
+def _render_role_system_prompt_base(spec: dict[str, Any], role_spec: dict[str, Any], is_eval: bool) -> str:
     proj = spec["project"]
     stack = spec["stack"]
     infra = spec["infrastructure"]
@@ -871,6 +945,15 @@ def _render_factory_env_example(spec: dict[str, Any]) -> str:
     iam_roles = " ".join(infra.get("deployer_iam_roles", []))
     vcs = spec.get("vcs") or {}
 
+    prefix, subdir = _monorepo(spec)
+    monorepo = (
+        f"""
+# --- Monorepo factory (agents named <AGENT_PREFIX>-<role>, starting in FACTORY_SUBDIR) ---
+AGENT_PREFIX={prefix}
+FACTORY_SUBDIR={subdir}
+KNOWLEDGE_PLANE_SOURCES={proj['slug']}={subdir}/knowledge-plane
+""" if subdir else ""
+    )
     return f"""# Scion software factory configuration — {proj['name']}
 # Copy this file to config/factory.env in your scion-defaults checkout (git-ignored), replace the your-* values, and
 # deploy with docs/setup-runbook.md. The names match what scripts/run-on-hub.sh, render-templates.py and
@@ -915,7 +998,7 @@ HEARTBEAT_MODE={team.get('heartbeat_mode', 'direct-lead')}
 HEARTBEAT_CRON="{team.get('heartbeat_cron', '*/15 * * * *')}"
 WATCHDOG_CRON="{team.get('watchdog_cron', '*/5 * * * *')}"
 MAX_WIP={team.get('max_wip', 2)}
-"""
+{monorepo}"""
 
 
 def _render_verify_factory_sh(spec: dict[str, Any]) -> str:
@@ -1275,7 +1358,7 @@ def compile_factory_boilerplate(
     git = _vcs_enabled(spec)
     backlog_ref = (
         f"open GitHub issues in {spec['vcs']['repo']}" if git
-        else "/workspace/backlog/issues.json and /workspace/knowledge-plane/INDEX.md"
+        else f"/workspace/backlog/issues.json and {_ws(spec)}/knowledge-plane/INDEX.md"
     )
 
     # 2. Config files
@@ -1303,7 +1386,7 @@ def compile_factory_boilerplate(
     for is_eval, role_list in ((False, spec["team"]["build_roles"]), (True, spec["team"]["eval_roles"])):
         for role_spec in role_list:
             role = role_spec["role"]
-            _write(f"templates/{role}/scion-agent.yaml", _render_scion_agent_yaml(role_spec))
+            _write(f"templates/{role}/scion-agent.yaml", _render_scion_agent_yaml(role_spec, spec))
             _write(f"templates/{role}/system-prompt.md", _render_role_system_prompt(spec, role_spec, is_eval))
             _write(f"templates/{role}/agents.md", shared_md)
 

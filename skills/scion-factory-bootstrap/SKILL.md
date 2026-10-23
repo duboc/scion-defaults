@@ -79,6 +79,14 @@ and pre-fills `vcs.repo`; confirm it.
   deploys use workspace snapshots, and the evaluation team gets its own Hub project workspace. Tell the human that
   they can add Git later; see [Add Git later](#add-git-later).
 
+### Monorepo: one factory per product folder
+
+If the repository holds several products and this factory covers one folder (for example `pkg/kubelet`), set
+`monorepo.subdir` to that folder and `monorepo.agent_prefix` to `project.slug`. Ask for build, test and lint
+commands scoped to the folder (`go test ./pkg/kubelet/...`), never for the whole repository. The compiled kit then
+names agents `<agent_prefix>-<role>`, starts them in the folder, and keeps the knowledge plane in
+`<subdir>/knowledge-plane`. Run the interview once per product; every factory gets its own slug.
+
 ### Build the knowledge plane
 
 The knowledge plane is what agents read before they plan, implement, review, or deploy. Build it in one of two ways,

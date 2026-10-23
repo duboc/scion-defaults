@@ -408,6 +408,25 @@
           }
         }
       }
+    },
+    "monorepo": {
+      "type": "object",
+      "description": "Optional: a factory for one product folder of a monorepo. Agents are named <agent_prefix>-<role> and start in subdir; the knowledge plane lives in subdir/knowledge-plane.",
+      "properties": {
+        "subdir": {
+          "type": "string",
+          "description": "Product folder relative to the repository root, e.g. pkg/kubelet"
+        },
+        "agent_prefix": {
+          "type": "string",
+          "pattern": "^[a-z0-9]+(-[a-z0-9]+)*$",
+          "description": "Agent name prefix, normally project.slug"
+        }
+      },
+      "required": [
+        "subdir",
+        "agent_prefix"
+      ]
     }
   }
 }
