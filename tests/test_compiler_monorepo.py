@@ -150,3 +150,20 @@ def test_single_repo_factory_has_no_factory_label(tmp_path):
     out = _compile(tmp_path, _spec())
     assert "factory:" not in (out / "scripts" / "seed-github-waves.sh").read_text()
     assert "--label factory:" not in (out / "templates" / "lead" / "system-prompt.md").read_text()
+
+
+def test_seed_script_dry_run_never_calls_github(mono, tmp_path):
+    import os
+    import subprocess
+
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    calls = tmp_path / "gh-calls"
+    (bindir / "gh").write_text(f'#!/bin/sh\necho "$@" >> "{calls}"\n')
+    (bindir / "gh").chmod(0o755)
+    env = {**os.environ, "PATH": f"{bindir}:{os.environ['PATH']}", "DRY_RUN": "1"}
+    res = subprocess.run(["bash", str(mono / "scripts" / "seed-github-waves.sh")], env=env,
+                         capture_output=True, text=True)
+    assert res.returncode == 0, res.stderr
+    assert "[wave-1]" in res.stdout
+    assert not calls.exists(), calls.read_text()

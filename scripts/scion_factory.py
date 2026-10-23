@@ -1101,7 +1101,11 @@ if [[ ! -f "$ISSUES_FILE" ]]; then
 fi
 
 for lbl in {" ".join(f'"{l}"' for l in labels)}; do
-  gh label create "$lbl" --repo "$REPO" --force >/dev/null 2>&1 || true
+  if [[ "${{DRY_RUN:-1}}" == "0" ]]; then
+    gh label create "$lbl" --repo "$REPO" --force >/dev/null 2>&1 || true
+  else
+    echo "[dry-run] gh label create $lbl --repo $REPO"
+  fi
 done
 
 # DRY_RUN goes in as an argument: the quoted heredoc below is not expanded by the shell.
