@@ -57,9 +57,15 @@ The tools separate two kinds of information:
 
 ## Set up a factory end to end
 
-This tutorial takes you from an empty Google Cloud project to a running factory for an existing repository. You deploy
-a Scion Hub, let your coding agent interview you about the repository, compile the factory kit, and start the agents.
-Plan for about two hours. Most of that time is spent waiting for the Hub to build its container images.
+This tutorial takes you from a Google Cloud project to a running factory for an existing repository. Your coding agent
+interviews you about the repository, compiles the factory kit, and you start the agents on a Scion Hub.
+
+Choose where the factory runs:
+
+| Option | When to choose it | Steps |
+|---|---|---|
+| **New project and Hub** | You don't have a Scion Hub yet. Plan for about two hours; most of it is the Hub building its container images. | Steps 1 to 8 |
+| **Existing project and Hub** | A Scion Hub already runs in a Google Cloud project, deployed with Scion's single-node installer, possibly with other factories on it. Plan for about one hour. | [Use an existing Scion Hub](#use-an-existing-scion-hub), then steps 3 to 8 |
 
 The tutorial uses one Google Cloud project for both the Hub and the agents' sandbox. That's enough for a trial. For
 production, keep them separate, as the [setup runbook](docs/setup-runbook.md) recommends, so agents can't affect the
@@ -70,7 +76,9 @@ Hub. The tutorial also assumes that you answer "use Git" in the interview. Witho
 
 1. Make sure that you have the following:
 
-   - A Google Cloud organization and a billing account, and permission to create projects in the organization.
+   - For a new Hub: a Google Cloud organization and a billing account, and permission to create projects in the
+     organization. For an existing Hub: SSH access to its VM through IAP (for example, the project's Owner or the
+     Compute OS Admin Login and IAP-secured Tunnel User roles), and a Google account that is an admin on the Hub.
    - An existing GitHub repository for your product, and a GitHub token that can read and write its contents,
      issues, and pull requests. Every agent acts as the token's owner.
    - `gcloud` with the `beta` component, `gh`, `git` 2.42 or later, `jq`, `openssl`, `python3`, and
@@ -90,10 +98,10 @@ Hub. The tutorial also assumes that you answer "use Git" in the interview. Witho
 1. Set the values that the following steps use. Replace each placeholder:
 
    ```bash
-   export HUB_PROJECT_ID=PROJECT_ID          # a new, globally unique project ID
-   export ORGANIZATION_ID=ORGANIZATION_ID
-   export BILLING_ACCOUNT_ID=BILLING_ACCOUNT_ID
-   export ADMIN_EMAIL=ADMIN_EMAIL            # your Google account; it becomes the Hub admin and product owner
+   export HUB_PROJECT_ID=PROJECT_ID          # new Hub: a new, globally unique ID; existing Hub: its project
+   export ADMIN_EMAIL=ADMIN_EMAIL            # your Google account; the Hub admin who acts as product owner
+   export ORGANIZATION_ID=ORGANIZATION_ID    # new Hub only
+   export BILLING_ACCOUNT_ID=BILLING_ACCOUNT_ID   # new Hub only
    ```
 
 ### Step 1: Create a Google Cloud project for the Hub
@@ -149,6 +157,30 @@ Some organizations don't create a `default` network in new projects; the last co
 1. In the Google Cloud console, open Vertex AI Model Garden for `HUB_PROJECT_ID`, and enable the Claude model that
    your lead and deployer roles use. Without it, Claude Code starts but can't answer.
 
+### Use an existing Scion Hub
+
+Skip steps 1 and 2 when a Scion Hub already runs in `HUB_PROJECT_ID`. You add the factory as two new Hub projects next
+to whatever runs there; nothing that exists is changed.
+
+1. Find the Hub VM and its zone. Scion's installer names the VM `scion-hub-HUB_NAME`:
+
+   ```bash
+   gcloud compute instances list --project="$HUB_PROJECT_ID" --filter="name~^scion-hub" \
+     --format="table(name,zone.basename(),status)"
+   ```
+
+   Note the `NAME` and `ZONE`. You set them as `HUB_VM` and `HUB_ZONE` in step 4. The Hub's OS user is `scion` on
+   installer-built VMs.
+
+1. Open the Hub web UI, and sign in as `ADMIN_EMAIL`. That account must be one of the Hub's admins
+   (`admin_emails` in its settings). The scripts act as this user, and the Hub creates the user at the first sign-in.
+
+1. Decide where the agents build and deploy. You can reuse `HUB_PROJECT_ID` as the sandbox or point
+   `SANDBOX_PROJECT` at a separate project in step 4. Step 5 creates what the sandbox needs in that project.
+
+1. Continue with step 3. In step 4, the preflight checks the Hub: its health, your admin user, the harness images,
+   the projects that already exist, and the factories that the watchdog and the status sync already cover.
+
 ### Step 3: Design the agents from your repository with an interview
 
 1. Open your coding agent in the `scion-defaults` directory, and give it the following request. Replace
@@ -187,19 +219,44 @@ Some organizations don't create a `default` network in new projects; the last co
    cp "$OUTPUT_DIR/config/factory.env.example" config/factory.env
    ```
 
-1. Edit `config/factory.env`, and set `HUB_PROJECT` and `SANDBOX_PROJECT` to `HUB_PROJECT_ID`, `FIRESTORE_PROJECT`
-   to `HUB_PROJECT_ID`, `HUB_ZONE` to the zone from step 2, `HUB_VM=scion-hub-factory`, and `PO_EMAIL` to
-   `ADMIN_EMAIL`. The kit already filled in the factory values, such as `BUILD_PROJECT`, `EVAL_PROJECT`,
-   `GITHUB_REPO`, the branches, and the agent roster.
+1. Edit `config/factory.env`, and set the Hub and sandbox values. The kit already filled in the factory values,
+   such as `BUILD_PROJECT`, `EVAL_PROJECT`, `GITHUB_REPO`, the branches, and the agent roster.
 
-1. Load the values into your shell, and check that the scripts can reach the Hub:
+   | Variable | New Hub (steps 1 and 2) | Existing Hub |
+   |---|---|---|
+   | `HUB_PROJECT` | `HUB_PROJECT_ID` | `HUB_PROJECT_ID` |
+   | `HUB_ZONE` | the zone that the installer printed | the `ZONE` you noted |
+   | `HUB_VM` | `scion-hub-factory` | the `NAME` you noted |
+   | `HUB_OS_USER` | `scion` | `scion` |
+   | `SANDBOX_PROJECT`, `FIRESTORE_PROJECT` | `HUB_PROJECT_ID` | `HUB_PROJECT_ID` or your separate sandbox project |
+   | `PO_EMAIL` | `ADMIN_EMAIL` | `ADMIN_EMAIL` |
+
+   On an existing Hub, choose `BUILD_PROJECT` and `EVAL_PROJECT` slugs that no project on the Hub uses yet.
+
+1. Load the values into your shell, and run the read-only preflight on the Hub:
 
    ```bash
    set -a; . config/factory.env; set +a
-   scripts/run-on-hub.sh scripts/scion-admin.py projects
+   scripts/run-on-hub.sh scripts/hub-preflight.py
    ```
 
-   The output lists the `global` project.
+   The output is similar to the following:
+
+   ```none
+   Scion nightly-20261022  PO admin: ADMIN_EMAIL
+   existing projects: shop, shop-eval
+   harness-configs:   antigravity, claude, hermes, opencode
+   watchdog covers:   shop, shop-eval
+   sync covers:       shop, shop-eval
+   WARN  no scion-claude image: agents on the claude harness can't start until you build it
+
+   Install the watchdog and the sync with:
+     FACTORY_PROJECTS=shop,shop-eval,pulse-ledger,pulse-ledger-eval
+   ```
+
+   Fix every `ERROR` before you continue. For a missing image, run the image build from step 2 against `HUB_VM`. Set
+   `FACTORY_PROJECTS` in `config/factory.env` to the value that the preflight prints, so the watchdog and the sync
+   keep covering the factories that already run on the Hub, and load the file again.
 
 ### Step 5: Prepare the sandbox and the repository
 
@@ -282,7 +339,8 @@ Each run ends with `other templates unchanged: yes`.
 ### Step 8: Start the factory
 
 1. Install the watchdog and the agent-status sync. The watchdog copies the knowledge plane into the shared
-   directories right away and then every five minutes; the sync writes agent status to Firestore every minute:
+   directories right away and then every five minutes; the sync writes agent status to Firestore every minute. Both
+   cover the projects in `FACTORY_PROJECTS`, which on an existing Hub is the merged list from the preflight:
 
    ```bash
    scripts/run-on-hub.sh scripts/factory-watchdog.py --install-cron --apply
@@ -330,10 +388,19 @@ From here on, operate the factory with the [operations runbook](docs/operations-
 
 ### Clean up
 
-To stop all charges for the tutorial, delete the project. This deletes the Hub, the agents, and the sandbox:
+On a Hub you created for this tutorial, delete the project to stop all charges. This deletes the Hub, the agents, and
+the sandbox:
 
 ```bash
 gcloud projects delete "$HUB_PROJECT_ID"
+```
+
+On an existing Hub, remove only the factory. Deleting a project with `--force` also removes its agents. Then
+reinstall the watchdog and the sync with `FACTORY_PROJECTS` set to the factories that remain:
+
+```bash
+scripts/run-on-hub.sh scripts/scion-admin.py scion hub projects delete "$BUILD_PROJECT" --yes --force
+scripts/run-on-hub.sh scripts/scion-admin.py scion hub projects delete "$EVAL_PROJECT" --yes --force
 ```
 
 The GitHub repository keeps the knowledge plane, the evaluation branch, and the wave issues.

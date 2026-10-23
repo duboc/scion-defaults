@@ -51,6 +51,9 @@ What this factory used (deployed via Scion's `scripts/single-node-vm/deploy.sh`)
 
 **Check:** you can sign in to the web UI through IAP as the PO, `scripts/run-on-hub.sh scripts/scion-admin.py projects`
 lists the projects, and `scripts/run-on-hub.sh scripts/scion-admin.py experiments` succeeds (exercising the admin JWT minting path).
+To add a factory to a Hub that already runs, skip the VM setup and run the read-only preflight instead:
+`scripts/run-on-hub.sh scripts/hub-preflight.py` (health, admin user, images, existing projects, and the merged
+`FACTORY_PROJECTS` that keeps other factories covered when you install the watchdog and the sync in step 10).
 
 ## 3. Hub experiments
 
