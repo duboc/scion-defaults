@@ -1,0 +1,110 @@
+"""Preflight for an existing Scion Hub (README: "Use an existing Scion Hub").
+
+scripts/hub-preflight.py runs read-only on the Hub VM and reports what the deploy steps need: Hub health, the PO's
+admin user, harness images, existing projects, and the factory lists the watchdog and the status sync already cover.
+"""
+import importlib.util
+import json
+import sqlite3
+import subprocess
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent.parent
+
+
+def _load():
+    spec = importlib.util.spec_from_file_location("hub_preflight", ROOT / "scripts" / "hub-preflight.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+pre = _load()
+
+
+def test_merge_keeps_the_factories_already_covered():
+    """Installing the watchdog or the sync rewrites FACTORY_PROJECTS: other factories on the Hub must stay in it."""
+    assert pre.merge_projects(["shop", "shop-eval"], ["ledger", "ledger-eval", "shop"]) == [
+        "shop", "shop-eval", "ledger", "ledger-eval"]
+    assert pre.merge_projects([], ["ledger"]) == ["ledger"]
+
+
+def test_parse_env_reads_key_values():
+    assert pre.parse_env("# c\nFACTORY_PROJECTS='a,b'\nexport X=1\n\nPATH=/bin\n") == {
+        "FACTORY_PROJECTS": "a,b", "X": "1", "PATH": "/bin"}
+
+
+def test_missing_images():
+    present = {"localhost/scion/scion-antigravity:latest", "scion-antigravity:latest", "scion-claude:latest"}
+    assert pre.missing_images(present, ["claude", "antigravity", "opencode"]) == ["opencode"]
+
+
+def _fake_scion_home(tmp_path, users=(("po@example.com", "admin"),), projects=("shop", "shop-eval")):
+    home = tmp_path / ".scion"
+    home.mkdir()
+    conn = sqlite3.connect(home / "hub.db")
+    conn.execute("CREATE TABLE users (id TEXT, email TEXT, role TEXT)")
+    conn.execute("CREATE TABLE projects (id TEXT, slug TEXT)")
+    for i, (email, role) in enumerate(users):
+        conn.execute("INSERT INTO users VALUES (?, ?, ?)", (f"u{i}", email, role))
+    for i, slug in enumerate(projects):
+        conn.execute("INSERT INTO projects VALUES (?, ?)", (f"p{i}", slug))
+    conn.commit()
+    conn.close()
+    (home / "watchdog.env").write_text("FACTORY_PROJECTS=shop,shop-eval\nPATH=/bin\n")
+    (home / "harness-configs" / "claude").mkdir(parents=True)
+    (home / "harness-configs" / "claude-factory").mkdir(parents=True)
+    return home
+
+
+def _report(home, **overrides):
+    facts = {"scion_home": str(home), "health": {"status": "healthy", "scionVersion": "nightly-x"},
+             "images": {"scion-claude:latest", "scion-antigravity:latest"}, "sync_env": "",
+             "po_email": "po@example.com", "new_projects": ["ledger", "ledger-eval"]}
+    facts.update(overrides)
+    return pre.build_report(**facts)
+
+
+def test_report_for_a_healthy_hub(tmp_path):
+    report = _report(_fake_scion_home(tmp_path))
+    assert report["ok"] is True
+    assert report["factory_projects"] == "shop,shop-eval,ledger,ledger-eval"
+    assert report["existing_projects"] == ["shop", "shop-eval"]
+    assert report["harness_configs"] == ["claude", "claude-factory"]
+    assert any("opencode" in w for w in report["warnings"])
+
+
+def test_report_fails_when_the_po_never_signed_in(tmp_path):
+    report = _report(_fake_scion_home(tmp_path, users=(("someone@example.com", "admin"),)))
+    assert report["ok"] is False
+    assert any("po@example.com" in e and "sign in" in e for e in report["errors"])
+
+
+def test_report_fails_when_the_po_is_not_an_admin(tmp_path):
+    report = _report(_fake_scion_home(tmp_path, users=(("po@example.com", "member"),)))
+    assert report["ok"] is False
+    assert any("admin" in e for e in report["errors"])
+
+
+def test_report_fails_on_an_unhealthy_hub(tmp_path):
+    report = _report(_fake_scion_home(tmp_path), health=None)
+    assert report["ok"] is False
+
+
+def test_report_warns_when_a_factory_slug_is_taken(tmp_path):
+    report = _report(_fake_scion_home(tmp_path), new_projects=["shop", "shop-eval"])
+    assert any("shop" in w and "exists" in w for w in report["warnings"])
+
+
+def test_cli_prints_json_and_never_writes(tmp_path):
+    home = _fake_scion_home(tmp_path)
+    before = sorted(p.as_posix() for p in home.rglob("*"))
+    res = subprocess.run([sys.executable, str(ROOT / "scripts" / "hub-preflight.py"), "--json", "--scion-home",
+                          str(home), "--skip-health", "--skip-docker"],
+                         env={"PATH": "/usr/bin:/bin", "PO_EMAIL": "po@example.com",
+                              "BUILD_PROJECT": "ledger", "EVAL_PROJECT": "ledger-eval"},
+                         capture_output=True, text=True)
+    report = json.loads(res.stdout)
+    assert report["factory_projects"] == "shop,shop-eval,ledger,ledger-eval"
+    assert sorted(p.as_posix() for p in home.rglob("*")) == before
