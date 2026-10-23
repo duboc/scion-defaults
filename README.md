@@ -55,93 +55,305 @@ The tools separate two kinds of information:
   backlog wave. The draft specification leaves these fields empty, so the readiness gate fails until the agent gets
   real answers from you.
 
-## Before you begin
+## Set up a factory end to end
 
-1. Install an agentic coding agent that supports skills, such as Antigravity or Claude Code.
-1. Install [`uv`](https://docs.astral.sh/uv/). The `scripts/scion-factory` wrapper uses `uv` to provide PyYAML. If
-   `uv` isn't available, the wrapper falls back to `python3`.
-1. Clone this repository:
+This tutorial takes you from an empty Google Cloud project to a running factory for an existing repository. You deploy
+a Scion Hub, let your coding agent interview you about the repository, compile the factory kit, and start the agents.
+Plan for about two hours. Most of that time is spent waiting for the Hub to build its container images.
+
+The tutorial uses one Google Cloud project for both the Hub and the agents' sandbox. That's enough for a trial. For
+production, keep them separate, as the [setup runbook](docs/setup-runbook.md) recommends, so agents can't affect the
+Hub. The tutorial also assumes that you answer "use Git" in the interview. Without Git, steps 5 and 6 differ; see
+[Choose whether to use Git](#choose-whether-to-use-git) and step 6 of the setup runbook.
+
+### Before you begin
+
+1. Make sure that you have the following:
+
+   - A Google Cloud organization and a billing account, and permission to create projects in the organization.
+   - An existing GitHub repository for your product, and a GitHub token that can read and write its contents,
+     issues, and pull requests. Every agent acts as the token's owner.
+   - `gcloud` with the `beta` component, `gh`, `git` 2.42 or later, `jq`, `openssl`, `python3`, and
+     [`uv`](https://docs.astral.sh/uv/). Docker isn't needed on your machine.
+   - An agentic coding agent that supports skills, such as Antigravity or Claude Code.
+
+1. Clone this repository, and make the interview skill available to your agent. For Antigravity:
 
    ```bash
    git clone https://github.com/duboc/scion-defaults.git
-   ```
-
-1. Make the skill available to your agent. For example, for Antigravity:
-
-   ```bash
    ln -s "$PWD/scion-defaults/skills/scion-factory-bootstrap" ~/.gemini/config/skills/scion-factory-bootstrap
    ```
 
-   For Claude Code, link the same directory into `~/.claude/skills/`. For other agents, see your agent's
-   documentation for its skills directory, or point the agent at the `SKILL.md` file directly.
+   For Claude Code, link the same directory into `~/.claude/skills/`. For other agents, point the agent at
+   [`skills/scion-factory-bootstrap/SKILL.md`](skills/scion-factory-bootstrap/SKILL.md).
 
-## Bootstrap a new factory
+1. Set the values that the following steps use. Replace each placeholder:
 
-1. Open your coding agent in the `scion-defaults` directory, and give it a request such as the following. Replace
-   `TARGET_REPO_PATH` with the path to your project's repository:
+   ```bash
+   export HUB_PROJECT_ID=PROJECT_ID          # a new, globally unique project ID
+   export ORGANIZATION_ID=ORGANIZATION_ID
+   export BILLING_ACCOUNT_ID=BILLING_ACCOUNT_ID
+   export ADMIN_EMAIL=ADMIN_EMAIL            # your Google account; it becomes the Hub admin and product owner
+   ```
+
+### Step 1: Create a Google Cloud project for the Hub
+
+```bash
+gcloud projects create "$HUB_PROJECT_ID" --organization="$ORGANIZATION_ID"
+gcloud billing projects link "$HUB_PROJECT_ID" --billing-account="$BILLING_ACCOUNT_ID"
+gcloud services enable compute.googleapis.com cloudresourcemanager.googleapis.com --project="$HUB_PROJECT_ID"
+gcloud compute networks describe default --project="$HUB_PROJECT_ID" >/dev/null 2>&1 \
+  || gcloud compute networks create default --project="$HUB_PROJECT_ID" --subnet-mode=auto
+```
+
+Some organizations don't create a `default` network in new projects; the last command creates it when it's missing.
+
+### Step 2: Deploy the Scion Hub
+
+1. Write a deployment configuration for Scion's single-node installer:
+
+   ```bash
+   git clone https://github.com/GoogleCloudPlatform/scion.git
+   cat > hub-config.json <<EOF
+   {"hub_name": "factory", "project_id": "$HUB_PROJECT_ID", "region": "us-central1",
+    "machine_size": "small", "disk_size_gb": 200, "chat_plugins": [],
+    "container_images": {"source": "build", "registry": "", "force_rebuild": false},
+    "admin_email": "$ADMIN_EMAIL", "hub_sa_minting": false,
+    "update_policy": "notify", "release_channel": "nightly"}
+   EOF
+   ```
+
+1. Run the installer. It creates the VM `scion-hub-factory`, an IAP-protected web UI on Cloud Run, and builds the
+   container images on the VM:
+
+   ```bash
+   (cd scion/scripts/single-node-vm && ./deploy.sh --config "$PWD/../../../hub-config.json" < /dev/null)
+   ```
+
+   When it finishes, the output ends with `=== Deployment Complete ===`, the zone of the VM, and the
+   `Access URL`. If the installer stops on a temporary IAP SSH error (`502 Bad Gateway`) or on a service account
+   that "does not exist" right after it was created, run the same command again. The installer skips the work that's
+   already done.
+
+1. Open the `Access URL` in your browser, and sign in as `ADMIN_EMAIL`. The Hub creates its admin user at the first
+   sign-in, and the scripts in this repository act as that user.
+
+1. Build the Claude Code image. The installer builds only the Antigravity image. Replace `HUB_ZONE` with the zone
+   that the installer printed:
+
+   ```bash
+   gcloud compute ssh scion-hub-factory --project="$HUB_PROJECT_ID" --zone=HUB_ZONE --tunnel-through-iap \
+     --command='sudo -u scion bash -c "cd /opt/scion-source && docker build -q -t scion-claude:latest --build-arg BASE_IMAGE=scion-base:latest -f harnesses/claude/Dockerfile harnesses/claude/ && docker tag scion-claude:latest localhost/scion/scion-claude:latest"'
+   ```
+
+1. In the Google Cloud console, open Vertex AI Model Garden for `HUB_PROJECT_ID`, and enable the Claude model that
+   your lead and deployer roles use. Without it, Claude Code starts but can't answer.
+
+### Step 3: Design the agents from your repository with an interview
+
+1. Open your coding agent in the `scion-defaults` directory, and give it the following request. Replace
+   `TARGET_REPO_PATH` with the path to a local clone of your product repository:
 
    ```none
    Bootstrap a Scion software factory for TARGET_REPO_PATH using the scion-factory-bootstrap skill.
    ```
 
-   If your project doesn't have a repository yet, describe the project instead. The agent starts from an empty draft.
+1. Confirm the facts that the agent detects, such as the language, build and test commands, port, cloud
+   dependencies, existing requirements and ADRs, and the GitHub remote.
 
-1. Review the facts that the agent detects. The agent runs `scripts/scion-factory inspect` and
-   `scripts/scion-factory grill --json`, shows you a summary of the detected stack, and writes a draft
-   `factory.yaml`. Confirm or correct the detected values.
+1. Answer the interview. The agent asks about six topics, one at a time, and pushes back on answers that it can't
+   test. [The interview](#the-interview) lists the topics and why each one matters.
 
-1. Answer the interview. The agent asks about six topics, one at a time. Expect the agent to push back when an answer
-   isn't specific enough to test. For example, "it must be fast" isn't accepted as a latency target.
-
-   | Topic | What you decide | Why it matters |
-   |---|---|---|
-   | Mission and boundaries | The mission, at least two non-goals, and whether to use Git now. With Git, also the repository and the build and evaluation branches. | Without non-goals, agents expand scope or escalate product decisions to you (L4, L25). |
-   | Runtime, data, and IAM | Build, test, and lint commands, cloud stores, and the exact IAM roles for the deployer service account. | A missing role blocked the first wave of the search factory mid-sprint (L5). |
-   | Roster, models, and cost | Build and evaluation roles, harness and model per role, heartbeat mode, WIP limit, and budget. | Each harness has runtime requirements, and idle heartbeats on expensive models waste budget (L6, L9, L22). |
-   | Evaluation pyramid | The health endpoint, API contract invariants, a numeric domain quality metric and threshold, safety invariants, and latency targets (p50, p95, p99). | Without a numeric oracle, the evaluation team can't grade a wave or file regressions (L15, L25). |
-   | Backlog waves | Wave 1 and wave 2 items with an owner role, testable acceptance criteria, and the requirement IDs they deliver. | The lead agent dispatches work only from ready backlog items (L1, L2, L18). |
-   | Knowledge plane | Which existing documents to learn from, and the requirements, invariants, and decisions that are missing. | When the reviewer couldn't find the real ADR paths, it guessed, issued a wrong FAIL, and the factory deadlocked for about 60 hours (L4). |
-
-1. Let the agent run the readiness gate. The agent runs `scripts/scion-factory check factory.yaml` and resolves every
-   reported gap with you. The agent doesn't compile until the check passes.
-
-1. Let the agent compile the kit. The agent runs the following command, where `OUTPUT_DIR` is the directory for the
-   generated factory:
+1. When the readiness gate passes, tell the agent where to write the kit, for example `../my-factory-kit`. The
+   agent compiles and checks it:
 
    ```bash
    ./scripts/scion-factory compile factory.yaml --out OUTPUT_DIR
-   ```
-
-   The output is similar to the following:
-
-   ```none
-   Compiled 41 boilerplate files into OUTPUT_DIR
-   ```
-
-1. Verify the kit:
-
-   ```bash
    OUTPUT_DIR/scripts/verify-factory.sh
    ```
 
-   The script checks the generated artifacts. To also check a live deployment, set the `SERVING_URL` and `EVAL_URL`
-   environment variables before you run it.
-
-1. Copy the knowledge plane (and, without Git, the backlog) to the root of the build workspace, and then check the
-   knowledge plane there. Replace `BUILD_WORKSPACE` with the path to the build workspace. The `-n` flag keeps any
-   file that already exists, so an existing knowledge plane is merged rather than overwritten:
+   The output is similar to `Compiled 56 boilerplate files into OUTPUT_DIR`. The following steps call that
+   directory `OUTPUT_DIR`; set it once:
 
    ```bash
-   cp -Rn OUTPUT_DIR/knowledge-plane BUILD_WORKSPACE/
-   cp -Rn OUTPUT_DIR/backlog BUILD_WORKSPACE/   # Without Git only
-   python3 BUILD_WORKSPACE/knowledge-plane/kp-check.py
+   export OUTPUT_DIR="$PWD/../my-factory-kit"
    ```
 
-   The output is similar to the following:
+### Step 4: Configure the deployment scripts
 
-   ```none
-   kp-check: 10 files, 0 problem(s)
+1. Copy the kit's configuration into this repository. `config/factory.env` is git-ignored:
+
+   ```bash
+   cp "$OUTPUT_DIR/config/factory.env.example" config/factory.env
    ```
+
+1. Edit `config/factory.env`, and set `HUB_PROJECT` and `SANDBOX_PROJECT` to `HUB_PROJECT_ID`, `FIRESTORE_PROJECT`
+   to `HUB_PROJECT_ID`, `HUB_ZONE` to the zone from step 2, `HUB_VM=scion-hub-factory`, and `PO_EMAIL` to
+   `ADMIN_EMAIL`. The kit already filled in the factory values, such as `BUILD_PROJECT`, `EVAL_PROJECT`,
+   `GITHUB_REPO`, the branches, and the agent roster.
+
+1. Load the values into your shell, and check that the scripts can reach the Hub:
+
+   ```bash
+   set -a; . config/factory.env; set +a
+   scripts/run-on-hub.sh scripts/scion-admin.py projects
+   ```
+
+   The output lists the `global` project.
+
+### Step 5: Prepare the sandbox and the repository
+
+1. Create the sandbox resources: the deployer and runtime service accounts, IAM, and the Firestore database and
+   indexes for the factory's control plane. Review the plan first:
+
+   ```bash
+   DRY_RUN=1 scripts/setup-sandbox.sh
+   scripts/setup-sandbox.sh
+   ```
+
+1. Add the knowledge plane to your repository's build branch. `cp -n` keeps any file that already exists:
+
+   ```bash
+   cd TARGET_REPO_PATH
+   cp -Rn "$OUTPUT_DIR/knowledge-plane" .
+   python3 knowledge-plane/kp-check.py
+   git add knowledge-plane && git commit -m "docs: add the factory knowledge plane" && git push origin "$BUILD_BRANCH"
+   ```
+
+1. Create the evaluation trunk as an orphan branch, so evaluation code never shares history with product code:
+
+   ```bash
+   git worktree add --orphan -b "$EVAL_BRANCH" ../eval-trunk
+   cp -R "$OUTPUT_DIR/eval-workspace/." ../eval-trunk/
+   git -C ../eval-trunk add -A && git -C ../eval-trunk commit -m "chore(eval): independent evaluation trunk"
+   git -C ../eval-trunk push -u origin "$EVAL_BRANCH"
+   cd -
+   ```
+
+1. Create the labels and the first backlog waves as GitHub issues. Review the dry run, then create them:
+
+   ```bash
+   gh label create "$BUILD_PROJECT" -R "$GITHUB_REPO" --force
+   gh label create "$EVAL_PROJECT" -R "$GITHUB_REPO" --force
+   "$OUTPUT_DIR/scripts/seed-github-waves.sh"
+   DRY_RUN=0 "$OUTPUT_DIR/scripts/seed-github-waves.sh"
+   ```
+
+### Step 6: Create the Hub projects
+
+1. Put your GitHub token on the VM for the Hub's OS user. The token travels over SSH stdin, so it never appears on
+   a command line:
+
+   ```bash
+   read -rs GITHUB_PAT; printf '%s' "$GITHUB_PAT" | gcloud compute ssh "$HUB_VM" --project="$HUB_PROJECT" \
+     --zone="$HUB_ZONE" --tunnel-through-iap \
+     --command="sudo -u $HUB_OS_USER sh -c 'umask 077; cat > ~/.factory-github-token'"; unset GITHUB_PAT
+   ```
+
+1. Create the build and evaluation projects. Each one gets a shared checkout of its branch, and the Hub stores the
+   token as the project's `GITHUB_TOKEN` secret:
+
+   ```bash
+   scripts/run-on-hub.sh scripts/scion-admin.py project-create --slug "$BUILD_PROJECT" \
+     --git-url "https://github.com/$GITHUB_REPO.git" --branch "$BUILD_BRANCH" --mode shared --token-file '~/.factory-github-token'
+   scripts/run-on-hub.sh scripts/scion-admin.py project-create --slug "$EVAL_PROJECT" \
+     --git-url "https://github.com/$GITHUB_REPO.git" --branch "$EVAL_BRANCH" --mode shared --token-file '~/.factory-github-token'
+   ```
+
+1. Add the shared directories: a read-write `scratchpad` and a read-only `knowledge-plane` copy in each project:
+
+   ```bash
+   scripts/run-on-hub.sh scripts/scion-admin.py shared-dirs --apply
+   ```
+
+### Step 7: Push the agent templates
+
+Upload the kit's templates to their projects. Each command is a dry run without `--apply`:
+
+```bash
+scripts/push-templates.py --project "$BUILD_PROJECT" --templates "$OUTPUT_DIR/templates" \
+  --roles "$(echo "$BUILD_AGENTS" | tr ' ' ',')" --apply
+scripts/push-templates.py --project "$EVAL_PROJECT" --templates "$OUTPUT_DIR/templates" \
+  --roles "$(echo "$EVAL_AGENTS" | tr ' ' ',')" --apply
+```
+
+Each run ends with `other templates unchanged: yes`.
+
+### Step 8: Start the factory
+
+1. Install the watchdog and the agent-status sync. The watchdog copies the knowledge plane into the shared
+   directories right away and then every five minutes; the sync writes agent status to Firestore every minute:
+
+   ```bash
+   scripts/run-on-hub.sh scripts/factory-watchdog.py --install-cron --apply
+   scripts/install-sync-cron.sh
+   ```
+
+1. Start one agent per role. Agent names are the role names:
+
+   ```bash
+   echo "$BUILD_AGENTS" | tr ' ' '\n' | while read -r role; do
+     scripts/run-on-hub.sh scripts/scion-admin.py scion start "$role" -t "$role" --project="$BUILD_PROJECT" \
+       --harness-auth vertex-ai "Read your instructions, then run your wake-up steps."
+   done
+   echo "$EVAL_AGENTS" | tr ' ' '\n' | while read -r role; do
+     scripts/run-on-hub.sh scripts/scion-admin.py scion start "$role" -t "$role" --project="$EVAL_PROJECT" \
+       --harness-auth vertex-ai "Read your instructions, then stand by."
+   done
+   ```
+
+   To let the deployer roles act as the deployer service account, register it in each project and pass
+   `--service-account ID` when you start them; see step 6 of the [setup runbook](docs/setup-runbook.md).
+
+1. Schedule the lead's heartbeat, and tell the lead to start working:
+
+   ```bash
+   hb="$(scripts/render-templates.py --file "$OUTPUT_DIR/config/heartbeat-message.txt")"
+   scripts/run-on-hub.sh scripts/scion-admin.py schedule create --project "$BUILD_PROJECT" \
+     --name "$BUILD_PROJECT-lead-heartbeat" --cron "*/15 * * * *" --agent lead --text "$hb"
+   scripts/run-on-hub.sh scripts/scion-admin.py message --project "$BUILD_PROJECT" --agent lead --text \
+     "PO -> lead: GO. Work the backlog in wave order, at most 2 issues in flight, evidence on every issue."
+   ```
+
+### Verify the factory
+
+- `scripts/run-on-hub.sh scripts/scion-admin.py scion list --project="$BUILD_PROJECT"` shows every build agent as
+  `running`.
+- `scripts/run-on-hub.sh scripts/factory-status.sh --panes 10` shows each agent's terminal at a prompt, with no
+  trust or login screen.
+- Within one heartbeat, the lead comments a plan on the first wave issue and briefs a worker.
+- After the first deploy, run `SERVING_URL=URL EVAL_URL=URL "$OUTPUT_DIR/scripts/verify-factory.sh"` to check
+  the live endpoints.
+
+From here on, operate the factory with the [operations runbook](docs/operations-runbook.md). The
+[setup runbook](docs/setup-runbook.md) covers what this tutorial skips: telemetry, backups, alerts, and budgets.
+
+### Clean up
+
+To stop all charges for the tutorial, delete the project. This deletes the Hub, the agents, and the sandbox:
+
+```bash
+gcloud projects delete "$HUB_PROJECT_ID"
+```
+
+The GitHub repository keeps the knowledge plane, the evaluation branch, and the wave issues.
+
+## The interview
+
+The agent asks about six topics, one at a time. Expect it to push back when an answer isn't specific enough to test.
+For example, "it must be fast" isn't accepted as a latency target.
+
+| Topic | What you decide | Why it matters |
+|---|---|---|
+| Mission and boundaries | The mission, at least two non-goals, and whether to use Git now. With Git, also the repository and the build and evaluation branches. | Without non-goals, agents expand scope or escalate product decisions to you (L4, L25). |
+| Runtime, data, and IAM | Build, test, and lint commands, cloud stores, and the exact IAM roles for the deployer service account. | A missing role blocked the first wave of the search factory mid-sprint (L5). |
+| Roster, models, and cost | Build and evaluation roles, harness and model per role, heartbeat mode, WIP limit, and budget. | Each harness has runtime requirements, and idle heartbeats on expensive models waste budget (L6, L9, L22). |
+| Evaluation pyramid | The health endpoint, API contract invariants, a numeric domain quality metric and threshold, safety invariants, and latency targets (p50, p95, p99). | Without a numeric oracle, the evaluation team can't grade a wave or file regressions (L15, L25). |
+| Backlog waves | Wave 1 and wave 2 items with an owner role, testable acceptance criteria, and the requirement IDs they deliver. | The lead agent dispatches work only from ready backlog items (L1, L2, L18). |
+| Knowledge plane | Which existing documents to learn from, and the requirements, invariants, and decisions that are missing. | When the reviewer couldn't find the real ADR paths, it guessed, issued a wrong FAIL, and the factory deadlocked for about 60 hours (L4). |
+
+The agent doesn't compile until `scripts/scion-factory check factory.yaml` passes. To prepare your answers, read
+[`docs/grill-me-playbook.md`](docs/grill-me-playbook.md).
 
 ## Review the generated factory kit
 
@@ -231,16 +443,12 @@ If your factory started without Git, add it without rebuilding the factory:
 
 1. Push the regenerated templates to the Hub, and restart the agents.
 
-## Deploy the factory to a Scion Hub
+## Run several factories in one monorepo
 
-To run the factory, follow [`docs/setup-runbook.md`](docs/setup-runbook.md). The runbook covers the Hub VM, the
-sandbox project, telemetry, harness patches, templates, heartbeats, the status sync, backups, the watchdog, and alerts.
-Each step ends with a check.
-
-> [!NOTE]
-> [`scripts/push-templates.py`](scripts/push-templates.py) reads role templates from this repository's
-> `templates/` directory. It doesn't accept a compiled kit directory yet, so ask your agent to adapt that step for
-> your kit.
+When one repository holds several products (`src/project1`, `src/project2`, …), each product can get its own factory
+on the same Hub. Agents are named after their factory (`project1-lead`), start in their product folder while keeping
+the whole repository, and read their own product's knowledge plane. Follow
+[Several factories in one monorepo](docs/setup-runbook.md#several-factories-in-one-monorepo) in the setup runbook.
 
 ## Reference implementation
 
@@ -366,4 +574,6 @@ This repository contains no secrets, tokens, or real project identifiers. Real v
 
 - Read [`docs/grill-me-playbook.md`](docs/grill-me-playbook.md) to prepare your answers before the interview.
 - Read [`docs/lessons-learned.md`](docs/lessons-learned.md) to understand the failure behind each default.
-- Follow [`docs/setup-runbook.md`](docs/setup-runbook.md) to deploy your factory.
+- Read [`docs/setup-runbook.md`](docs/setup-runbook.md) for every deployment option, including separate Hub and
+  sandbox projects, telemetry, backups, and alerts.
+- Read [`docs/operations-runbook.md`](docs/operations-runbook.md) to run the factory day to day.
