@@ -21,10 +21,16 @@ if [[ ! -f "$env_file" ]]; then
   echo "missing $env_file (copy config/factory.env.example and fill it in)" >&2
   exit 2
 fi
+# A value set on the command line wins over factory.env, e.g. FACTORY_PROJECTS=... for a Hub with several factories.
+overrides=()
+for var in FACTORY_PROJECTS KNOWLEDGE_PLANE_SOURCES KNOWLEDGE_PLANE_SOURCE_PROJECT; do
+  if [[ -n "${!var:-}" ]]; then overrides+=("$var=${!var}"); fi
+done
 set -a
 # shellcheck source=/dev/null
 . "$env_file"
 set +a
+for kv in ${overrides[@]+"${overrides[@]}"}; do export "$kv"; done
 
 if [[ $# -lt 1 ]]; then
   echo "usage: $0 <script> [args...]" >&2

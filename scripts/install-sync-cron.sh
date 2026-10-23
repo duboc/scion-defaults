@@ -17,10 +17,16 @@ set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 env_file="${FACTORY_ENV:-$here/../config/factory.env}"
 [[ -f "$env_file" ]] || { echo "missing $env_file (copy config/factory.env.example)" >&2; exit 2; }
+# A value set on the command line wins over factory.env, e.g. FACTORY_PROJECTS=... for a Hub with several factories.
+overrides=()
+for var in FACTORY_PROJECTS KNOWLEDGE_PLANE_SOURCES KNOWLEDGE_PLANE_SOURCE_PROJECT; do
+  if [[ -n "${!var:-}" ]]; then overrides+=("$var=${!var}"); fi
+done
 set -a
 # shellcheck source=/dev/null
 . "$env_file"
 set +a
+for kv in ${overrides[@]+"${overrides[@]}"}; do export "$kv"; done
 
 dry_run=0
 [[ "${1:-}" == "--dry-run" ]] && dry_run=1

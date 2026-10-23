@@ -108,3 +108,26 @@ def test_cli_prints_json_and_never_writes(tmp_path):
     report = json.loads(res.stdout)
     assert report["factory_projects"] == "shop,shop-eval,ledger,ledger-eval"
     assert sorted(p.as_posix() for p in home.rglob("*")) == before
+
+
+def test_run_on_hub_lets_the_command_line_override_factory_env(tmp_path):
+    """Full e2e: `FACTORY_PROJECTS=... scripts/run-on-hub.sh scripts/factory-watchdog.py --install-cron` kept the
+    env file's FACTORY_PROJECTS, because run-on-hub.sh sourced the file after the caller set the variable."""
+    import os
+    env_file = tmp_path / "factory.env"
+    env_file.write_text("HUB_PROJECT=p\nHUB_ZONE=z\nHUB_VM=vm\nFACTORY_PROJECTS=a,a-eval\n"
+                        "KNOWLEDGE_PLANE_SOURCE_PROJECT=a\n")
+    fake = tmp_path / "bin" / "gcloud"
+    fake.parent.mkdir()
+    fake.write_text('#!/bin/sh\nfor a in "$@"; do echo "$a"; done\ncat >/dev/null\n')
+    fake.chmod(0o755)
+    script = tmp_path / "noop.py"
+    script.write_text("print('hi')\n")
+    res = subprocess.run(["bash", str(ROOT / "scripts" / "run-on-hub.sh"), str(script)],
+                         env={**os.environ, "PATH": f"{fake.parent}:{os.environ['PATH']}", "FACTORY_ENV": str(env_file),
+                              "FACTORY_PROJECTS": "a,a-eval,b,b-eval", "KNOWLEDGE_PLANE_SOURCES": "b=src/b/kp"},
+                         capture_output=True, text=True)
+    assert res.returncode == 0, res.stderr
+    assert "FACTORY_PROJECTS=a\\,a-eval\\,b\\,b-eval" in res.stdout or "FACTORY_PROJECTS=a,a-eval,b,b-eval" in res.stdout
+    assert "KNOWLEDGE_PLANE_SOURCES=b=src/b/kp" in res.stdout
+    assert "KNOWLEDGE_PLANE_SOURCE_PROJECT=a" in res.stdout
