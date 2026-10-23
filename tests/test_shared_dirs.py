@@ -304,3 +304,26 @@ def test_rendered_prompts_and_configs_have_no_placeholders_left(tmp_path):
     leftovers = {f"{p}: {m}" for p, t in files.items() if p.endswith((".md", ".yaml"))
                  for m in re.findall(r"\$\{[A-Z][A-Z0-9_]*\}", t)}
     assert leftovers == set()
+
+
+def test_project_create_waits_long_enough_for_a_large_clone(monkeypatch, tmp_path):
+    """A shared project is cloned inside the create request; cloning a large monorepo (kubernetes: ~1.3 GB) takes
+    minutes, so the API call must not give up after the default 60 seconds."""
+    seen = {}
+
+    class Resp:
+        status = 201
+        def read(self): return b'{"project": {"id": "p1"}}'
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+
+    monkeypatch.setattr(admin, "_token", lambda: "t")
+    monkeypatch.setattr(admin, "_TOKEN", None)
+    monkeypatch.setattr(admin.urllib.request, "urlopen", lambda req, timeout: seen.update(timeout=timeout) or Resp())
+    monkeypatch.setattr(admin, "_db", lambda: type("C", (), {"execute": lambda *a: type("R", (), {"fetchone": lambda s: None})()})())
+    tok = tmp_path / "tok"
+    tok.write_text("x")
+    args = type("A", (), {"slug": "kubelet", "git_url": "https://github.com/o/k.git", "branch": "factory/main",
+                          "mode": "shared", "token_file": str(tok)})()
+    admin.cmd_project_create(args)
+    assert seen["timeout"] >= 1800

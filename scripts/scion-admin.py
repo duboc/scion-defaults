@@ -90,7 +90,7 @@ def _token():
 _TOKEN = None
 
 
-def api(method, path, body=None):
+def api(method, path, body=None, timeout=60):
     global _TOKEN
     if _TOKEN is None:
         _TOKEN = _token()
@@ -98,7 +98,7 @@ def api(method, path, body=None):
     req = urllib.request.Request(HUB_URL + path, data=data, method=method,
                                  headers={"Authorization": "Bearer " + _TOKEN, "Content-Type": "application/json"})
     try:
-        with urllib.request.urlopen(req, timeout=60) as resp:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
             raw = resp.read().decode()
             return resp.status, (json.loads(raw) if raw else {})
     except urllib.error.HTTPError as err:
@@ -222,7 +222,8 @@ def cmd_project_create(args):
         body = project_create_body(args.slug, args.git_url, args.branch, args.mode, read_token_file(args.token_file))
     except (OSError, ValueError) as e:
         sys.exit(str(e))
-    status, out = api("POST", "/api/v1/projects", body)
+    # A shared project is cloned inside this request: a large monorepo takes minutes.
+    status, out = api("POST", "/api/v1/projects", body, timeout=1800)
     project = out.get("project", out)
     print(f"{args.slug}: created HTTP {status} id={project.get('id')} mode={args.mode} branch={args.branch}")
 
