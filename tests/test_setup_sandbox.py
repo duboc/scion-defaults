@@ -1,0 +1,59 @@
+"""setup-sandbox.sh survives the GCP races seen on a fresh project (L28 Kubernetes run).
+
+A fake `gcloud` on PATH simulates:
+- IAM eventual consistency: the first add-iam-policy-binding for each service account says it "does not exist";
+- a concurrent run: `firestore indexes composite create` returns ALREADY_EXISTS although `list` showed nothing.
+"""
+import os
+import subprocess
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent.parent
+SCRIPT = ROOT / "scripts" / "setup-sandbox.sh"
+
+FAKE_GCLOUD = r"""#!/usr/bin/env bash
+state="$FAKE_STATE"
+echo "$*" >> "$state/calls"
+case "$*" in
+  *"compute instances describe"*) echo "vm-sa@sandbox.iam.gserviceaccount.com" ;;
+  *"projects describe"*) echo "123" ;;
+  *"service-accounts describe"*) exit 1 ;;
+  *"add-iam-policy-binding"*)
+    key="$(echo "$*" | cksum | cut -d' ' -f1)"
+    if [[ ! -e "$state/seen-$key" ]]; then
+      touch "$state/seen-$key"
+      echo "ERROR: (gcloud.projects.add-iam-policy-binding) INVALID_ARGUMENT: Service account x does not exist." >&2
+      exit 1
+    fi ;;
+  *"indexes composite list"*) ;;
+  *"indexes composite create"*)
+    echo "ERROR: (gcloud.firestore.indexes.composite.create) ALREADY_EXISTS: index already exists" >&2
+    exit 1 ;;
+  *"firestore databases describe"*) ;;
+  *"buckets describe"*) ;;
+esac
+exit 0
+"""
+
+
+def test_setup_sandbox_retries_iam_propagation_and_tolerates_existing_indexes(tmp_path):
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    (bindir / "gcloud").write_text(FAKE_GCLOUD)
+    (bindir / "gcloud").chmod(0o755)
+    (bindir / "sleep").write_text("#!/bin/sh\nexit 0\n")
+    (bindir / "sleep").chmod(0o755)
+    state = tmp_path / "state"
+    state.mkdir()
+    env_file = tmp_path / "factory.env"
+    env_file.write_text(
+        "SANDBOX_PROJECT=sandbox\nSANDBOX_REGION=us-east1\nHUB_PROJECT=sandbox\nHUB_ZONE=us-east1-b\n"
+        "HUB_VM=hub\nDEPLOYER_SA_NAME=deployer-sa\nRUNTIME_SA_NAME=svc\nDATA_BUCKET=sandbox-data\n"
+    )
+    env = {**os.environ, "PATH": f"{bindir}:{os.environ['PATH']}", "FACTORY_ENV": str(env_file),
+           "FAKE_STATE": str(state), "DRY_RUN": "0"}
+    env.pop("GITHUB_TOKEN", None)
+    res = subprocess.run(["bash", str(SCRIPT)], env=env, capture_output=True, text=True)
+    assert res.returncode == 0, res.stdout[-2000:] + res.stderr[-2000:]
+    assert "index on eval_runs: exists" in res.stdout
+    assert "done" in res.stdout

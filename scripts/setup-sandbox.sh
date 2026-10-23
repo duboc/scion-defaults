@@ -70,7 +70,19 @@ run() {
 }
 exists() { "$@" >/dev/null 2>&1; }   # read-only describe calls; they also run in DRY_RUN mode
 step() { printf '\n== %s\n' "$*"; }
-bind_project() { run gcloud projects add-iam-policy-binding "$P" --member="$1" --role="$2" --condition=None --quiet >/dev/null; }
+# A service account created a moment ago can be missing from IAM for up to a minute ("does not exist"), so IAM
+# bindings retry instead of failing the run (L28).
+iam() {
+  if [[ "$DRY_RUN" == "1" ]]; then run "$@"; return; fi
+  local attempt err
+  for attempt in 1 2 3 4 5 6; do
+    if err="$("$@" 2>&1 >/dev/null)"; then return 0; fi
+    grep -q 'does not exist' <<< "$err" && [[ "$attempt" -lt 6 ]] || { echo "$err" >&2; return 1; }
+    echo "  IAM has not seen a new service account yet; retrying in 10s ($attempt/5)" >&2
+    sleep 10
+  done
+}
+bind_project() { iam gcloud projects add-iam-policy-binding "$P" --member="$1" --role="$2" --condition=None --quiet; }
 
 HUB_VM_SA="${HUB_VM_SA:-$(gcloud compute instances describe "$HUB_VM" --project="$HUB_PROJECT" --zone="$HUB_ZONE" \
   --format='value(serviceAccounts[0].email)' 2>/dev/null || true)}"
@@ -111,14 +123,14 @@ for role in "${deployer_roles[@]}"; do bind_project "serviceAccount:$DEPLOYER_SA
 echo "deployer project roles: ${deployer_roles[*]}"
 
 bind_project "serviceAccount:$RUNTIME_SA" roles/aiplatform.user
-run gcloud iam service-accounts add-iam-policy-binding "$RUNTIME_SA" --project="$P" \
-  --member="serviceAccount:$DEPLOYER_SA" --role=roles/iam.serviceAccountUser --quiet >/dev/null
+iam gcloud iam service-accounts add-iam-policy-binding "$RUNTIME_SA" --project="$P" \
+  --member="serviceAccount:$DEPLOYER_SA" --role=roles/iam.serviceAccountUser --quiet
 echo "runtime SA: roles/aiplatform.user; deployer can act as it"
 
 step "4. Hub VM service account"
 for role in roles/iam.serviceAccountTokenCreator roles/iam.serviceAccountUser; do
-  run gcloud iam service-accounts add-iam-policy-binding "$DEPLOYER_SA" --project="$P" \
-    --member="serviceAccount:$HUB_VM_SA" --role="$role" --quiet >/dev/null
+  iam gcloud iam service-accounts add-iam-policy-binding "$DEPLOYER_SA" --project="$P" \
+    --member="serviceAccount:$HUB_VM_SA" --role="$role" --quiet
 done
 for role in roles/serviceusage.serviceUsageConsumer roles/datastore.user; do
   bind_project "serviceAccount:$HUB_VM_SA" "$role"
@@ -142,8 +154,8 @@ if [[ "$with_spanner" == 1 ]]; then
   else
     run gcloud spanner databases create "$SPANNER_DATABASE" --instance="$SPANNER_INSTANCE" --project="$P"
   fi
-  run gcloud spanner databases add-iam-policy-binding "$SPANNER_DATABASE" --instance="$SPANNER_INSTANCE" \
-    --project="$P" --member="serviceAccount:$RUNTIME_SA" --role=roles/spanner.databaseUser --quiet >/dev/null
+  iam gcloud spanner databases add-iam-policy-binding "$SPANNER_DATABASE" --instance="$SPANNER_INSTANCE" \
+    --project="$P" --member="serviceAccount:$RUNTIME_SA" --role=roles/spanner.databaseUser --quiet
   echo "databaseUser on $SPANNER_DATABASE: runtime SA (product only; the factory control plane is on Firestore)"
 fi
 
@@ -169,8 +181,16 @@ create_index() {
   if grep -q "collectionGroups/$group/" <<< "$existing_indexes"; then
     echo "index on $group: exists"
   else
-    run gcloud firestore indexes composite create --project="$P" --database="$FS_DATABASE" \
-      --collection-group="$group" "$@" --async --quiet >/dev/null
+    if [[ "$DRY_RUN" == "1" ]]; then
+      run gcloud firestore indexes composite create --project="$P" --database="$FS_DATABASE" \
+        --collection-group="$group" "$@" --async --quiet
+    elif ! err="$(gcloud firestore indexes composite create --project="$P" --database="$FS_DATABASE" \
+        --collection-group="$group" "$@" --async --quiet 2>&1 >/dev/null)"; then
+      # Another run (another factory on the same sandbox) can create it between the list and the create.
+      grep -q 'ALREADY_EXISTS' <<< "$err" || { echo "$err" >&2; return 1; }
+      echo "index on $group: exists"
+      return 0
+    fi
     echo "index on $group: creating (async)"
   fi
 }
@@ -187,8 +207,8 @@ else
   run gcloud storage buckets create "gs://$DATA_BUCKET" --project="$P" --location="$R" \
     --uniform-bucket-level-access --public-access-prevention
 fi
-run gcloud storage buckets add-iam-policy-binding "gs://$DATA_BUCKET" --member="serviceAccount:$HUB_VM_SA" \
-  --role=roles/storage.objectAdmin --quiet >/dev/null
+iam gcloud storage buckets add-iam-policy-binding "gs://$DATA_BUCKET" --member="serviceAccount:$HUB_VM_SA" \
+  --role=roles/storage.objectAdmin --quiet
 echo "VM SA: storage.objectAdmin on gs://$DATA_BUCKET"
 
 step "9. GitHub token secret"
@@ -210,8 +230,8 @@ else
   else
     echo "github-token: exists (UPDATE_SECRET=1 adds a new version)"
   fi
-  run gcloud secrets add-iam-policy-binding github-token --project="$P" \
-    --member="serviceAccount:$DASHBOARD_RUNTIME_SA" --role=roles/secretmanager.secretAccessor --quiet >/dev/null
+  iam gcloud secrets add-iam-policy-binding github-token --project="$P" \
+    --member="serviceAccount:$DASHBOARD_RUNTIME_SA" --role=roles/secretmanager.secretAccessor --quiet
   echo "secretAccessor on github-token: $DASHBOARD_RUNTIME_SA"
 fi
 
