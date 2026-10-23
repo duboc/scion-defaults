@@ -355,6 +355,10 @@ Keep `GITHUB_REPO`, `BUILD_BRANCH` and `EVAL_BRANCH` the same for every factory.
 `lead` role, and `FACTORY_ENV=config/project1.env scripts/render-templates.py --out /tmp/p1` renders without
 "missing values".
 
+On a Hub that already runs other factories, run the read-only preflight now:
+`FACTORY_ENV=config/project1.env scripts/run-on-hub.sh scripts/hub-preflight.py`. It warns when a slug is taken and
+prints the merged `FACTORY_PROJECTS` to use in M7.
+
 ### M3. Harness-configs that start in the product folder (once per Hub, again after every Scion upgrade)
 
 ```bash
@@ -423,15 +427,21 @@ scripts/push-templates.py --project project1-eval \
 
 ### M7. Watchdog and knowledge planes (once per Hub, covering every factory; before the agents start)
 
-Install the watchdog with every factory project and each factory's knowledge plane (`<build slug>=<path in that
-project's checkout>`; the eval project follows its factory):
+Install the watchdog and the status sync with every factory project on the Hub (on a shared Hub, the merged list
+that the preflight prints, so other factories stay covered) and each monorepo factory's knowledge plane
+(`<build slug>=<path in that project's checkout>`; the eval project follows its factory). Factories that aren't in
+the map, such as compiled kits, keep syncing their own `knowledge-plane/`:
 
 ```bash
 FACTORY_ENV=config/project1.env \
 FACTORY_PROJECTS=project1,project1-eval,project2,project2-eval \
 KNOWLEDGE_PLANE_SOURCES=project1=src/project1/knowledge-plane,project2=src/project2/knowledge-plane \
   scripts/run-on-hub.sh scripts/factory-watchdog.py --install-cron --apply
+FACTORY_ENV=config/project1.env FACTORY_PROJECTS=project1,project1-eval,project2,project2-eval \
+  scripts/install-sync-cron.sh
 ```
+
+Values that you set on the command line, as here, win over the env file.
 
 The install run copies the knowledge planes right away (also into projects with no agent yet) and writes both
 settings into `~/.scion/watchdog.env`, so the cron runs every 5 minutes keep them.

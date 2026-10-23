@@ -486,6 +486,26 @@ fix now lives. Dates are UTC. "Encoded in" points to the script, template rule o
     the cron run kept `KNOWLEDGE_PLANE_SOURCES` from `watchdog.env`.
   - A runbook loop that relied on bash word splitting (`set -- $p`) broke in zsh, macOS's default shell: runbook
     commands are now written out one per project.
+- **Third e2e (README end to end, 2026-10-23):** a fresh project, the Hub from the README, two factories compiled
+  from interviews against sample repositories (Go, 10 agents; Python, 5 agents) and one monorepo factory, 17 agents
+  on one `small` VM (3.2 GB of 16 GB used). Found and fixed:
+  - The newest nightly (`nightly-20261023`) doesn't start on a fresh install (the Hub refuses its default
+    `http://localhost:8080` base URL before the installer configures IAP). The README pins the tested release for
+    both the installer checkout and `--version`; re-running the installer with the pinned version repaired the VM.
+  - Repository detection missed Python services that have only `requirements.txt`.
+  - The default interview roster used OpenCode and Hermes, which need harness patches: OpenCode stopped at a
+    permission prompt and the bundled Hermes config crashed (`--create-if-missing` rejected). Defaults are now
+    Claude Code and Antigravity; recompiling and re-pushing two roles fixed the running factory.
+  - Two kits on one Hub: each kit's `KNOWLEDGE_PLANE_SOURCE_PROJECT` would have sent one factory's knowledge plane
+    to every project, and a monorepo `KNOWLEDGE_PLANE_SOURCES` map skipped every unmapped factory. The watchdog now
+    gives each factory with its own `knowledge-plane/` that one.
+  - `FACTORY_PROJECTS=… scripts/run-on-hub.sh …` was overridden by the env file; command-line values now win.
+  - `seed-github-waves.sh` never created issues (fixed before the run; created 3 issues live).
+  - Docs: build an image for every harness in the roster, set `DATA_BUCKET`, keep one env file per factory
+    (`FACTORY_ENV`), shallow-clone Scion.
+  Verified: preflight on a new and on a shared Hub, `push-templates.py --templates <kit>`, `scion-admin.py scion
+  start`, the lead on Claude Opus working the seeded wave issues, every eval team reading its own knowledge plane,
+  and the README cleanup of one factory leaving the others running.
 - **Encoded in:** [`scripts/render-templates.py`](../scripts/render-templates.py),
   [`scripts/make-factory-harness-configs.py`](../scripts/make-factory-harness-configs.py),
   [`config/harness/home/.local/bin/factory-cd.sh`](../config/harness/home/.local/bin/factory-cd.sh),

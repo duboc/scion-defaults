@@ -118,10 +118,12 @@ Some organizations don't create a `default` network in new projects; the last co
 
 ### Step 2: Deploy the Scion Hub
 
-1. Write a deployment configuration for Scion's single-node installer:
+1. Get Scion's single-node installer for the release that this tutorial is tested with, and write its
+   configuration. The installer and the Hub binary must come from the same release:
 
    ```bash
-   git clone https://github.com/GoogleCloudPlatform/scion.git
+   export SCION_VERSION=nightly-20261022
+   git clone --depth 1 --branch "$SCION_VERSION" https://github.com/GoogleCloudPlatform/scion.git
    cat > hub-config.json <<EOF
    {"hub_name": "factory", "project_id": "$HUB_PROJECT_ID", "region": "us-central1",
     "machine_size": "small", "disk_size_gb": 200, "chat_plugins": [],
@@ -135,8 +137,12 @@ Some organizations don't create a `default` network in new projects; the last co
    container images on the VM:
 
    ```bash
-   (cd scion/scripts/single-node-vm && ./deploy.sh --config "$PWD/../../../hub-config.json" < /dev/null)
+   (cd scion/scripts/single-node-vm && ./deploy.sh --version "$SCION_VERSION" --config "$PWD/../../../hub-config.json" < /dev/null)
    ```
+
+   Without `--version`, the installer takes the newest nightly. A newer release can work, but `nightly-20261023`
+   doesn't start on a fresh install: the Hub refuses its default `http://localhost:8080` base URL before the
+   installer configures IAP, and the health check fails.
 
    When it finishes, the output ends with `=== Deployment Complete ===`, the zone of the VM, and the
    `Access URL`. If the installer stops on a temporary IAP SSH error (`502 Bad Gateway`) or on a service account
@@ -146,13 +152,18 @@ Some organizations don't create a `default` network in new projects; the last co
 1. Open the `Access URL` in your browser, and sign in as `ADMIN_EMAIL`. The Hub creates its admin user at the first
    sign-in, and the scripts in this repository act as that user.
 
-1. Build the Claude Code image. The installer builds only the Antigravity image. Replace `HUB_ZONE` with the zone
-   that the installer printed:
+1. Build the harness images that your roster needs. The installer builds only the Antigravity image; the default
+   roster also uses Claude Code. Add `opencode` or `hermes` to the list if your roster uses them. Replace `HUB_ZONE`
+   with the zone that the installer printed:
 
    ```bash
    gcloud compute ssh scion-hub-factory --project="$HUB_PROJECT_ID" --zone=HUB_ZONE --tunnel-through-iap \
-     --command='sudo -u scion bash -c "cd /opt/scion-source && docker build -q -t scion-claude:latest --build-arg BASE_IMAGE=scion-base:latest -f harnesses/claude/Dockerfile harnesses/claude/ && docker tag scion-claude:latest localhost/scion/scion-claude:latest"'
+     --command='sudo -u scion bash -c "cd /opt/scion-source && for h in claude; do docker build -q -t scion-\$h:latest --build-arg BASE_IMAGE=scion-base:latest -f harnesses/\$h/Dockerfile harnesses/\$h/ && docker tag scion-\$h:latest localhost/scion/scion-\$h:latest; done"'
    ```
+
+   Claude Code and Antigravity run on a stock Hub. OpenCode and Hermes need the harness patches in step 7 of the
+   [setup runbook](docs/setup-runbook.md): without them, OpenCode stops at a permission prompt, and the Hermes
+   harness that ships with `nightly-20261022` crashes at start.
 
 1. In the Google Cloud console, open Vertex AI Model Garden for `HUB_PROJECT_ID`, and enable the Claude model that
    your lead and deployer roles use. Without it, Claude Code starts but can't answer.
@@ -213,13 +224,15 @@ to whatever runs there; nothing that exists is changed.
 
 ### Step 4: Configure the deployment scripts
 
-1. Copy the kit's configuration into this repository. `config/factory.env` is git-ignored:
+1. Copy the kit's configuration into this repository. `config/*.env` files are git-ignored. Use one file per factory,
+   and point `FACTORY_ENV` at it; every script reads that file:
 
    ```bash
-   cp "$OUTPUT_DIR/config/factory.env.example" config/factory.env
+   cp "$OUTPUT_DIR/config/factory.env.example" config/my-factory.env
+   export FACTORY_ENV="$PWD/config/my-factory.env"
    ```
 
-1. Edit `config/factory.env`, and set the Hub and sandbox values. The kit already filled in the factory values,
+1. Edit the file, and set the Hub and sandbox values. The kit already filled in the factory values,
    such as `BUILD_PROJECT`, `EVAL_PROJECT`, `GITHUB_REPO`, the branches, and the agent roster.
 
    | Variable | New Hub (steps 1 and 2) | Existing Hub |
@@ -230,13 +243,14 @@ to whatever runs there; nothing that exists is changed.
    | `HUB_OS_USER` | `scion` | `scion` |
    | `SANDBOX_PROJECT`, `FIRESTORE_PROJECT` | `HUB_PROJECT_ID` | `HUB_PROJECT_ID` or your separate sandbox project |
    | `PO_EMAIL` | `ADMIN_EMAIL` | `ADMIN_EMAIL` |
+   | `DATA_BUCKET` | `HUB_PROJECT_ID-factory-data` | a bucket name in the sandbox project |
 
    On an existing Hub, choose `BUILD_PROJECT` and `EVAL_PROJECT` slugs that no project on the Hub uses yet.
 
 1. Load the values into your shell, and run the read-only preflight on the Hub:
 
    ```bash
-   set -a; . config/factory.env; set +a
+   set -a; . "$FACTORY_ENV"; set +a
    scripts/run-on-hub.sh scripts/hub-preflight.py
    ```
 
@@ -255,7 +269,7 @@ to whatever runs there; nothing that exists is changed.
    ```
 
    Fix every `ERROR` before you continue. For a missing image, run the image build from step 2 against `HUB_VM`. Set
-   `FACTORY_PROJECTS` in `config/factory.env` to the value that the preflight prints, so the watchdog and the sync
+   `FACTORY_PROJECTS` in your env file to the value that the preflight prints, so the watchdog and the sync
    keep covering the factories that already run on the Hub, and load the file again.
 
 ### Step 5: Prepare the sandbox and the repository
