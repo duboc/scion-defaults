@@ -71,10 +71,20 @@ def test_deploy_none_kit_leaves_out_deploy_instructions(kit):
     assert "none (nothing to deploy)" in root
     live = (kit / "knowledge-plane" / "state" / "LIVE.md").read_text()
     assert "| Service | none (nothing to deploy) |" in live
-    for role in ("lead", "backend", "reviewer", "eval-lead", "domain-evaluator"):
+    assert "Only the deployer" not in live and "Deployed by" not in live and "doc-writer" in live
+    index = (kit / "knowledge-plane" / "INDEX.md").read_text()
+    assert "Only the deployer" not in index and "doc-writer" in index
+    assert "Only the deployer" not in shared and "doc-writer" in shared
+    roles = sorted(d.name for d in (kit / "templates").iterdir() if d.is_dir() and not d.name.startswith("_"))
+    assert {"lead", "backend", "reviewer", "eval-lead", "domain-evaluator"} <= set(roles)
+    for role in roles:
         prompt = _prompt(kit, role)
-        assert "Target Cloud Run Service" not in prompt and "L5 Latency SLO" not in prompt, role
+        lowered = prompt.lower()
+        for phrase in ("user journeys", "payload validation", "cloud run", "health endpoint", "latency",
+                       "for the service"):
+            assert phrase not in lowered, (role, phrase)
         assert "nothing to deploy" in prompt, role
+    assert "code pyramid" in _prompt(kit, "domain-evaluator").split("## Role protocol", 1)[1].split("##", 1)[0]
     # Evaluation runs record tool output and benchmark deltas, not service latency.
     assert "p95_ms" not in _prompt(kit, "domain-evaluator") and "layer_results" in _prompt(kit, "eval-lead")
 
@@ -83,7 +93,7 @@ def test_deploy_none_verify_runs_in_the_monorepo_product_folder(tmp_path, librar
     library["monorepo"] = {"subdir": "pkg/verso", "agent_prefix": "verso"}
     out = _compile(library, tmp_path / "kit")
     verify = (out / "scripts" / "verify-factory.sh").read_text()
-    assert 'cd "$WORKSPACE_DIR/pkg/verso"' in verify
+    assert 'cd "$WORKSPACE_DIR"/pkg/verso' in verify
     subprocess.run(["bash", "-n", str(out / "scripts" / "verify-factory.sh")], check=True)
 
 
@@ -112,6 +122,83 @@ def test_deploy_none_verify_runs_the_code_checks(tmp_path, kit):
     (bin_dir / "govulncheck").unlink()
     res = subprocess.run(["bash", str(script)], env=env, capture_output=True, text=True)
     assert res.returncode != 0 and "govulncheck" in res.stderr
+
+
+def _stub_tools(tmp_path, *tools):
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir(exist_ok=True)
+    log = tmp_path / "calls.log"
+    for tool in tools:
+        stub = bin_dir / tool
+        stub.write_text(f'#!/usr/bin/env bash\necho "{tool} $*" >> "{log}"\n')
+        stub.chmod(0o755)
+    return bin_dir, log
+
+
+def test_deploy_none_verify_honours_dry_run(tmp_path, kit):
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    bin_dir, log = _stub_tools(tmp_path, "go", "govulncheck")
+    env = {"PATH": f"{bin_dir}:/usr/bin:/bin", "WORKSPACE_DIR": str(ws), "DRY_RUN": "1"}
+    res = subprocess.run(["bash", str(kit / "scripts" / "verify-factory.sh")], env=env, capture_output=True, text=True)
+    assert res.returncode == 0, res.stdout + res.stderr
+    assert not log.exists(), log.read_text()
+    for cmd in ("go build ./...", "go test -race ./...", "govulncheck ./..."):
+        assert f"+ {cmd}" in res.stdout, cmd
+    # DRY_RUN=1 doesn't need the L4 tool installed.
+    (bin_dir / "govulncheck").unlink()
+    res = subprocess.run(["bash", str(kit / "scripts" / "verify-factory.sh")], env=env, capture_output=True, text=True)
+    assert res.returncode == 0, res.stdout + res.stderr
+
+
+def test_deploy_none_verify_quotes_commands_safely(tmp_path, library):
+    """Build and test commands with $(...), backticks and double quotes are printed literally and run once."""
+    build = 'test "$(echo ok)" = ok && echo "built `echo ticks`"'
+    library["stack"]["build_command"] = build
+    library["stack"]["test_command"] = 'test "$(echo a)" = b'
+    out = _compile(library, tmp_path / "kit")
+    script = out / "scripts" / "verify-factory.sh"
+    subprocess.run(["bash", "-n", str(script)], check=True)
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    bin_dir, _ = _stub_tools(tmp_path, "govulncheck")
+    env = {"PATH": f"{bin_dir}:/usr/bin:/bin", "WORKSPACE_DIR": str(ws)}
+    res = subprocess.run(["bash", str(script)], env={**env, "DRY_RUN": "1"}, capture_output=True, text=True)
+    assert res.returncode == 0, res.stdout + res.stderr
+    assert f"+ {build}" in res.stdout and '+ test "$(echo a)" = b' in res.stdout
+    res = subprocess.run(["bash", str(script)], env=env, capture_output=True, text=True)
+    assert "built ticks" in res.stdout
+    assert res.returncode != 0
+    assert 'ERROR: L1 tests failed: test "$(echo a)" = b' in res.stderr
+
+
+def test_deploy_none_kit_renders_without_service_variables(tmp_path, kit):
+    """render-templates.py renders a deploy-none kit from its own env example: no missing values, no ${...} left."""
+    import re
+    env_file = tmp_path / "factory.env"
+    env_file.write_text((kit / "config" / "factory.env.example").read_text())
+    out = tmp_path / "rendered"
+    res = subprocess.run([sys.executable, str(ROOT / "scripts" / "render-templates.py"), "--env", str(env_file),
+                          "--src", str(kit / "templates"), "--out", str(out)], capture_output=True, text=True)
+    assert res.returncode == 0, res.stdout + res.stderr
+    leftovers = {f"{p}: {m}" for p in out.rglob("*") if p.is_file()
+                 for m in re.findall(r"\$\{[A-Z][A-Z0-9_]*\}", p.read_text())}
+    assert leftovers == set()
+
+
+def test_deploy_none_rejects_a_renamed_deployer(library):
+    spec = copy.deepcopy(library)
+    spec["team"]["build_roles"].append({"role": "shipper", "default_kind": "deployer", "harness": "claude",
+                                        "model": "opus", "responsibility": "Ships releases to production"})
+    missing = scion_factory.evaluate_spec_readiness(spec)["missing_or_weak"]
+    assert any("shipper" in m and "deploy: none" in m for m in missing), missing
+
+
+def test_readiness_hint_does_not_imply_a_deployer(library):
+    spec = copy.deepcopy(library)
+    spec["team"]["build_roles"] = spec["team"]["build_roles"][:1]
+    missing = [m for m in scion_factory.evaluate_spec_readiness(spec)["missing_or_weak"] if "build_roles" in m]
+    assert missing and not any("deployer" in m for m in missing), missing
 
 
 def test_deploy_none_rejects_service_roles(library):

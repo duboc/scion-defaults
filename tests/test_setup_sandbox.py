@@ -57,3 +57,52 @@ def test_setup_sandbox_retries_iam_propagation_and_tolerates_existing_indexes(tm
     assert res.returncode == 0, res.stdout[-2000:] + res.stderr[-2000:]
     assert "index on eval_runs: exists" in res.stdout
     assert "done" in res.stdout
+
+
+def _sandbox(tmp_path, env_text, dry_run):
+    bindir = tmp_path / "bin"
+    bindir.mkdir(exist_ok=True)
+    (bindir / "gcloud").write_text(FAKE_GCLOUD)
+    (bindir / "gcloud").chmod(0o755)
+    (bindir / "sleep").write_text("#!/bin/sh\nexit 0\n")
+    (bindir / "sleep").chmod(0o755)
+    state = tmp_path / f"state-{dry_run}"
+    state.mkdir()
+    env_file = tmp_path / "factory.env"
+    env_file.write_text(env_text)
+    env = {**os.environ, "PATH": f"{bindir}:{os.environ['PATH']}", "FACTORY_ENV": str(env_file),
+           "FAKE_STATE": str(state), "DRY_RUN": dry_run}
+    for name in ("GITHUB_TOKEN", "DEPLOYER_SA_NAME", "RUNTIME_SA_NAME"):
+        env.pop(name, None)
+    res = subprocess.run(["bash", str(SCRIPT)], env=env, capture_output=True, text=True)
+    calls = (state / "calls").read_text() if (state / "calls").exists() else ""
+    return res, calls
+
+
+NONE_ENV = ("SANDBOX_PROJECT=sandbox\nSANDBOX_REGION=us-east1\nHUB_PROJECT=sandbox\nHUB_ZONE=us-east1-b\n"
+            "HUB_VM=hub\nDATA_BUCKET=sandbox-data\n"
+            "# Nothing to deploy (infrastructure.deploy: none): no service, runtime or deployer variables.\n")
+
+
+def test_setup_sandbox_with_nothing_to_deploy(tmp_path):
+    """A deploy-none factory.env has no DEPLOYER_SA_NAME / RUNTIME_SA_NAME: skip the deploy identities, keep the rest."""
+    for dry_run in ("1", "0"):
+        res, calls = _sandbox(tmp_path, NONE_ENV, dry_run)
+        out = res.stdout + res.stderr
+        assert res.returncode == 0, out[-3000:]
+        assert "iam service-accounts create" not in calls + out
+        assert "service-accounts add-iam-policy-binding" not in calls + out
+        assert "cloudbuild.builds.builder" not in calls + out
+        assert "nothing to deploy" in res.stdout
+        assert "services enable" in calls + out
+        assert "indexes composite" in calls + out
+        assert "roles/datastore.user" in calls + out and "serviceUsageConsumer" in calls + out
+        assert "buckets" in calls + out
+        assert "done" in res.stdout
+        if dry_run == "0":
+            assert "firestore databases describe" in calls and "indexes composite create" in calls
+
+
+def test_setup_sandbox_rejects_half_a_deploy_config(tmp_path):
+    res, _ = _sandbox(tmp_path, NONE_ENV + "DEPLOYER_SA_NAME=deployer-sa\n", "1")
+    assert res.returncode != 0 and "RUNTIME_SA_NAME" in res.stderr

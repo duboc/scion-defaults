@@ -23,6 +23,7 @@ import copy
 import json
 import os
 import re
+import shlex
 import stat
 import sys
 from pathlib import Path
@@ -703,7 +704,7 @@ def evaluate_spec_readiness(spec: dict[str, Any]) -> dict[str, Any]:
     build_roles = team.get("build_roles") or []
     eval_roles = team.get("eval_roles") or []
     if len(build_roles) < 3:
-        missing.append("team.build_roles must define at least 3 build roles (e.g. lead, specialist, deployer)")
+        missing.append("team.build_roles must define at least 3 build roles (e.g. lead, implementer, reviewer)")
     if len(eval_roles) < 2:
         missing.append("team.eval_roles must define at least 2 independent evaluation roles (Lesson L25)")
     for role_spec in list(build_roles) + list(eval_roles):
@@ -712,7 +713,9 @@ def evaluate_spec_readiness(spec: dict[str, Any]) -> dict[str, Any]:
         if serves:
             continue
         name = role_spec.get("role", "?")
-        lib = role_library.ROLES.get(str(name))
+        # By kind, so a renamed deployer ({role: shipper, default_kind: deployer}) is caught too.
+        lib_role = _library_role(role_spec)
+        lib = role_library.ROLES.get(lib_role) if lib_role else None
         if lib and lib["needs_service"]:
             missing.append(f"team role '{name}' needs a deployed service, but the factory has deploy: none "
                            "(remove the role, or answer deploy: service if the factory deploys one)")
@@ -973,7 +976,8 @@ After the deploy, record the revision, the rollback revision, the snapshot path,
 """
     else:
         # Nothing to deploy (spec §8): no deploy section, no deployer, and the pyramid grades the code.
-        live_rule = "`knowledge-plane/state/LIVE.md` records that nothing is deployed; leave it as is."
+        live_rule = ("The doc-writer keeps `knowledge-plane/state/LIVE.md` current (nothing is deployed: it records the "
+                     "latest release and its source).")
         deploy = """## 5. Nothing to Deploy
 This factory has `infrastructure.deploy: none` (a library, a CLI or a package): there is no service and no
 deployer, and no agent deploys anything. The evaluation team grades the code itself (section 7).
@@ -1122,7 +1126,7 @@ def role_focus(spec: dict[str, Any], role_spec: dict[str, Any]) -> dict[str, lis
 
 def _render_role_protocol(spec: dict[str, Any], role_spec: dict[str, Any]) -> str:
     lib_role = _library_role(role_spec)
-    protocol = role_library.role_protocol(lib_role) if lib_role else None
+    protocol = role_library.role_protocol(lib_role, deploy_mode(spec)) if lib_role else None
     if not protocol:
         return ""
     protocol = protocol.replace("<knowledge plane>", f"{_ws(spec)}/knowledge-plane")
@@ -1732,55 +1736,67 @@ echo "[4/4] Verification complete for {proj['name']}."
 
 
 def _render_verify_code_sh(spec: dict[str, Any]) -> str:
-    """verify-factory.sh for a factory with nothing to deploy (spec §8): L1 build and tests and the L4 tool, no curl."""
+    """verify-factory.sh for a factory with nothing to deploy (spec §8): L1 build and tests and the L4 tool, no curl.
+
+    Every spec-derived string reaches bash single-quoted (shlex.quote), so commands with $(...), backticks or double
+    quotes are printed literally and run exactly once, through `check`. DRY_RUN=1 prints `+ <command>` instead.
+    """
+    q = shlex.quote
     proj = spec["project"]
     stack = spec["stack"]
     l3 = spec["evaluation_pyramid"]["l3_domain_quality"]
     subdir = _monorepo(spec)[1]
-    workdir = f'"$WORKSPACE_DIR/{subdir}"' if subdir else '"$WORKSPACE_DIR"'
+    workdir = f'"$WORKSPACE_DIR"/{q(subdir)}' if subdir else '"$WORKSPACE_DIR"'
     l4 = _code_tool(spec, "l4")
     if l4:
         l4_tool = l4.split()[0]
-        l4_step = f"""echo "[3/4] Verifying L4 Safety ({l4}) if WORKSPACE_DIR is set..."
+        l4_step = f"""printf '%s\\n' {q(f"[3/4] Verifying L4 Safety ({l4}) if WORKSPACE_DIR is set...")}
 if [[ -n "$WORKSPACE_DIR" ]]; then
-  if ! command -v {l4_tool} >/dev/null 2>&1; then
-    echo "ERROR: L4 tool {l4_tool} is not installed (install it, or ask the PO to change the L4 tool)" >&2
+  if [[ "$DRY_RUN" != "1" ]] && ! command -v {q(l4_tool)} >/dev/null 2>&1; then
+    printf 'ERROR: L4 tool %s is not installed (install it, or ask the PO to change the L4 tool)\\n' {q(l4_tool)} >&2
     exit 1
   fi
-  if ! ( {l4} ); then
-    echo "ERROR: L4 check failed: {l4}" >&2
-    exit 1
-  fi
-  echo "  L4 Safety OK"
+  check "L4 check" {q(l4)}
+  echo "  L4 Safety OK$ok_note"
 else
   echo "  SKIP L4 check (set WORKSPACE_DIR to a checkout of the product repository)"
 fi
 """
     else:
-        lang = stack.get("primary_language", "")
-        l4_step = f"""echo "[3/4] L4 Safety: no standard tool for {lang} ({ASK_PO_TOOL})."
+        l4_step = f"""printf '%s\\n' {q(f"[3/4] L4 Safety: no standard tool for {stack.get('primary_language', '')} ({ASK_PO_TOOL}).")}
 echo "  SKIP L4 check until the PO names the tool"
 """
-    env_vars = 'WORKSPACE_DIR="${WORKSPACE_DIR:-}"   # a checkout of the product repository to run the code checks in\n'
+    done = (f"[4/4] Verification complete for {proj['name']}. The evaluation team grades L2 API compatibility, "
+            f"L3 ({l3['primary_metric']} >= {l3['target_threshold']}) and L5 benchmarks.")
+    env_vars = ('WORKSPACE_DIR="${WORKSPACE_DIR:-}"   # a checkout of the product repository to run the code checks in\n'
+                'DRY_RUN="${DRY_RUN:-0}"   # 1: print each check command instead of running it\n')
     return _render_verify_prelude(spec, env_vars) + f"""
+# check <label> <command>: run one code check in the workspace (DRY_RUN=1 prints it instead) and stop on failure.
+ok_note=""
+[[ "$DRY_RUN" == "1" ]] && ok_note=" (dry run: printed, not run)"
+check() {{
+  if [[ "$DRY_RUN" == "1" ]]; then
+    printf '+ %s\\n' "$2"
+    return 0
+  fi
+  if ! ( eval "$2" ); then
+    printf 'ERROR: %s failed: %s\\n' "$1" "$2" >&2
+    exit 1
+  fi
+}}
+
 echo "[2/4] Verifying L1 Builds and tests if WORKSPACE_DIR is set (nothing to deploy: no live checks)..."
 if [[ -n "$WORKSPACE_DIR" ]]; then
   cd {workdir}
-  if ! ( {stack['build_command']} ); then
-    echo "ERROR: L1 build failed: {stack['build_command']}" >&2
-    exit 1
-  fi
-  if ! ( {stack['test_command']} ); then
-    echo "ERROR: L1 tests failed: {stack['test_command']}" >&2
-    exit 1
-  fi
-  echo "  L1 Builds and tests OK"
+  check "L1 build" {q(stack['build_command'])}
+  check "L1 tests" {q(stack['test_command'])}
+  echo "  L1 Builds and tests OK$ok_note"
 else
   echo "  SKIP L1 build and tests (set WORKSPACE_DIR to a checkout of the product repository)"
 fi
 
 {l4_step}
-echo "[4/4] Verification complete for {proj['name']}. The evaluation team grades L2 API compatibility, L3 ({l3['primary_metric']} >= {l3['target_threshold']}) and L5 benchmarks."
+printf '%s\\n' {q(done)}
 """
 
 

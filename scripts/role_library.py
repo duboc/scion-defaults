@@ -18,6 +18,9 @@ class RoleDef(TypedDict):
     protocol: str
     needs_service: bool
     gcp_identity: NotRequired[str]
+    # Protocol for a factory with nothing to deploy (infrastructure.deploy: none), when the default one assumes a
+    # deployed service.
+    protocol_none: NotRequired[str]
 
 
 ALWAYS_BUILD: tuple[str, ...] = (
@@ -74,6 +77,13 @@ Coordinate teammates, track task progress, and post evidence comments when work 
         "protocol": """You implement features, refactorings, and bugfixes for the service.
 Read the brief and relevant investigation or research reports before writing code.
 Follow repository architecture invariants, existing conventions, and test-driven development practices.
+Run local verification commands and ensure all tests pass before requesting a review.
+Never review your own pull requests or commits.
+Deliver clean diffs to your lead and report completion with exact file locations.""",
+        "protocol_none": """You implement features, refactorings, and bugfixes for the library or tool.
+Read the brief and relevant investigation or research reports before writing code.
+Follow repository architecture invariants, existing conventions, and test-driven development practices.
+Keep the public API compatible unless the brief calls for a breaking change, and document every exported change.
 Run local verification commands and ensure all tests pass before requesting a review.
 Never review your own pull requests or commits.
 Deliver clean diffs to your lead and report completion with exact file locations.""",
@@ -168,6 +178,13 @@ Run end-to-end user journeys, payload validation suites, and edge-case transacti
 Record probe execution logs, failure traces, and anomalous outputs.
 Deliver structured verification results and quality metrics to the evaluation lead.
 Never modify product code or test environments outside the evaluation scope.""",
+        "protocol_none": """You grade the code itself: nothing is deployed, so there is no live service to probe.
+Run the L1–L5 code pyramid tools against the build branch's head on the evaluation branch and record each layer's result.
+Run the build and test commands, the API compatibility check, the quality metric, the dependency and vulnerability
+check, and the benchmarks against their recorded baseline.
+Record each tool's command, exit code, and output, and the commit you graded.
+Deliver structured verification results and quality metrics to the evaluation lead.
+Never modify product code or test environments outside the evaluation scope.""",
     },
     # -------------------------------------------------------------------------
     # Build Catalog Roles
@@ -228,6 +245,12 @@ Deliver your interface changes and verification screenshots to your lead.""",
         "protocol": """You evaluate runtime performance, benchmark critical paths, and prevent regressions.
 Measure before and after execution times, memory allocations, and throughput metrics.
 Compare performance numbers against established budgets and interview latency targets.
+Deliver a PASS or FAIL verdict based on whether regressions exceed permitted thresholds.
+Never start or message other agents; send your verdict only to your lead.
+Never alter application logic; report measurement evidence only.""",
+        "protocol_none": """You evaluate runtime performance, benchmark critical paths, and prevent regressions.
+Measure before and after execution times, memory allocations, and throughput metrics with the repository's benchmarks.
+Compare performance numbers against the recorded benchmark baseline and the interview's performance targets.
 Deliver a PASS or FAIL verdict based on whether regressions exceed permitted thresholds.
 Never start or message other agents; send your verdict only to your lead.
 Never alter application logic; report measurement evidence only.""",
@@ -405,11 +428,17 @@ Report dashboard deployment status and access URLs to the evaluation lead.""",
 }
 
 
-def role_protocol(role: str) -> str | None:
-    """Return the prompt protocol section for a role, or None if unknown."""
+def role_protocol(role: str, deploy: str = "service") -> str | None:
+    """Return the prompt protocol section for a role, or None if unknown.
+
+    With `deploy="none"` (nothing to deploy), a role whose default protocol assumes a deployed service gets its
+    `protocol_none` variant.
+    """
     role_def = ROLES.get(role)
     if role_def is None:
         return None
+    if deploy == "none" and role_def.get("protocol_none"):
+        return role_def["protocol_none"]
     return role_def["protocol"]
 
 

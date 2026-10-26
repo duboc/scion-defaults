@@ -194,6 +194,11 @@ def render_knowledge_plane(spec: dict[str, Any], vcs_enabled: bool) -> dict[str,
     # <subdir>/knowledge-plane, so each link climbs one extra level per subdir part.
     subdir = str((spec.get("monorepo") or {}).get("subdir") or "").strip().strip("/")
     up = "../" * len([part for part in subdir.split("/") if part])
+    # A factory with nothing to deploy (infrastructure.deploy: none, spec §8) has no service and no deployer: the
+    # doc-writer keeps state/LIVE.md current with the latest release and verified source.
+    nothing_deployed = (spec.get("infrastructure") or {}).get("deploy") == "none"
+    live_writer = ("The doc-writer keeps [state/LIVE.md](state/LIVE.md) current (nothing is deployed)."
+                   if nothing_deployed else "Only the deployer writes [state/LIVE.md](state/LIVE.md).")
 
     backlog_row = (
         f"| Find the backlog | GitHub issues in `{vcs.get('repo', '')}` (`status:*` labels) |"
@@ -256,7 +261,7 @@ These files existed in the repository before the factory started. They stay wher
 - Run `python3 {KP_ROOT}/kp-check.py` after you change any file here. It fails on broken links and unknown
   `REQ-`/`ADR-` IDs.
 - Add a decision with [adr/_template.md](adr/_template.md), and add a row to the table above.
-- Don't put live state in this file. Only the deployer writes [state/LIVE.md](state/LIVE.md).
+- Don't put live state in this file. {live_writer}
 - Don't put evaluation golden datasets here. They belong to the evaluation team.
 """
 
@@ -364,17 +369,33 @@ Don't copy the factory protocol here. How agents coordinate lives in `templates/
 """
 
     snapshot_row = "| Source commit | — |" if vcs_enabled else "| Source snapshot (SHA-256) | — |"
-    infra = spec.get("infrastructure") or {}
-    # A factory with nothing to deploy (infrastructure.deploy: none, spec §8) has no service.
-    service = ("none (nothing to deploy)" if infra.get("deploy") == "none"
-               else f"`{infra['serving_service']}`")
-    files[f"{KP_ROOT}/state/LIVE.md"] = f"""# Live state
+    if nothing_deployed:
+        files[f"{KP_ROOT}/state/LIVE.md"] = f"""# Live state
+
+Nothing is deployed: this factory has `infrastructure.deploy: none` (a library, a CLI or a package). The doc-writer
+keeps this file current after every release; other agents read it.
+
+| Field | Value |
+|---|---|
+| Service | none (nothing to deploy) |
+| Latest release | — |
+{snapshot_row}
+| Released at (UTC) | — |
+| Updated by | doc-writer |
+
+## History
+
+| Released at (UTC) | Release | Source | Work items |
+|---|---|---|---|
+"""
+    else:
+        files[f"{KP_ROOT}/state/LIVE.md"] = f"""# Live state
 
 Only the deployer writes this file, after every deploy and every rollback. Other agents read it.
 
 | Field | Value |
 |---|---|
-| Service | {service} |
+| Service | `{spec['infrastructure']['serving_service']}` |
 | Live revision | — |
 | Rollback revision | — |
 {snapshot_row}
