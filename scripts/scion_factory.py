@@ -33,6 +33,7 @@ except ImportError:
     yaml = None
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import discovery  # noqa: E402
 import knowledge_plane as kp  # noqa: E402
 
 
@@ -436,6 +437,7 @@ def inspect_repository(repo_path: str | Path) -> dict[str, Any]:
     detected["cloud_stores"] = sorted(cloud_stores)
     detected["knowledge_sources"] = kp.detect_knowledge_sources(root)
     detected["vcs"] = kp.detect_vcs(root)
+    detected["proposed_roles"] = discovery.discover_roles(root)
 
     # Filter which grill questions remain unresolved even after static inspection
     unresolved = []
