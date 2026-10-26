@@ -906,6 +906,90 @@ def _team_lead(roles: list[dict[str, Any]], preferred: str) -> str:
     return preferred if preferred in names else names[0]
 
 
+# Role prompts (spec §5.4, §6): each role carries its library protocol and a repo focus; the lead sizes every issue
+# against the roles present in its roster and briefs teammates through files in the scratchpad, never inline (shell
+# metacharacters and long prompts break).
+BRIEFS_DIR = "/scion-volumes/scratchpad/briefs"
+DURABILITY_RULE = "A task is done only when its result is pushed or sent in a message."
+
+_FOCUS_COMMAND_ROLES = ("backend", "test-engineer", "investigator")
+_FOCUS_DOC_ROLES = ("doc-writer", "researcher")
+_FOCUS_KEYS = ("paths", "commands", "docs")
+
+# (role that must be in the roster, sizing line). `{role}` placeholders become agent names.
+_SIZING_LINES = (
+    ("investigator", "bug → {investigator} first"),
+    ("researcher", "unfamiliar ground → {researcher} first"),
+    ("doc-writer", "user-visible change → {doc-writer} after the commit"),
+    ("security-auditor", "auth/crypto/secrets → {security-auditor} in parallel with {reviewer}"),
+    ("frontend", "UI → {frontend}"),
+    ("migration-specialist", "schema/IaC → {migration-specialist}"),
+    ("performance-analyst", "perf-sensitive → {performance-analyst}"),
+    ("release-manager", "release → {release-manager}"),
+)
+
+
+def role_focus(spec: dict[str, Any], role_spec: dict[str, Any]) -> dict[str, list[str]]:
+    """The repo scope a role works in: `{paths, commands, docs}`.
+
+    An explicit `focus` in the roster entry wins. Otherwise every role gets `paths=[subdir or "."]`; backend,
+    test-engineer and investigator get the build, test and lint commands; doc-writer and researcher get the
+    knowledge-plane sources plus the knowledge plane's INDEX.md.
+    """
+    explicit = role_spec.get("focus")
+    if isinstance(explicit, dict):
+        return {key: [str(v) for v in (explicit.get(key) or [])] for key in _FOCUS_KEYS}
+    role = role_spec.get("role")
+    stack = spec.get("stack") or {}
+    focus: dict[str, list[str]] = {"paths": [_monorepo(spec)[1] or "."], "commands": [], "docs": []}
+    if role in _FOCUS_COMMAND_ROLES:
+        cmds = (stack.get("build_command"), stack.get("test_command"), stack.get("lint_command"))
+        focus["commands"] = [str(c) for c in cmds if c]
+    if role in _FOCUS_DOC_ROLES:
+        sources = (spec.get("knowledge_plane") or {}).get("sources") or {}
+        focus["docs"] = [f"/workspace/{src}" for kind in kp.SOURCE_KINDS for src in (sources.get(kind) or [])]
+        focus["docs"].append(f"{_ws(spec)}/knowledge-plane/INDEX.md")
+    return focus
+
+
+def _render_role_protocol(spec: dict[str, Any], role_spec: dict[str, Any]) -> str:
+    protocol = role_library.role_protocol(role_spec["role"])
+    if not protocol:
+        return ""
+    protocol = protocol.replace("<knowledge plane>", f"{_ws(spec)}/knowledge-plane")
+    return f"## Role protocol\n{protocol.strip()}\n\n"
+
+
+def _render_focus(spec: dict[str, Any], role_spec: dict[str, Any]) -> str:
+    focus = role_focus(spec, role_spec)
+    labels = {"paths": "Paths in scope", "commands": "Commands you run", "docs": "Documents you keep"}
+    lines = [f"- **{labels[key]}:** " + ", ".join(f"`{v}`" for v in focus[key]) for key in _FOCUS_KEYS if focus[key]]
+    return "## Focus\n" + "\n".join(lines) + "\n\n" if lines else ""
+
+
+def _render_sizing(spec: dict[str, Any], team: list[dict[str, Any]], is_eval: bool) -> str:
+    names = {r["role"] for r in team}
+    agents = {role: f"`{_agent(spec, role)}`" for role in names | {"reviewer"}}
+    lines = [f"- {line.format_map(agents)}" for role, line in _SIZING_LINES if role in names]
+    if is_eval and not lines:
+        return ""
+    intro = ("Read the issue and the knowledge plane, then decide who is needed. A small change needs only the\n"
+             "implementer and the reviewer; add a teammate when its line applies:")
+    return "## Sizing an issue\n" + intro + "\n" + "\n".join(lines) + "\n\n"
+
+
+def _render_briefs(spec: dict[str, Any], lead: str) -> str:
+    ref = "#N" if _vcs_enabled(spec) else "<item ID>"
+    return f"""## Briefs
+- Write each brief to `{BRIEFS_DIR}/<issue>-<agent>.md`, then send
+  `scion message <agent> "{lead} -> <agent>: {ref}: read {BRIEFS_DIR}/<file>"`.
+- Never inline a brief in the message: shell metacharacters and long prompts break.
+- A brief has the key locations, the deliverables (exact paths), the acceptance checks, and a termination line
+  ("You MUST … then report to `{lead}`").
+
+"""
+
+
 def _render_chain_of_command(spec: dict[str, Any], role_spec: dict[str, Any], is_eval: bool) -> str:
     """The PO starts only the two leads; each lead starts its team, so Scion records the lead as the team's parent.
 
@@ -919,8 +1003,13 @@ def _render_chain_of_command(spec: dict[str, Any], role_spec: dict[str, Any], is
         return f"""## Chain of command
 - You report to `{lead}`, who started you. Take work from `{lead}` (or the PO), and send every result, blocker and
   verdict to `{lead}` with `scion message {lead} "<your name> -> {lead}: ..."`.
+- Read the brief file named in the message (`{BRIEFS_DIR}/<issue>-<agent>.md`) before you start:
+  it has the key locations, the deliverables, the acceptance checks and when you are done.
 - When a brief tells you to hand work straight to a teammate, do it and copy `{lead}`.
 - Never start, stop or delete agents: staffing is `{lead}`'s job.
+- {DURABILITY_RULE}
+  The scratchpad lasts as long as the Hub project, but anything the next issue needs goes to the knowledge plane or
+  the repository.
 
 """
     rows = []
@@ -949,12 +1038,14 @@ Hub shows you on top of your team and sends you its notifications (stopped, fail
   and re-send its brief (a resumed agent starts a fresh session); `scion resume --force <name>` one in `error`.{sa_note}
 - Start only the agents in this table. Your team reports to you: you assign every task and accept every result.
 
-"""
+{_render_sizing(spec, team, is_eval)}{_render_briefs(spec, lead)}"""
 
 
 def _render_role_system_prompt(spec: dict[str, Any], role_spec: dict[str, Any], is_eval: bool) -> str:
     text = _monorepo_paths(spec, _render_role_system_prompt_base(spec, role_spec, is_eval))
-    text = text.replace("## Operating Loop\n", _render_chain_of_command(spec, role_spec, is_eval) + "## Operating Loop\n", 1)
+    sections = (_render_role_protocol(spec, role_spec) + _render_focus(spec, role_spec)
+                + _render_chain_of_command(spec, role_spec, is_eval))
+    text = text.replace("## Operating Loop\n", sections + "## Operating Loop\n", 1)
     prefix, subdir = _monorepo(spec)
     if not subdir:
         return text
