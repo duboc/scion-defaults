@@ -55,6 +55,57 @@ The tools separate two kinds of information:
   backlog wave. The draft specification leaves these fields empty, so the readiness gate fails until the agent gets
   real answers from you.
 
+## Starting prompts
+
+Open your coding agent in a clone of this repository, and paste one of the following prompts. Replace the uppercase
+placeholders (`OWNER/REPO`, `PROJECT_ID`, `HUB_VM`, `HUB_ZONE`, `ADMIN_EMAIL`) with your values.
+
+### Add a factory to an existing Scion Hub
+
+Use this prompt when a Scion Hub already runs in your Google Cloud project and you want the agent to inspect your
+repository, interview you, compile the kit, and launch the factory on isolated branches (`factory/main` and
+`factory/eval`) without touching `main`:
+
+```none
+Use the scion-factory-bootstrap skill and README.md to set up a Scion software factory for https://github.com/OWNER/REPO on my existing Scion Hub:
+- Hub project: PROJECT_ID (VM: HUB_VM in zone HUB_ZONE, PO admin: ADMIN_EMAIL)
+- Keep the default branch untouched: use build branch factory/main and orphan eval branch factory/eval.
+Clone or inspect the repository first, propose specialist roles from what you find in the codebase, interview me one topic at a time, compile the kit, and deploy and start the factory on the Hub.
+```
+
+### Create a new Scion Hub and launch a factory end to end
+
+Use this prompt when you don't have a Scion Hub yet and want the agent to provision the Google Cloud project and Hub,
+run the interview, and start the factory:
+
+```none
+Use the scion-factory-bootstrap skill and README.md (Steps 1 to 8) to create a new Scion Hub and launch a software factory for https://github.com/OWNER/REPO:
+- New Hub project: PROJECT_ID (organization: ORGANIZATION_ID, billing account: BILLING_ACCOUNT_ID, PO admin: ADMIN_EMAIL)
+- Build branch: factory/main, orphan eval branch: factory/eval.
+Inspect the repository, interview me to fill in factory.yaml, compile the kit, provision the Hub and sandbox, and start the build and evaluation leads.
+```
+
+### Interview and compile a kit locally (service or `deploy: none` library)
+
+Use this prompt when you only want to run the interview and generate the factory kit on disk—for example, for a Go,
+Python, or TypeScript library or CLI that uses `infrastructure.deploy: none`:
+
+```none
+Bootstrap a Scion software factory for TARGET_REPO_PATH using the scion-factory-bootstrap skill. Inspect the codebase, propose specialist roles from repository signals, interview me one topic at a time, and compile the validated kit into ../my-factory-kit.
+```
+
+### Split a monorepo into multiple factories
+
+Use this prompt when a single repository contains multiple packages or services and you want separate factories scoped
+by subfolder (`repo_subdir`), agent prefix, and `factory:<slug>` issue labels:
+
+```none
+Use the scion-factory-bootstrap skill to set up Scion factories for the monorepo at https://github.com/OWNER/REPO on my existing Scion Hub (project: PROJECT_ID, VM: HUB_VM, zone: HUB_ZONE, PO admin: ADMIN_EMAIL):
+- Subfolders to turn into factories: PATH_1, PATH_2
+- Keep main untouched: share build branch factory/main and orphan eval branch factory/eval across the factories, with per-factory AGENT_PREFIX and factory:<slug> issue labels.
+Inspect each subfolder, interview me, compile one kit per factory, and deploy them to the Hub.
+```
+
 ## Set up a factory end to end
 
 This tutorial takes you from a Google Cloud project to a running factory for an existing repository. Your coding agent
@@ -204,8 +255,9 @@ to whatever runs there; nothing that exists is changed.
 
 ### Step 3: Design the agents from your repository with an interview
 
-1. Open your coding agent in the `scion-defaults` directory, and give it the following request. Replace
-   `TARGET_REPO_PATH` with the path to a local clone of your product repository:
+1. Open your coding agent in the `scion-defaults` directory, and paste one of the
+   [starting prompts](#starting-prompts) (or the minimal prompt below). Replace `TARGET_REPO_PATH` with the path to a
+   local clone of your product repository:
 
    ```none
    Bootstrap a Scion software factory for TARGET_REPO_PATH using the scion-factory-bootstrap skill.

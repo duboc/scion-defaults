@@ -46,3 +46,18 @@ def test_setup_runbook_documents_deploy_none_sandbox_skips():
     runbook = (ROOT / "docs/setup-runbook.md").read_text()
     assert "deploy: none" in runbook or "infrastructure.deploy: none" in runbook
     assert "DEPLOYER_SA_NAME" in runbook
+
+
+def test_readme_includes_copy_paste_starting_prompts():
+    readme = (ROOT / "README.md").read_text()
+    assert "## Starting prompts" in readme
+    for needle in (
+        "scion-factory-bootstrap",
+        "existing Scion Hub",
+        "new Scion Hub",
+        "monorepo",
+        "factory/main",
+        "factory/eval",
+    ):
+        assert needle in readme, f"missing {needle!r} in README starting prompts"
+
