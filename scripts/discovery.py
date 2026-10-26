@@ -22,6 +22,10 @@ import role_library
 
 SKIP_DIRS = {".git", "vendor", "node_modules", "third_party"}
 MAX_READ_BYTES = 256 * 1024
+# test-engineer: a language with at least this many source files and fewer test files per source file than
+# LOW_TEST_RATIO is under-tested.
+MIN_RATIO_SOURCE_FILES = 10
+LOW_TEST_RATIO = 0.2
 
 SECURITY_TOKENS = {
     "auth",
@@ -339,16 +343,17 @@ def discover_roles(
             if any(kw in content for kw in SAFETY_KEYWORDS):
                 _add_evidence(evidence_by_role["safety-evaluator"], rel_f)
 
-    # 4. Compute test ratio for detected language
-    best_lang = max(source_counts, key=lambda k: source_counts[k])
-    src_cnt = source_counts[best_lang]
-    tst_cnt = test_counts[best_lang]
-    if src_cnt > 0:
-        ratio = tst_cnt / src_cnt
-        if ratio < 0.2:
+    # 4. Compute the test ratio per language: every language with at least MIN_RATIO_SOURCE_FILES source files is
+    # judged on its own, so a well-tested backend cannot hide an untested frontend. Largest language first.
+    for lang in sorted(source_counts, key=lambda k: (-source_counts[k], k)):
+        src_cnt = source_counts[lang]
+        tst_cnt = test_counts[lang]
+        if src_cnt < MIN_RATIO_SOURCE_FILES:
+            continue
+        if tst_cnt / src_cnt < LOW_TEST_RATIO:
             _add_evidence(
                 evidence_by_role["test-engineer"],
-                f"low test ratio: {tst_cnt}/{src_cnt} ({ratio:.2f})",
+                f"low test ratio ({lang}): {tst_cnt} test files / {src_cnt} source files",
             )
 
     # 5. Check Go library layout for api-compat-checker (walk up to repo root for go.mod)

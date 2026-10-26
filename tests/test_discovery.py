@@ -68,6 +68,45 @@ def test_low_test_ratio_proposes_test_engineer(tmp_path):
     assert "test-engineer" in roles
 
 
+def test_low_test_ratio_evidence_names_the_language(tmp_path):
+    for i in range(10):
+        (tmp_path / f"source_{i}.go").write_text("package main\n")
+    got = {r["role"]: r for r in discovery.discover_roles(tmp_path)}
+    assert got["test-engineer"]["evidence"] == ["low test ratio (go): 0 test files / 10 source files"]
+
+
+def test_low_test_ratio_is_judged_per_language(tmp_path):
+    """A well-tested backend must not hide an untested frontend, and vice versa."""
+    (tmp_path / "backend" / "tests").mkdir(parents=True)
+    for i in range(30):
+        (tmp_path / "backend" / f"m{i}.py").write_text("x = 1\n")
+    for i in range(10):
+        (tmp_path / "backend" / "tests" / f"test_m{i}.py").write_text("def test_x(): pass\n")
+    (tmp_path / "frontend").mkdir()
+    for i in range(12):
+        (tmp_path / "frontend" / f"c{i}.tsx").write_text("export {}\n")
+    (tmp_path / "frontend" / "c0.test.tsx").write_text("test('x', () => {})\n")
+    got = {r["role"]: r for r in discovery.discover_roles(tmp_path)}
+    assert got["test-engineer"]["evidence"] == ["low test ratio (typescript): 1 test files / 12 source files"]
+
+
+def test_low_test_ratio_skips_languages_under_ten_files_and_lists_each_gap(tmp_path):
+    for i in range(9):
+        (tmp_path / f"s{i}.rs").write_text("fn main() {}\n")
+    roles = {r["role"] for r in discovery.discover_roles(tmp_path)}
+    assert "test-engineer" not in roles
+
+    for i in range(20):
+        (tmp_path / f"g{i}.go").write_text("package main\n")
+    for i in range(10):
+        (tmp_path / f"p{i}.py").write_text("x = 1\n")
+    got = {r["role"]: r for r in discovery.discover_roles(tmp_path)}
+    assert got["test-engineer"]["evidence"] == [
+        "low test ratio (go): 0 test files / 20 source files",
+        "low test ratio (python): 0 test files / 10 source files",
+    ]
+
+
 def test_performance_label_and_bench_dir_propose_performance_analyst(tmp_path):
     # Label test
     roles_lbl = {r["role"] for r in discovery.discover_roles(tmp_path, labels=["performance"])}
