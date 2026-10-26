@@ -10,6 +10,7 @@ import json
 import os
 from pathlib import Path
 import re
+import stat
 import sys
 from typing import Any
 
@@ -21,6 +22,34 @@ import role_library
 
 SKIP_DIRS = {".git", "vendor", "node_modules", "third_party"}
 MAX_READ_BYTES = 256 * 1024
+
+SECURITY_TOKENS = {
+    "auth",
+    "authn",
+    "authz",
+    "oauth",
+    "oauth2",
+    "crypto",
+    "secret",
+    "secrets",
+}
+
+SOURCE_EXTENSIONS = {
+    ".go",
+    ".py",
+    ".ts",
+    ".tsx",
+    ".js",
+    ".jsx",
+    ".rs",
+    ".java",
+    ".kt",
+    ".rb",
+    ".c",
+    ".h",
+    ".cc",
+    ".cpp",
+}
 
 SAFETY_KEYWORDS = (
     "openai",
@@ -38,7 +67,7 @@ FRONTEND_KEYWORDS = ("react", "vue", "svelte", "next")
 
 
 def walk_files(root: Path, max_files: int = 50000) -> list[str]:
-    """Walk repository files, skipping vendored/ignored dirs, up to max_files.
+    """Walk repository files, skipping vendored/ignored dirs and non-regular files, up to max_files.
 
     Returns repository-relative POSIX paths.
     """
@@ -51,7 +80,14 @@ def walk_files(root: Path, max_files: int = 50000) -> list[str]:
         dirnames[:] = sorted([d for d in dirnames if d not in SKIP_DIRS])
         filenames.sort()
         for fname in filenames:
-            rel = (Path(dirpath) / fname).relative_to(root_path).as_posix()
+            file_path = Path(dirpath) / fname
+            try:
+                st = os.stat(file_path, follow_symlinks=False)
+                if not stat.S_ISREG(st.st_mode):
+                    continue
+            except OSError:
+                continue
+            rel = file_path.relative_to(root_path).as_posix()
             result.append(rel)
             if len(result) >= max_files:
                 return result
@@ -59,8 +95,11 @@ def walk_files(root: Path, max_files: int = 50000) -> list[str]:
 
 
 def _read_prefix(path: Path, max_bytes: int = MAX_READ_BYTES) -> str:
-    """Read at most max_bytes of a file, ignoring decode errors and catching OSError."""
+    """Read at most max_bytes of a regular file, ignoring decode errors and catching OSError."""
     try:
+        st = os.stat(path, follow_symlinks=False)
+        if not stat.S_ISREG(st.st_mode):
+            return ""
         with open(path, "rb") as f:
             chunk = f.read(max_bytes)
         return chunk.decode("utf-8", errors="ignore")
@@ -90,11 +129,27 @@ def discover_roles(
     if not root_path.is_dir():
         return []
 
-    normalized_labels = [lbl.strip().lower() for lbl in (labels or []) if lbl.strip()]
+    root_resolved = root_path.resolve()
 
-    target_dir = (root_path / subdir) if subdir else root_path
-    if not target_dir.is_dir():
-        return []
+    if subdir:
+        sub_path = Path(subdir)
+        if sub_path.is_absolute():
+            return []
+        target_dir = (root_path / subdir).resolve()
+        try:
+            if not target_dir.is_relative_to(root_resolved):
+                return []
+        except AttributeError:
+            try:
+                target_dir.relative_to(root_resolved)
+            except ValueError:
+                return []
+        if not target_dir.is_dir():
+            return []
+    else:
+        target_dir = root_resolved
+
+    normalized_labels = [lbl.strip().lower() for lbl in (labels or []) if lbl.strip()]
 
     raw_files = walk_files(target_dir, max_files=max_files)
     prefix = subdir.strip("/").replace("\\", "/") if subdir else ""
@@ -120,25 +175,35 @@ def discover_roles(
     test_counts: dict[str, int] = {"go": 0, "python": 0, "typescript": 0, "rust": 0, "java": 0}
 
     go_source_files: list[str] = []
-    has_go_mod = False
-    go_mod_path = ""
 
     for rel_f, raw_f in zip(rel_files, raw_files):
         p = Path(rel_f)
         name = p.name
         name_lower = name.lower()
-        parts = p.parts
+        ext = p.suffix.lower()
 
-        # security-auditor path signals
+        raw_parts = Path(raw_f).parts
+
+        # security-auditor path signals (scoped to path below target_dir)
         if name_lower == "security.md":
             _add_evidence(evidence_by_role["security-auditor"], rel_f)
-        elif any(any(kw in part.lower() for kw in ("auth", "crypto", "oauth", "secret")) for part in parts):
-            _add_evidence(evidence_by_role["security-auditor"], rel_f)
+        else:
+            has_sec_token = False
+            for part in raw_parts:
+                tokens = set(re.split(r"[^a-z0-9]+", part.lower()))
+                if tokens & SECURITY_TOKENS:
+                    has_sec_token = True
+                    break
+            if has_sec_token:
+                _add_evidence(evidence_by_role["security-auditor"], rel_f)
 
-        # release-manager signals
+        # release-manager signals (only non-source files for CHANGELOG/RELEASE)
+        is_release_doc = (
+            (fnmatch.fnmatch(name.upper(), "CHANGELOG*") or fnmatch.fnmatch(name.upper(), "RELEASE*"))
+            and ext not in SOURCE_EXTENSIONS
+        )
         if (
-            fnmatch.fnmatch(name.upper(), "CHANGELOG*")
-            or fnmatch.fnmatch(name.upper(), "RELEASE*")
+            is_release_doc
             or fnmatch.fnmatch(name_lower, ".goreleaser*")
             or (".github/workflows/" in rel_f and "release" in name_lower)
         ):
@@ -146,7 +211,7 @@ def discover_roles(
 
         # migration-specialist signals
         if (
-            any(part.lower() == "migrations" for part in parts[:-1])
+            any(part.lower() == "migrations" for part in raw_parts[:-1])
             or rel_f.lower().endswith(".sql")
             or rel_f.lower().endswith(".tf")
             or name_lower == "alembic.ini"
@@ -168,7 +233,7 @@ def discover_roles(
             _add_evidence(evidence_by_role["frontend"], rel_f)
 
         # performance-analyst bench dir signal
-        if any(part.lower() in ("bench", "benchmarks") for part in parts[:-1]):
+        if any(part.lower() in ("bench", "benchmarks") for part in raw_parts[:-1]):
             _add_evidence(evidence_by_role["performance-analyst"], rel_f)
 
         # Language file counting (for test-engineer ratio)
@@ -214,12 +279,6 @@ def discover_roles(
             else:
                 source_counts["java"] += 1
 
-        # Track manifest files
-        if name == "go.mod":
-            has_go_mod = True
-            go_mod_path = rel_f
-
-        # Text inspections for specific files
         full_path = target_dir / raw_f
 
         # Benchmark in Go tests
@@ -231,17 +290,32 @@ def discover_roles(
         # package.json inspection (frontend & api-compat-checker)
         if name == "package.json":
             pkg_text = _read_prefix(full_path)
-            pkg_text_lower = pkg_text.lower()
-            if any(kw in pkg_text_lower for kw in FRONTEND_KEYWORDS):
-                _add_evidence(evidence_by_role["frontend"], rel_f)
-            if deploy == "none":
-                try:
-                    pkg_data = json.loads(pkg_text)
+            is_frontend = False
+            try:
+                pkg_data = json.loads(pkg_text)
+                all_deps: set[str] = set()
+                if isinstance(pkg_data, dict):
+                    for dep_key in ("dependencies", "devDependencies", "peerDependencies"):
+                        deps = pkg_data.get(dep_key)
+                        if isinstance(deps, dict):
+                            all_deps.update(deps.keys())
+                for dep in all_deps:
+                    if dep in FRONTEND_KEYWORDS or dep.startswith("@sveltejs/"):
+                        is_frontend = True
+                        break
+                if deploy == "none" and isinstance(pkg_data, dict):
                     if "main" in pkg_data or "exports" in pkg_data:
                         _add_evidence(evidence_by_role["api-compat-checker"], rel_f)
-                except Exception:
+            except json.JSONDecodeError:
+                pkg_text_lower = pkg_text.lower()
+                if any(kw in pkg_text_lower for kw in FRONTEND_KEYWORDS):
+                    is_frontend = True
+                if deploy == "none":
                     if '"main"' in pkg_text or '"exports"' in pkg_text:
                         _add_evidence(evidence_by_role["api-compat-checker"], rel_f)
+
+            if is_frontend:
+                _add_evidence(evidence_by_role["frontend"], rel_f)
 
         # pyproject.toml inspection (api-compat-checker)
         if name == "pyproject.toml" and deploy == "none":
@@ -277,16 +351,29 @@ def discover_roles(
                 f"low test ratio: {tst_cnt}/{src_cnt} ({ratio:.2f})",
             )
 
-    # 5. Check Go library layout for api-compat-checker
-    if has_go_mod and deploy == "none":
-        has_pkg_main = False
-        for raw_go_file in go_source_files:
-            go_src = _read_prefix(target_dir / raw_go_file)
-            if re.search(r"^\s*package\s+main\b", go_src, re.MULTILINE):
-                has_pkg_main = True
+    # 5. Check Go library layout for api-compat-checker (walk up to repo root for go.mod)
+    if deploy == "none":
+        go_mod_file: Path | None = None
+        curr = target_dir
+        while True:
+            candidate = curr / "go.mod"
+            if candidate.is_file():
+                go_mod_file = candidate
                 break
-        if not has_pkg_main:
-            _add_evidence(evidence_by_role["api-compat-checker"], go_mod_path)
+            if curr.resolve() == root_resolved:
+                break
+            curr = curr.parent
+
+        if go_mod_file is not None:
+            has_pkg_main = False
+            for raw_go_file in go_source_files:
+                go_src = _read_prefix(target_dir / raw_go_file)
+                if re.search(r"^\s*package\s+main\b", go_src, re.MULTILINE):
+                    has_pkg_main = True
+                    break
+            if not has_pkg_main:
+                rel_go_mod = go_mod_file.relative_to(root_resolved).as_posix()
+                _add_evidence(evidence_by_role["api-compat-checker"], rel_go_mod)
 
     # 6. ui-auditor shares frontend signals
     if evidence_by_role["frontend"]:
