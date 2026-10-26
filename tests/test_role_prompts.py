@@ -45,9 +45,14 @@ def test_focus_lists_commands_and_docs(kit, spec):
     assert "knowledge-plane/INDEX.md" in _prompt(kit, "doc-writer").split("## Focus", 1)[1]
 
 
+def _section(text, header):
+    return text.split(f"## {header}\n", 1)[1].split("\n## ", 1)[0]
+
+
 def test_lead_sizes_with_only_the_roles_present(kit):
     lead = _prompt(kit, "lead")
-    assert "## Sizing an issue" in lead and "investigator" in lead
+    assert "## Sizing an issue" in lead
+    assert "investigator" in _section(lead, "Sizing an issue")
     assert "security-auditor" not in lead          # not in this roster
 
 
@@ -113,3 +118,110 @@ def test_eval_lead_briefs_by_file_and_sizes_only_with_its_own_team(kit):
     eval_lead = _prompt(kit, "eval-lead")
     assert "/scion-volumes/scratchpad/briefs/" in eval_lead
     assert "investigator" not in eval_lead
+
+
+# --- Fix round 1: roster-aware reviewers, role-aware Operating Loop, kinds, pre-work reports -----------------------
+
+def _compile(tmp_path, spec):
+    out = tmp_path / "kit"
+    scion_factory.compile_factory_boilerplate(spec, out)
+    return out
+
+
+def _add(spec, role, **extra):
+    entry = dict(scion_factory.role_library.library_role_entry(role), **extra) if role in \
+        scion_factory.role_library.ROLES else dict({"role": role, "harness": "antigravity", "model": "m",
+                                                    "responsibility": "r"}, **extra)
+    spec["team"]["build_roles"].append(entry)
+
+
+def test_starter_lead_names_no_absent_parallel_reviewers(kit):
+    lead = _prompt(kit, "lead")
+    for absent in ("security auditor", "security-auditor", "performance analyst", "performance-analyst"):
+        assert absent not in lead, absent
+    assert "Review verdicts from `reviewer` before giving the commit slot." in lead
+
+
+def test_lead_with_a_security_auditor_waits_for_its_verdict(tmp_path, spec):
+    spec["monorepo"] = {"subdir": "pkg/kubelet", "agent_prefix": "kubelet"}
+    _add(spec, "security-auditor")
+    lead = _prompt(_compile(tmp_path, spec), "lead")
+    assert "Review verdicts from `kubelet-reviewer`, `kubelet-security-auditor` before giving the commit slot." in lead
+    assert "auth/crypto/secrets → `kubelet-security-auditor` in parallel with `kubelet-reviewer`" in lead
+
+
+def test_reviewer_takes_work_only_from_its_lead(kit):
+    reviewer = _prompt(kit, "reviewer")
+    assert "messaging downstream teammates" not in reviewer
+    assert "status:ready" not in reviewer and "gh issue list" not in reviewer
+    loop = _section(reviewer, "Operating Loop")
+    assert "Take work only from the brief file named in `lead`'s message" in loop
+    assert "push" not in loop and "commit" not in loop
+
+
+@pytest.mark.parametrize("role", ["investigator", "researcher"])
+def test_read_only_specialists_never_push_product_code(kit, role):
+    text = _prompt(kit, role)
+    loop = _section(text, "Operating Loop")
+    assert "push" not in loop and "commit" not in loop
+    assert "Execute your role responsibility" not in text
+    assert "never change product code" in loop
+
+
+def test_writers_commit_only_with_the_commit_slot(kit):
+    for role in ("backend", "doc-writer", "frontend"):
+        loop = _section(_prompt(kit, role), "Operating Loop")
+        assert "commit and push on branch `main` only when `lead` gives you the commit slot" in loop, role
+
+
+def test_lead_operating_loop_keeps_intake_and_never_implements(kit):
+    loop = _section(_prompt(kit, "lead"), "Operating Loop")
+    assert "gh issue list -R example-org/pulse-ledger --label status:ready" in loop
+    assert "Never implement it yourself" in loop
+    assert "messaging downstream teammates" not in loop
+
+
+def test_renamed_implementer_gets_the_implementer_focus_and_protocol(tmp_path, spec):
+    roles = spec["team"]["build_roles"]
+    for r in roles:
+        if r["role"] == "backend":
+            r["role"] = "go-dev"
+            r["default_kind"] = "implementer"
+    for issue in spec.get("issues") or []:
+        if issue.get("owner_role") == "backend":
+            issue["owner_role"] = "go-dev"
+    out = _compile(tmp_path, spec)
+    assert not (out / "templates" / "backend").exists()
+    text = _prompt(out, "go-dev")
+    assert scion_factory.role_library.role_protocol("backend").splitlines()[0] in _section(text, "Role protocol")
+    assert spec["stack"]["build_command"] in _section(text, "Focus")
+    assert "commit and push" in _section(text, "Operating Loop")
+    assert "only `go-dev` and `reviewer`" in _section(_prompt(out, "lead"), "Sizing an issue")
+
+
+def test_renamed_reviewer_is_named_in_the_security_line(tmp_path, spec):
+    for r in spec["team"]["build_roles"]:
+        if r["role"] == "reviewer":
+            r["role"] = "code-critic"
+            r["default_kind"] = "reviewer"
+    _add(spec, "security-auditor")
+    out = _compile(tmp_path, spec)
+    sizing = _section(_prompt(out, "lead"), "Sizing an issue")
+    assert "auth/crypto/secrets → `security-auditor` in parallel with `code-critic`" in sizing
+    assert "Review verdicts from `code-critic`, `security-auditor` before giving the commit slot." in sizing
+    assert "push" not in _section(_prompt(out, "code-critic"), "Operating Loop")
+
+
+def test_sizing_line_needs_every_role_it_names(tmp_path, spec):
+    spec["team"]["build_roles"] = [r for r in spec["team"]["build_roles"] if r["role"] != "reviewer"]
+    spec.setdefault("team", {})["dropped_defaults"] = [{"role": "reviewer", "reason": "test"}]
+    _add(spec, "security-auditor")
+    sizing = _section(_prompt(_compile(tmp_path, spec), "lead"), "Sizing an issue")
+    assert "auth/crypto/secrets" not in sizing
+
+
+def test_lead_reads_pre_work_reports_before_briefing_the_implementer(kit):
+    lead = _prompt(kit, "lead")
+    assert "/scion-volumes/scratchpad/reports/<issue>-investigation.md" in lead
+    assert "/scion-volumes/scratchpad/reports/<issue>-research.md" in lead
+    assert "before you brief `backend`, and put the report's path in its brief" in lead

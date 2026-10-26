@@ -59,7 +59,6 @@ ROLES: dict[str, RoleDef] = {
         "protocol": """You lead the build team. Own issue sizing, planning, specialist briefing, and work acceptance.
 When an issue arrives, read the knowledge plane and determine required specialists.
 Write briefs to `/scion-volumes/scratchpad/briefs/<issue>-<agent>.md` and notify teammates via Scion messages.
-Review verdicts from the reviewer, security auditor, and performance analyst before giving the commit slot.
 Escalate scope adjustments, architectural decisions (ADRs), and cost/IAM questions to the product owner.
 Never write product code yourself.
 Coordinate teammates, track task progress, and post evidence comments when work is verified.""",

@@ -908,52 +908,88 @@ def _team_lead(roles: list[dict[str, Any]], preferred: str) -> str:
 
 # Role prompts (spec §5.4, §6): each role carries its library protocol and a repo focus; the lead sizes every issue
 # against the roles present in its roster and briefs teammates through files in the scratchpad, never inline (shell
-# metacharacters and long prompts break).
+# metacharacters and long prompts break). Roles resolve by kind (`_role_kind`), so a renamed role (for example `go-dev`
+# with `default_kind: implementer`) gets the library role's protocol, focus and sizing lines.
 BRIEFS_DIR = "/scion-volumes/scratchpad/briefs"
+REPORTS_DIR = "/scion-volumes/scratchpad/reports"
 DURABILITY_RULE = "A task is done only when its result is pushed or sent in a message."
 
-_FOCUS_COMMAND_ROLES = ("backend", "test-engineer", "investigator")
-_FOCUS_DOC_ROLES = ("doc-writer", "researcher")
+_FOCUS_COMMAND_KINDS = ("implementer", "test-engineer", "investigator")
+_FOCUS_DOC_KINDS = ("doc-writer", "researcher")
 _FOCUS_KEYS = ("paths", "commands", "docs")
 
-# (role that must be in the roster, sizing line). `{role}` placeholders become agent names.
+# Kinds that never change product code, commit or push: they deliver reports, verdicts or measurements to their lead.
+# Every other kind writes (implementer, doc-writer, test-engineer, frontend, migration-specialist, release-manager,
+# deployers, domain-evaluator, and roles outside the library).
+_READ_ONLY_KINDS = frozenset({
+    "reviewer", "researcher", "investigator", "security-auditor", "performance-analyst", "contract-tester",
+    "latency-prober", "ui-auditor", "safety-evaluator", "factory-analyst", "benchmark-runner", "api-compat-checker",
+})
+# Reviewers whose verdicts the lead collects before it gives the commit slot (they never message each other).
+_PARALLEL_REVIEWER_KINDS = ("reviewer", "security-auditor", "performance-analyst")
+
+# (kinds the line names, sizing line). A line appears only when the roster has every kind it names; each `{kind}`
+# placeholder becomes the agent name of the roster role with that kind.
 _SIZING_LINES = (
-    ("investigator", "bug → {investigator} first"),
-    ("researcher", "unfamiliar ground → {researcher} first"),
-    ("doc-writer", "user-visible change → {doc-writer} after the commit"),
-    ("security-auditor", "auth/crypto/secrets → {security-auditor} in parallel with {reviewer}"),
-    ("frontend", "UI → {frontend}"),
-    ("migration-specialist", "schema/IaC → {migration-specialist}"),
-    ("performance-analyst", "perf-sensitive → {performance-analyst}"),
-    ("release-manager", "release → {release-manager}"),
+    (("investigator",), "bug → {investigator} first"),
+    (("researcher",), "unfamiliar ground → {researcher} first"),
+    (("doc-writer",), "user-visible change → {doc-writer} after the commit"),
+    (("security-auditor", "reviewer"), "auth/crypto/secrets → {security-auditor} in parallel with {reviewer}"),
+    (("frontend",), "UI → {frontend}"),
+    (("migration-specialist",), "schema/IaC → {migration-specialist}"),
+    (("performance-analyst",), "perf-sensitive → {performance-analyst}"),
+    (("release-manager",), "release → {release-manager}"),
 )
+
+
+def _library_role(role_spec: dict[str, Any]) -> str | None:
+    """The library role a roster entry stands for, by kind: itself, or the library role with its `default_kind`."""
+    role = str(role_spec.get("role", ""))
+    kind = _role_kind(role_spec)
+    lib = role_library.ROLES.get(role)
+    if lib and lib["default_kind"] == kind:
+        return role
+    return next((name for name, d in role_library.ROLES.items() if d["default_kind"] == kind), None)
+
+
+def _role_writes(role_spec: dict[str, Any]) -> bool:
+    return _role_kind(role_spec) not in _READ_ONLY_KINDS
+
+
+def _kind_agents(spec: dict[str, Any], team: list[dict[str, Any]]) -> dict[str, str]:
+    """{kind: `agent name`} for a team; the first roster role of a kind wins."""
+    agents: dict[str, str] = {}
+    for r in team:
+        agents.setdefault(_role_kind(r), f"`{_agent(spec, r['role'])}`")
+    return agents
 
 
 def role_focus(spec: dict[str, Any], role_spec: dict[str, Any]) -> dict[str, list[str]]:
     """The repo scope a role works in: `{paths, commands, docs}`.
 
-    An explicit `focus` in the roster entry wins. Otherwise every role gets `paths=[subdir or "."]`; backend,
-    test-engineer and investigator get the build, test and lint commands; doc-writer and researcher get the
-    knowledge-plane sources plus the knowledge plane's INDEX.md.
+    An explicit `focus` in the roster entry wins. Otherwise every role gets `paths=[subdir or "."]`; the implementer,
+    test-engineer and investigator kinds get the build, test and lint commands; the doc-writer and researcher kinds get
+    the knowledge-plane sources plus the knowledge plane's INDEX.md.
     """
     explicit = role_spec.get("focus")
     if isinstance(explicit, dict):
         return {key: [str(v) for v in (explicit.get(key) or [])] for key in _FOCUS_KEYS}
-    role = role_spec.get("role")
+    kind = _role_kind(role_spec)
     stack = spec.get("stack") or {}
     focus: dict[str, list[str]] = {"paths": [_monorepo(spec)[1] or "."], "commands": [], "docs": []}
-    if role in _FOCUS_COMMAND_ROLES:
+    if kind in _FOCUS_COMMAND_KINDS:
         cmds = (stack.get("build_command"), stack.get("test_command"), stack.get("lint_command"))
         focus["commands"] = [str(c) for c in cmds if c]
-    if role in _FOCUS_DOC_ROLES:
+    if kind in _FOCUS_DOC_KINDS:
         sources = (spec.get("knowledge_plane") or {}).get("sources") or {}
-        focus["docs"] = [f"/workspace/{src}" for kind in kp.SOURCE_KINDS for src in (sources.get(kind) or [])]
+        focus["docs"] = [f"/workspace/{src}" for k in kp.SOURCE_KINDS for src in (sources.get(k) or [])]
         focus["docs"].append(f"{_ws(spec)}/knowledge-plane/INDEX.md")
     return focus
 
 
 def _render_role_protocol(spec: dict[str, Any], role_spec: dict[str, Any]) -> str:
-    protocol = role_library.role_protocol(role_spec["role"])
+    lib_role = _library_role(role_spec)
+    protocol = role_library.role_protocol(lib_role) if lib_role else None
     if not protocol:
         return ""
     protocol = protocol.replace("<knowledge plane>", f"{_ws(spec)}/knowledge-plane")
@@ -968,25 +1004,38 @@ def _render_focus(spec: dict[str, Any], role_spec: dict[str, Any]) -> str:
 
 
 def _render_sizing(spec: dict[str, Any], team: list[dict[str, Any]], is_eval: bool) -> str:
-    names = {r["role"] for r in team}
-    agents = {role: f"`{_agent(spec, role)}`" for role in names | {"reviewer"}}
-    lines = [f"- {line.format_map(agents)}" for role, line in _SIZING_LINES if role in names]
-    if is_eval and not lines:
+    agents = _kind_agents(spec, team)
+    lines = [f"- {line.format_map(agents)}" for kinds, line in _SIZING_LINES if all(k in agents for k in kinds)]
+    reviewers = [agents[k] for k in _PARALLEL_REVIEWER_KINDS if k in agents]
+    if is_eval and not lines and not reviewers:
         return ""
-    intro = ("Read the issue and the knowledge plane, then decide who is needed. A small change needs only the\n"
-             "implementer and the reviewer; add a teammate when its line applies:")
-    return "## Sizing an issue\n" + intro + "\n" + "\n".join(lines) + "\n\n"
+    small = f"A small change needs only {agents.get('implementer', 'the implementer')} and " \
+            f"{agents.get('reviewer', 'the reviewer')}."
+    text = ("## Sizing an issue\nRead the issue and the knowledge plane, then decide who is needed.\n"
+            f"{small} Add a teammate when its line applies:\n" + "\n".join(lines) + "\n")
+    if reviewers:
+        text += f"\nReview verdicts from {', '.join(reviewers)} before giving the commit slot.\n"
+    return text + "\n"
 
 
-def _render_briefs(spec: dict[str, Any], lead: str) -> str:
+def _render_briefs(spec: dict[str, Any], team: list[dict[str, Any]], lead: str) -> str:
+    agents = _kind_agents(spec, team)
     ref = "#N" if _vcs_enabled(spec) else "<item ID>"
+    reports = [f"{agents[k]}'s `{REPORTS_DIR}/<issue>-{suffix}.md` ({why})"
+               for k, suffix, why in (("investigator", "investigation", "for a bug"),
+                                      ("researcher", "research", "for unfamiliar ground")) if k in agents]
+    pre_work = ""
+    if reports:
+        implementer = agents.get("implementer", "the implementer")
+        pre_work = ("- Pre-work comes first. Read\n  " + "\n  or ".join(reports) + "\n"
+                    f"  before you brief {implementer}, and put the report's path in its brief.\n")
     return f"""## Briefs
 - Write each brief to `{BRIEFS_DIR}/<issue>-<agent>.md`, then send
   `scion message <agent> "{lead} -> <agent>: {ref}: read {BRIEFS_DIR}/<file>"`.
 - Never inline a brief in the message: shell metacharacters and long prompts break.
 - A brief has the key locations, the deliverables (exact paths), the acceptance checks, and a termination line
   ("You MUST … then report to `{lead}`").
-
+{pre_work}
 """
 
 
@@ -1038,7 +1087,7 @@ Hub shows you on top of your team and sends you its notifications (stopped, fail
   and re-send its brief (a resumed agent starts a fresh session); `scion resume --force <name>` one in `error`.{sa_note}
 - Start only the agents in this table. Your team reports to you: you assign every task and accept every result.
 
-{_render_sizing(spec, team, is_eval)}{_render_briefs(spec, lead)}"""
+{_render_sizing(spec, team, is_eval)}{_render_briefs(spec, team, lead)}"""
 
 
 def _render_role_system_prompt(spec: dict[str, Any], role_spec: dict[str, Any], is_eval: bool) -> str:
@@ -1069,20 +1118,45 @@ def _render_role_system_prompt_base(spec: dict[str, Any], role_spec: dict[str, A
     service = infra["eval_service"] if is_eval else infra["serving_service"]
     vcs = spec.get("vcs") or {}
     kp_index = f"{kp.EVAL_KP_MOUNT}/INDEX.md" if is_eval else "/workspace/knowledge-plane/INDEX.md"
+    team = spec["team"]["eval_roles"] if is_eval else spec["team"]["build_roles"]
+    lead_role = _team_lead(team, "eval-lead" if is_eval else "lead")
+    lead = _agent(spec, lead_role)
     if _vcs_enabled(spec):
         branch = vcs["eval_branch"] if is_eval else vcs["build_branch"]
         location = f"Repository `{vcs['repo']}`, Branch `{branch}`"
         intake = f"inspect GitHub issues in `{vcs['repo']}` (`gh issue list -R {vcs['repo']} --label status:ready`)"
-        where = f"on branch `{branch}`"
-        handoff = "pushing or messaging downstream teammates"
+        slot = "commit slot"
+        write_step = (f"Verify your work with `{stack['test_command']}`,\n   then commit and push on branch `{branch}` "
+                      f"only when `{lead}` gives you the commit slot.")
     else:
         location = "Shared Hub project workspace `/workspace`, no version control"
         intake = (
             "follow the eval-lead's instructions" if is_eval
             else "read `/workspace/backlog/issues.json` (only the lead edits it)"
         )
-        where = "in `/workspace` while holding the edit slot when required"
-        handoff = "reporting results to the lead"
+        slot = "edit slot"
+        write_step = (f"Verify your work with `{stack['test_command']}`,\n   and change files in `/workspace` only while "
+                      f"`{lead}` gives you the edit slot.")
+    # Leads keep backlog intake and orchestration and never implement; team members take work only from the brief
+    # named in their lead's message and report only to their lead; only writing kinds commit (spec §5.4, §6).
+    if role == lead_role:
+        loop = f"""1. Read incoming `scion message` instructions and {intake}.
+2. Read `{kp_index}` and the requirements and ADRs that the work item cites.
+3. Size the work item, brief your team by file and accept their results (see Chain of command) while honoring
+   `templates/_shared/agents.md`. Never implement it yourself.
+4. Before you give the {slot} or mark the work verified, check the evidence: `{stack['test_command']}` passes and
+   every verdict is in."""
+    else:
+        how = ("as your Role protocol says" if _render_role_protocol(spec, role_spec)
+               else "as your Primary Responsibility says")
+        result = write_step if _role_writes(role_spec) else (
+            "You never change product code: write your result (report, verdict or measurement) where the brief says.")
+        loop = f"""1. Take work only from the brief file named in `{lead}`'s message; never pick work from the backlog yourself.
+2. Read `{kp_index}` and the requirements and ADRs that the brief cites.
+3. Do your role {how}, honoring `templates/_shared/agents.md`.
+4. {result}
+5. Report the result's path and a one-line result only to `{lead}`."""
+    last_step = len(re.findall(r"^\d+\. ", loop, re.MULTILINE)) + 1
     factory_data = ""
     if is_eval:
         factory_data = f"""## Factory Data (Firestore)
@@ -1119,11 +1193,8 @@ The control plane is serverless Firestore; see `config/firestore/README.md` in t
 5. **L5 Latency SLO:** `p50 <= {l5.get('p50_ms', 100)}ms`, `p95 <= {l5['p95_ms']}ms`, `p99 <= {l5.get('p99_ms', 500)}ms`
 
 {factory_data}## Operating Loop
-1. Read incoming `scion message` instructions and {intake}.
-2. Read `{kp_index}` and the requirements and ADRs that the work item cites.
-3. Execute your role responsibility {where} while honoring `templates/_shared/agents.md`.
-4. Verify your work with `{stack['test_command']}` before {handoff}.
-5. Always conclude your turn with `sciontool status task_completed "<summary>"`.
+{loop}
+{last_step}. Always conclude your turn with `sciontool status task_completed "<summary>"`.
 """
 
 
