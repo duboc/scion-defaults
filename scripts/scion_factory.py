@@ -167,7 +167,7 @@ GRILL_QUESTIONS: list[dict[str, Any]] = [
         "lessons": ["L6", "L7", "L8", "L16", "L22"],
         "challenge_prompt": (
             "Confirm the default roster with three default specialists (`researcher`, `doc-writer`, `investigator`). "
-            "Review each proposed specialist with its evidence, drop a default only with a reason, and add a "
+            "Review each proposed specialist with its evidence, drop a default under `team.dropped_defaults` only with a reason, and add a "
             "`deployer` or `eval-deployer` only when `infrastructure.deploy` is `service`."
         ),
     },
@@ -1040,9 +1040,17 @@ def _render_scion_agent_yaml(role_spec: dict[str, Any], spec: dict[str, Any] | N
 
 
 def _team_lead(roles: list[dict[str, Any]], preferred: str) -> str:
-    """The role that leads a team: `lead` / `eval-lead` when the roster has it, else the first role."""
+    """The role that leads a team: `preferred` by name, then by kind, else the first role."""
+    if not roles:
+        return preferred
     names = [r["role"] for r in roles]
-    return preferred if preferred in names else names[0]
+    if preferred in names:
+        return preferred
+    target_kind = role_library.ROLES.get(preferred, {}).get("default_kind", preferred)
+    for r in roles:
+        if _role_kind(r) == target_kind:
+            return r["role"]
+    return names[0]
 
 
 # Role prompts (spec §5.4, §6): each role carries its library protocol and a repo focus; the lead sizes every issue

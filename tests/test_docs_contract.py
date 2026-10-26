@@ -27,6 +27,8 @@ def test_grill_question_team_roster_describes_specialists_and_deploy():
         assert needle in prompt or needle in q_text
     assert "deploy" in prompt or "deploy" in q_text
     assert "add-role" in prompt or "add-role" in q_text or "proposed" in prompt or "proposed" in q_text
+    for needle in ("dropped_defaults", "reason"):
+        assert needle in prompt or needle in q_text
 
 
 def test_grill_me_playbook_covers_deploy_and_team_topics():
