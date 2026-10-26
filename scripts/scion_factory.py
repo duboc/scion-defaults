@@ -797,6 +797,8 @@ def _render_shared_agents_md_base(spec: dict[str, Any]) -> str:
 - This factory's issues carry `{flabel}`: add `--label {flabel}` to every `gh issue list` and `gh issue create`.
   An issue without it belongs to another factory, or waits for the PO to label it.
 - The lead assigns work and moves labels. Every issue cites the `REQ-` IDs it delivers.
+- Evaluation findings enter the backlog as issues labeled `eval-finding` and `status:ready` (plus `{flabel}`); the
+  build lead works them directly and never files a duplicate.
 - The PO accepts work by closing the issue: at `status:verified`, the lead comments the evidence (commit, review,
   checks) on the issue and lists it in the daily digest, and never close an issue yourself.
 - **PO inbox:** a decision that waits for the PO is an issue labeled `status:po-decision` and `{flabel}` (the
@@ -805,12 +807,12 @@ def _render_shared_agents_md_base(spec: dict[str, Any]) -> str:
 - **Tell, don't page:** progress and "tell" notices are comments on the issue concerned and on the pinned digest
   issue `{_digest_title(spec)}` (labels `digest` and `{flabel}`), never a Scion message to the PO.
 """
+        asks = "; ".join(a[:1].lower() + a[1:] for a in _po_asks(spec))
         escalation = (
-            "- **Narrow PO escalation (L4):** Only the lead asks the PO, and only for a decision in the \"Waits for the "
-            "PO\" column of its Decision rights (scope, new cost or IAM roles, ADRs, missing secrets/quotas, genuine spec "
-            "contradictions): it files a `status:po-decision` issue, then sends `scion message user:<PO_USER> \"<one "
-            "line> <issue URL>\"`. Every message to the PO raises an ERROR alert (watchdog), so nothing else goes by "
-            "message. Everyone else escalates to their lead."
+            f"- **Narrow PO escalation (L4):** Only the lead asks the PO, and only for a decision in the \"Waits for the "
+            f"PO\" column of its Decision rights (autonomy `{autonomy(spec)}`: {asks}): it files a `status:po-decision` "
+            "issue, then sends `scion message user:<PO_USER> \"<one line> <issue URL>\"`. Every message to the PO raises "
+            "an ERROR alert (watchdog), so nothing else goes by message. Everyone else escalates to their lead."
         )
         integrate = f"""## 4. Pre-Commit Verification & Commit Slot (Lesson L18)
 Before committing or pushing to `{vcs['build_branch']}`, ask the lead for the commit slot, then:
@@ -1129,6 +1131,17 @@ def _cell(items: list[str]) -> str:
     return text[:1].upper() + text[1:]
 
 
+def _po_asks(spec: dict[str, Any]) -> list[str]:
+    """Decisions the lead asks the PO for (a `status:po-decision` issue with Git), at the factory's autonomy level.
+
+    The single source for the "Waits for the PO" column and the shared protocol's escalation line.
+    """
+    cost = "new cost, IAM roles, secrets or quotas"
+    if autonomy(spec) == "autonomous":
+        return [cost]
+    return ["Scope changes and genuine spec contradictions", cost, "decisions that create an ADR"]
+
+
 def render_decision_rights(spec: dict[str, Any]) -> str:
     """The decision-rights table from spec §7.1, adjusted for the factory's autonomy level (§7.4)."""
     git = _vcs_enabled(spec)
@@ -1140,11 +1153,10 @@ def render_decision_rights(spec: dict[str, Any]) -> str:
         "new issues filed from findings" if git else "new backlog items from findings",
         "specialists restarted",
     ]
-    waits = ["Scope changes", "new cost or IAM", "decisions that create an ADR", accept]
+    waits = _po_asks(spec) + [accept]
     if level == "autonomous":
-        tell.insert(0, "Scope changes and decisions that create an ADR (comment on the issue, ADR in the knowledge "
-                       "plane)" if git else "Scope changes and decisions that create an ADR (ADR in the knowledge plane)")
-        waits = ["new cost or IAM", accept]
+        tell.insert(0, "Scope changes, genuine spec contradictions and decisions that create an ADR ("
+                       + ("comment on the issue, " if git else "") + "ADR in the knowledge plane)")
     elif level == "supervised":
         waits.append("the plan of each issue before work starts (`status:po-review` until the PO sets "
                      "`status:approved`)" if git else "the plan of each item before work starts")
@@ -1204,9 +1216,13 @@ A decision in the "Waits for the PO" column becomes one GitHub issue, and the PO
 - `gh issue list -R {repo} --label status:po-decision` is the PO's whole inbox, across every factory on the repository.
 
 ## Daily digest
-Once a day, add one comment to the pinned issue "{digest}" (labels `digest` and `{flabel}`):
-- `n=$(gh issue list -R {repo} --label digest --label {flabel} --state open --json number --jq '.[0].number')`
-- `gh issue comment "$n" -R {repo} --body-file /scion-volumes/scratchpad/digest-<date>.md`
+Once a day (UTC), add one comment to the pinned issue "{digest}" (labels `digest` and `{flabel}`):
+- `n=$(gh issue list -R {repo} --label digest --label {flabel} --state open --search "\\"{digest}\\" in:title" --json number --jq '.[0].number // empty')`
+- If `$n` is empty, the digest issue is missing: open a PO inbox issue asking the PO to run
+  `DRY_RUN=0 scripts/seed-github-waves.sh` from the kit, and skip the digest until it exists.
+- Start the comment with the line `[{lead} digest <YYYY-MM-DD>]` (UTC date; the brackets keep one lead's line from
+  matching another's). Post only when today's line isn't there yet, so frequent wake-ups don't repeat it:
+  `gh issue view "$n" -R {repo} --comments | grep -qF "[{lead} digest $(date -u +%F)]" || gh issue comment "$n" -R {repo} --body-file /scion-volumes/scratchpad/digest-$(date -u +%F).md`
 The comment covers {shipped}, what is blocked and on whom, and what waits in the PO inbox.
 The digest is never a Scion message: a daily message would page the PO every day.
 
@@ -1225,7 +1241,9 @@ The digest is never a Scion message: a daily message would page the PO every day
     return text + """## Tell notices
 - At `status:verified`, comment the evidence on the issue (`gh issue comment`): commit, review verdicts, checks.
   The digest lists the issue; the PO accepts it by closing it.
-- A new issue filed from a finding links the finding (issue, evaluation run or report) in its body.
+- An `eval-finding` issue (filed by the eval-lead at `status:ready`) is work like any other: work it directly and
+  never file a duplicate issue for it.
+- A new issue you file from any other finding links the finding (issue, evaluation run or report) in its body.
 - When you restart a specialist, comment on the issue it works on.
 - Never `scion message` the PO for a tell notice or the digest.
 
@@ -1622,16 +1640,24 @@ for lbl in {" ".join(f'"{l}"' for l in labels)}; do
   fi
 done
 
-# One pinned digest issue per factory: each lead adds one comment a day (spec §7.3).
+# One pinned digest issue per factory: each lead adds one comment a day (spec §7.3). GitHub pins at most 3 issues
+# per repository, so a failed pin only warns: it must never stop the waves from being seeded.
+pin_digest() {{
+  if ! gh issue pin "$1" --repo "$REPO" >/dev/null 2>&1; then
+    echo "WARNING: could not pin the digest issue $1 (already pinned, or the repository has 3 pinned issues); pin it by hand" >&2
+  fi
+}}
+
 if [[ "${{DRY_RUN:-1}}" == "0" ]]; then
   existing="$(gh issue list --repo "$REPO" --state open --label digest --label "$FACTORY_LABEL" \\
-    --search "$DIGEST_TITLE in:title" --json number --jq '.[0].number // empty')"
+    --search "\\"$DIGEST_TITLE\\" in:title" --json number --jq '.[0].number // empty')"
   if [[ -z "$existing" ]]; then
     url="$(gh issue create --repo "$REPO" --title "$DIGEST_TITLE" --label digest --label "$FACTORY_LABEL" \\
       --body "Daily digest: each lead adds one comment a day (what shipped, what is blocked and on whom, the PO inbox).")"
-    gh issue pin "$url" --repo "$REPO"
+    pin_digest "$url"
   else
     echo "Digest issue #$existing already exists"
+    pin_digest "$existing"
   fi
 else
   echo "[dry-run] gh issue create --repo $REPO --title \\"$DIGEST_TITLE\\" --label digest --label $FACTORY_LABEL (only if absent), then gh issue pin"

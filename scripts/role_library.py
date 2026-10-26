@@ -152,8 +152,8 @@ Don't fix; a proof-of-concept patch only shows the cause and proves reproduction
         "protocol": """You coordinate the evaluation team and manage the continuous verification pyramid (L1-L5).
 Schedule automated grading sweeps against the build branch and analyze test metrics.
 Synthesize evaluation reports, detect regression trends, and track pass/fail rates.
-File discovered issues labeled with `factory:<slug>` for the build lead to address.
-Never message build agents directly; communicate only through GitHub issues and evaluation reports.""",
+Report each finding through the channel your Evaluation findings section names, for the build lead to address.
+Never message build agents directly.""",
     },
     "domain-evaluator": {
         "team": "eval",

@@ -139,24 +139,93 @@ def test_seed_script_creates_inbox_labels_and_digest_issue_in_dry_run_only_print
     assert not calls.exists(), calls.read_text()
 
 
-def test_seed_script_creates_the_digest_only_when_absent(kit, tmp_path):
-    """With DRY_RUN=0 and an existing digest, the script creates no second digest issue."""
+def _run_seed(kit, tmp_path, fake_body):
+    """Run the seed script with DRY_RUN=0 against a fake gh; return (result, gh call log lines)."""
     bindir = tmp_path / "bin"
     bindir.mkdir()
     calls = tmp_path / "gh-calls"
-    (bindir / "gh").write_text(
-        f'#!/bin/sh\necho "$@" >> "{calls}"\n'
-        'if [ "$1 $2" = "issue list" ]; then echo 7; fi\n'
-    )
+    (bindir / "gh").write_text(f'#!/bin/sh\necho "$@" >> "{calls}"\n{fake_body}')
     (bindir / "gh").chmod(0o755)
     env = {**os.environ, "PATH": f"{bindir}:{os.environ['PATH']}", "DRY_RUN": "0"}
     res = subprocess.run(["bash", str(kit / "scripts" / "seed-github-waves.sh")], env=env,
                          capture_output=True, text=True)
+    return res, calls.read_text().splitlines()
+
+
+_DIGEST_CREATE = f"issue create --repo example-org/{SLUG} --title {SLUG} digest --label digest --label factory:{SLUG}"
+_URL = 'if [ "$1 $2" = "issue create" ]; then echo https://github.com/example-org/x/issues/9; fi\n'
+
+
+def test_seed_script_creates_and_pins_an_absent_digest(kit, tmp_path):
+    res, log = _run_seed(kit, tmp_path, _URL)                      # `issue list` prints nothing
     assert res.returncode == 0, res.stderr
-    log = calls.read_text()
-    assert f"{SLUG} digest" in log                     # it searched for the digest
-    assert f"--title {SLUG} digest" not in log         # and created none
-    assert "issue pin" not in log
+    creates = [i for i, line in enumerate(log) if line.startswith(_DIGEST_CREATE)]
+    pins = [i for i, line in enumerate(log) if line.startswith("issue pin")]
+    assert creates and pins and creates[0] < pins[0], log
+    assert any(f'"{SLUG} digest" in:title' in line for line in log if line.startswith("issue list"))
+
+
+def test_seed_script_survives_a_failed_pin_and_seeds_the_waves(kit, tmp_path):
+    res, log = _run_seed(kit, tmp_path, _URL + 'if [ "$1 $2" = "issue pin" ]; then exit 1; fi\n')
+    assert res.returncode == 0, res.stderr
+    assert "pin" in res.stderr                                     # a warning, not an abort
+    assert "[wave-1]" in res.stdout                               # went on to the waves
+    # Wave bodies span several lines in the log, so look for the wave issue's labels in the whole log.
+    assert f"--label status:ready --label factory:{SLUG}" in "\n".join(log), log
+
+
+def test_seed_script_pins_an_existing_digest_without_creating_one(kit, tmp_path):
+    res, log = _run_seed(kit, tmp_path, 'if [ "$1 $2" = "issue list" ]; then echo 7; fi\n')
+    assert res.returncode == 0, res.stderr
+    assert not any(line.startswith(_DIGEST_CREATE) for line in log), log
+    assert any(line.startswith("issue pin 7") for line in log), log
+
+
+def test_no_git_eval_lead_names_no_github_channel(tmp_path):
+    spec = _spec()
+    spec["vcs"] = {"enabled": False}
+    ev = _prompt(_compile(tmp_path, spec), "eval-lead")
+    assert "GitHub issues" not in ev and "factory:" not in ev
+
+
+def test_git_eval_lead_still_files_finding_issues(kit):
+    assert "--label eval-finding" in _section(_prompt(kit, "eval-lead"), "Evaluation findings")
+
+
+def _escalation(out):
+    shared = (out / "templates" / "_shared" / "agents.md").read_text()
+    return next(line for line in shared.splitlines() if "Narrow PO escalation" in line)
+
+
+def test_shared_escalation_follows_the_autonomy_level(tmp_path):
+    standard = _escalation(_compile(tmp_path / "s", _spec()))
+    assert "scope" in standard.lower() and "ADR" in standard
+    assert "secrets" in standard and "spec contradictions" in standard
+    autonomous = _escalation(_compile(tmp_path / "a", _spec(autonomy="autonomous")))
+    assert "scope" not in autonomous.lower() and "ADR" not in autonomous
+    assert "IAM" in autonomous and "secrets" in autonomous
+
+
+def test_decision_rights_keep_secrets_and_spec_contradictions():
+    waits = _columns(scion_factory.render_decision_rights(_spec()))["Waits for the PO"]
+    assert "secrets" in waits and "spec contradictions" in waits
+
+
+def test_digest_lookup_filters_by_title_and_posts_once_a_day(kit):
+    digest = _section(_prompt(kit, "lead"), "Daily digest")
+    assert f'--search "\\"{SLUG} digest\\" in:title"' in digest
+    assert "// empty" in digest
+    assert "scripts/seed-github-waves.sh" in digest              # what to do when the digest is missing
+    assert "date -u +%F" in digest and "[lead digest" in digest  # post only when today's comment isn't there
+    # The eval-lead comments on the same issue: its marker must not match the build lead's.
+    assert "[lead digest" not in _section(_prompt(kit, "eval-lead"), "Daily digest")
+
+
+def test_build_lead_works_eval_findings_without_duplicates(kit):
+    tell = _section(_prompt(kit, "lead"), "Tell notices")
+    assert "eval-finding" in tell and "never file a duplicate" in tell
+    shared = (kit / "templates" / "_shared" / "agents.md").read_text()
+    assert "`eval-finding` and `status:ready`" in shared
 
 
 def test_kit_env_records_the_autonomy_level(tmp_path):
