@@ -26,6 +26,18 @@ def test_watchdog_wakes_suspended_leads_only(watchdog):
     assert not watchdog.should_wake("kubelet-researcher", "researcher", {"lead", "eval-lead"})
 
 
+def test_should_wake_slug_fallback_when_template_empty(watchdog):
+    wake_roles = {"lead", "eval-lead"}
+    # empty template + slug "kubelet-lead" → woken
+    assert watchdog.should_wake("kubelet-lead", "", wake_roles)
+    assert watchdog.should_wake("lead", "", wake_roles)
+    assert watchdog.should_wake("kubelet-eval-lead", None, wake_roles)
+    # empty template + slug "kubelet-researcher" → not
+    assert not watchdog.should_wake("kubelet-researcher", "", wake_roles)
+    # non-empty template still decides (template "researcher" with slug "x-lead" → not woken)
+    assert not watchdog.should_wake("x-lead", "researcher", wake_roles)
+
+
 def test_wake_roles_come_from_env(watchdog, monkeypatch):
     assert watchdog.default_wake_roles({}) == {"lead", "eval-lead"}
     monkeypatch.setenv("WATCHDOG_WAKE_ROLES", "lead,eval-lead,backend")

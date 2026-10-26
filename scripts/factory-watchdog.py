@@ -100,10 +100,13 @@ def default_wake_roles(env=None):
 WATCHDOG_WAKE_ROLES = default_wake_roles(os.environ)
 
 
-def should_wake(agent_slug: str, template: str, wake_roles: set[str] = None) -> bool:
+def should_wake(agent_slug: str, template: str, wake_roles: set[str] | None = None) -> bool:
     if wake_roles is None:
         wake_roles = default_wake_roles()
-    return (template or "").strip() in wake_roles
+    role = (template or "").strip()
+    if role:
+        return role in wake_roles
+    return any(agent_slug == r or agent_slug.endswith(f"-{r}") for r in wake_roles)
 
 
 def mint_admin_jwt():
