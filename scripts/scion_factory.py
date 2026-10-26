@@ -732,9 +732,17 @@ def _agent(spec: dict[str, Any], role: str) -> str:
 
 
 def _factory_label(spec: dict[str, Any]) -> str:
-    """GitHub label that scopes a monorepo factory's backlog: factories in one repository share its issues."""
-    prefix, subdir = _monorepo(spec)
-    return f"factory:{prefix or spec['project']['slug']}" if subdir else ""
+    """GitHub label that scopes a factory's issues: `factory:<agent_prefix or slug>`, for every factory (spec §7.2).
+
+    Factories in one repository share its issues, so one query (`--label status:po-decision`) covers all of them and
+    `--label factory:<slug>` picks one factory's backlog.
+    """
+    return f"factory:{_monorepo(spec)[0] or spec['project']['slug']}"
+
+
+def _digest_title(spec: dict[str, Any]) -> str:
+    """Title of the factory's pinned digest issue (spec §7.3)."""
+    return f"{_factory_label(spec).removeprefix('factory:')} digest"
 
 
 def _monorepo_paths(spec: dict[str, Any], text: str) -> str:
@@ -742,7 +750,6 @@ def _monorepo_paths(spec: dict[str, Any], text: str) -> str:
     if not _monorepo(spec)[1]:
         return text
     ws = _ws(spec)
-    text = text.replace("--label status:ready`", f"--label status:ready --label {_factory_label(spec)}`")
     text = text.replace("/workspace/knowledge-plane", f"{ws}/knowledge-plane")
     text = text.replace("/workspace/tools/", f"{ws}/tools/")
     return text.replace("(`deployer`, `eval-deployer`)",
@@ -784,12 +791,27 @@ def _render_shared_agents_md_base(spec: dict[str, Any]) -> str:
             f"- **Eval Project (`{proj['eval_slug']}`):** Pushes the independent evaluation control tower to the "
             f"disjoint orphan branch `{vcs['eval_branch']}` and deploys `{infra['eval_service']}` (Lesson L25)."
         )
+        flabel = _factory_label(spec)
         backlog = f"""## 3. Backlog & Status (Lessons L1, L18)
 - The backlog is GitHub issues in `{vcs['repo']}`. Status labels move `status:ready` -> `status:in-progress` -> `status:in-review` -> `status:verified` (or `status:blocked`).
+- This factory's issues carry `{flabel}`: add `--label {flabel}` to every `gh issue list` and `gh issue create`.
+  An issue without it belongs to another factory, or waits for the PO to label it.
 - The lead assigns work and moves labels. Every issue cites the `REQ-` IDs it delivers.
 - The PO accepts work by closing the issue: at `status:verified`, the lead comments the evidence (commit, review,
-  checks) and messages the PO, and never close an issue yourself.
+  checks) on the issue and lists it in the daily digest, and never close an issue yourself.
+- **PO inbox:** a decision that waits for the PO is an issue labeled `status:po-decision` and `{flabel}` (the
+  question, the options, the lead's recommendation). Only the lead files one.
+  `gh issue list -R {vcs['repo']} --label status:po-decision` is the PO's whole inbox.
+- **Tell, don't page:** progress and "tell" notices are comments on the issue concerned and on the pinned digest
+  issue `{_digest_title(spec)}` (labels `digest` and `{flabel}`), never a Scion message to the PO.
 """
+        escalation = (
+            "- **Narrow PO escalation (L4):** Only the lead asks the PO, and only for a decision in the \"Waits for the "
+            "PO\" column of its Decision rights (scope, new cost or IAM roles, ADRs, missing secrets/quotas, genuine spec "
+            "contradictions): it files a `status:po-decision` issue, then sends `scion message user:<PO_USER> \"<one "
+            "line> <issue URL>\"`. Every message to the PO raises an ERROR alert (watchdog), so nothing else goes by "
+            "message. Everyone else escalates to their lead."
+        )
         integrate = f"""## 4. Pre-Commit Verification & Commit Slot (Lesson L18)
 Before committing or pushing to `{vcs['build_branch']}`, ask the lead for the commit slot, then:
 1. Pull the latest branch state: `git pull --rebase origin {vcs['build_branch']}`.
@@ -843,6 +865,10 @@ gcloud run deploy <SERVICE_NAME> --source="$d" --to-latest
 After the deploy, record the revision, the rollback revision, the snapshot path, and its SHA-256 in `/workspace/knowledge-plane/state/LIVE.md`. Keep the last three snapshots for rollback.
 """
         turn_ref = "backlog item ID and snapshot SHA-256"
+        escalation = (
+            "- **Narrow PO escalation (L4):** Escalate to the human PO (`scion message user:<PO_USER> \"...\"`) ONLY for "
+            "missing IAM roles, missing secrets/quotas, or genuine spec contradictions."
+        )
 
     return f"""# Shared Factory Agent Protocol — {proj['name']} (`{proj['slug']}` & `{proj['eval_slug']}`)
 
@@ -867,7 +893,7 @@ Every agent in this Scion software factory MUST follow these operational rules (
 ## 6. Communication & Turn Completion (Lessons L1, L2, L4)
 - **Verify message delivery (L1):** Always check the exit code of `scion message <recipient> "<msg>"` and confirm recipient names reside in the same Scion project.
 - **Signal turn completion (L2):** End every turn by running `sciontool status task_completed "<concise summary with {turn_ref}>"` (or `sciontool status ask_user "<blocker>"` when genuinely blocked).
-- **Narrow PO escalation (L4):** Escalate to the human PO (`scion message user:<PO_USER> "..."`) ONLY for missing IAM roles, missing secrets/quotas, or genuine spec contradictions.
+{escalation}
 
 ## 7. L1–L5 Evaluation Pyramid Contract
 - **L1 Health:** `GET {spec['evaluation_pyramid']['l1_health']['endpoint']}`
@@ -993,6 +1019,7 @@ def _render_role_protocol(spec: dict[str, Any], role_spec: dict[str, Any]) -> st
     if not protocol:
         return ""
     protocol = protocol.replace("<knowledge plane>", f"{_ws(spec)}/knowledge-plane")
+    protocol = protocol.replace("factory:<slug>", _factory_label(spec))
     return f"## Role protocol\n{protocol.strip()}\n\n"
 
 
@@ -1087,11 +1114,128 @@ Hub shows you on top of your team and sends you its notifications (stopped, fail
   and re-send its brief (a resumed agent starts a fresh session); `scion resume --force <name>` one in `error`.{sa_note}
 - Start only the agents in this table. Your team reports to you: you assign every task and accept every result.
 
-{_render_sizing(spec, team, is_eval)}{_render_briefs(spec, team, lead)}"""
+{_render_sizing(spec, team, is_eval)}{_render_briefs(spec, team, lead)}{_render_human_on_the_loop(spec, lead, is_eval)}"""
+
+
+# Human on the loop (spec §7): what agents decide alone, decide and tell, or leave to the PO, per autonomy level.
+# With Git, every PO decision is one `status:po-decision` issue and the digest and "tell" notices are GitHub comments:
+# the watchdog turns every `scion message user:<PO>` into an ERROR alert, so only PO decisions go by message. Without
+# Git (spec §3) the lead keeps escalating by Scion message and the eval-lead reports findings to the PO by message.
+_DECIDE_ALONE = ["how to implement", "which specialist to brief", "test strategy", "doc updates", "retries and re-briefs"]
+
+
+def _cell(items: list[str]) -> str:
+    text = "; ".join(items)
+    return text[:1].upper() + text[1:]
+
+
+def render_decision_rights(spec: dict[str, Any]) -> str:
+    """The decision-rights table from spec §7.1, adjusted for the factory's autonomy level (§7.4)."""
+    git = _vcs_enabled(spec)
+    level = autonomy(spec)
+    accept = ("accepting work (only the PO closes the issue)" if git
+              else "accepting work (only the PO accepts a verified item)")
+    tell = [
+        "each verified issue (evidence comment)" if git else "each verified item (in your turn summary)",
+        "new issues filed from findings" if git else "new backlog items from findings",
+        "specialists restarted",
+    ]
+    waits = ["Scope changes", "new cost or IAM", "decisions that create an ADR", accept]
+    if level == "autonomous":
+        tell.insert(0, "Scope changes and decisions that create an ADR (comment on the issue, ADR in the knowledge "
+                       "plane)" if git else "Scope changes and decisions that create an ADR (ADR in the knowledge plane)")
+        waits = ["new cost or IAM", accept]
+    elif level == "supervised":
+        waits.append("the plan of each issue before work starts (`status:po-review` until the PO sets "
+                     "`status:approved`)" if git else "the plan of each item before work starts")
+    return ("| Agents decide alone | Agents decide and tell the PO | Waits for the PO |\n"
+            "|---|---|---|\n"
+            f"| {_cell(_DECIDE_ALONE)} | {_cell(tell)} | {_cell(waits)} |\n")
+
+
+def _render_human_on_the_loop(spec: dict[str, Any], lead: str, is_eval: bool) -> str:
+    """Decision rights, PO inbox, digest, and "tell" notices (build lead) or evaluation findings (eval-lead)."""
+    level = autonomy(spec)
+    git = _vcs_enabled(spec)
+    rights = f"""## Decision rights
+Autonomy level: `{level}` (`team.autonomy` in factory.yaml; changing it means recompiling and re-pushing templates).
+
+{render_decision_rights(spec)}
+"""
+    if not git:
+        rights += """- **Decide and tell:** do it, then say so in your turn summary (`sciontool status task_completed`).
+- **Waits for the PO:** ask with `scion message user:<PO_USER> "<question, options, your recommendation>"` and keep
+  working on other items meanwhile. Every message to the PO raises an alert, so send nothing else to the PO.
+"""
+        if level == "supervised":
+            rights += ("- **Supervised:** before work starts on an item, send your plan the same way and brief nobody "
+                       "on it until the PO approves; work on other approved items meanwhile.\n")
+        if is_eval:
+            rights += """
+## Evaluation findings
+- Without Git there is no issue tracker: report each finding (level, evidence, `REQ-` IDs) to the PO with
+  `scion message user:<PO_USER> "<finding>"`.
+- Never message build agents; the PO decides which findings become backlog items.
+"""
+        return rights + "\n"
+
+    repo = spec["vcs"]["repo"]
+    flabel = _factory_label(spec)
+    digest = _digest_title(spec)
+    rights += """- **Decide and tell:** do it, then leave the notice on GitHub (see Tell notices). Never `scion message` the PO
+  for it.
+- **Waits for the PO:** open a PO inbox issue (see PO inbox) and keep working on other issues meanwhile.
+"""
+    if level == "supervised":
+        rights += """- **Supervised:** before work starts on an issue, comment your plan on it and add `status:po-review`. Brief
+  nobody on it until the PO replaces that label with `status:approved`; work on other approved issues meanwhile.
+  There is no per-commit approval. Acceptance stays the PO closing the issue.
+"""
+    shipped = ("evaluation runs and the findings you filed" if is_eval
+               else "what shipped (one line per issue at `status:verified`, waiting for the PO to close it)")
+    text = rights + f"""
+## PO inbox
+A decision in the "Waits for the PO" column becomes one GitHub issue, and the PO answers on it.
+1. Write the question, the options and your recommendation to `/scion-volumes/scratchpad/po/<topic>.md`, then
+   `gh issue create -R {repo} --title "PO decision: <question>" --label status:po-decision --label {flabel} --body-file <file>`.
+2. Send `scion message user:<PO_USER> "{lead}: PO decision needed: <issue URL>"`. Messages to the PO are only for
+   `status:po-decision` issues, and each one links its issue: every message raises an ERROR alert.
+3. Keep working on other issues meanwhile. When the PO answers, act on the answer and remove `status:po-decision`.
+- `gh issue list -R {repo} --label status:po-decision` is the PO's whole inbox, across every factory on the repository.
+
+## Daily digest
+Once a day, add one comment to the pinned issue "{digest}" (labels `digest` and `{flabel}`):
+- `n=$(gh issue list -R {repo} --label digest --label {flabel} --state open --json number --jq '.[0].number')`
+- `gh issue comment "$n" -R {repo} --body-file /scion-volumes/scratchpad/digest-<date>.md`
+The comment covers {shipped}, what is blocked and on whom, and what waits in the PO inbox.
+The digest is never a Scion message: a daily message would page the PO every day.
+
+"""
+    if is_eval:
+        return text + f"""## Evaluation findings
+- File each finding (a failed level, a regression, a missed SLO) as one issue for the build team:
+  `gh issue create -R {repo} --title "<level>: <finding>" --label eval-finding --label {flabel} --label status:ready --body-file <file>`.
+  The body cites the evaluation run (`run_id`), the level (L1–L5), the evidence, and the `REQ-` IDs.
+- Search first (`gh issue list -R {repo} --label eval-finding --label {flabel} --search "<finding>"`) and comment on
+  the open issue instead of filing a duplicate.
+- Never message build agents: the build lead takes the issue from the backlog. When a later run confirms the fix,
+  comment the run on the issue; only the PO closes it.
+
+"""
+    return text + """## Tell notices
+- At `status:verified`, comment the evidence on the issue (`gh issue comment`): commit, review verdicts, checks.
+  The digest lists the issue; the PO accepts it by closing it.
+- A new issue filed from a finding links the finding (issue, evaluation run or report) in its body.
+- When you restart a specialist, comment on the issue it works on.
+- Never `scion message` the PO for a tell notice or the digest.
+
+"""
 
 
 def _render_role_system_prompt(spec: dict[str, Any], role_spec: dict[str, Any], is_eval: bool) -> str:
     text = _monorepo_paths(spec, _render_role_system_prompt_base(spec, role_spec, is_eval))
+    # Every factory scopes its backlog with its `factory:<slug>` label (spec §7.2), not only monorepo factories.
+    text = text.replace("--label status:ready`", f"--label status:ready --label {_factory_label(spec)}`")
     sections = (_render_role_protocol(spec, role_spec) + _render_focus(spec, role_spec)
                 + _render_chain_of_command(spec, role_spec, is_eval))
     text = text.replace("## Operating Loop\n", sections + "## Operating Loop\n", 1)
@@ -1140,12 +1284,21 @@ def _render_role_system_prompt_base(spec: dict[str, Any], role_spec: dict[str, A
     # Leads keep backlog intake and orchestration and never implement; team members take work only from the brief
     # named in their lead's message and report only to their lead; only writing kinds commit (spec §5.4, §6).
     if role == lead_role:
-        loop = f"""1. Read incoming `scion message` instructions and {intake}.
-2. Read `{kp_index}` and the requirements and ADRs that the work item cites.
-3. Size the work item, brief your team by file and accept their results (see Chain of command) while honoring
-   `templates/_shared/agents.md`. Never implement it yourself.
-4. Before you give the {slot} or mark the work verified, check the evidence: `{stack['test_command']}` passes and
-   every verdict is in."""
+        steps = [f"Read incoming `scion message` instructions and {intake}."]
+        if _vcs_enabled(spec):
+            repo = vcs["repo"]
+            steps.append(
+                f"Check the PO inbox: `gh issue list -R {repo} --label status:po-decision --label {_factory_label(spec)}`.\n"
+                "   Act on each answered issue. For one without a PO answer for 24 hours, comment a reminder on it and\n"
+                "   re-send `scion message user:<PO_USER>` with the issue URL. Once a day, post the digest (see Daily digest).")
+        steps += [
+            f"Read `{kp_index}` and the requirements and ADRs that the work item cites.",
+            "Size the work item, brief your team by file and accept their results (see Chain of command) while honoring\n"
+            "   `templates/_shared/agents.md`. Never implement it yourself.",
+            f"Before you give the {slot} or mark the work verified, check the evidence: `{stack['test_command']}` passes and\n"
+            "   every verdict is in.",
+        ]
+        loop = "\n".join(f"{i}. {s}" for i, s in enumerate(steps, 1))
     else:
         how = ("as your Role protocol says" if _render_role_protocol(spec, role_spec)
                else "as your Primary Responsibility says")
@@ -1354,6 +1507,7 @@ PO_EMAIL=po@example.com                      # Hub admin account that acts as th
 FACTORY_PROJECTS={proj['slug']},{proj['eval_slug']}
 KNOWLEDGE_PLANE_SOURCE_PROJECT={proj['slug']}
 MONTHLY_BUDGET_USD={infra.get('budget_usd', 200)}
+AUTONOMY={autonomy(spec)}   # team.autonomy: supervised | standard | autonomous (recompile and re-push to change)
 
 # --- Roster (agent names = role names; start one agent per role) ---
 BUILD_AGENTS="{build_names}"
@@ -1439,16 +1593,21 @@ def _render_seed_waves_sh(spec: dict[str, Any]) -> str:
     proj = spec["project"]
     repo = spec["vcs"]["repo"]
     flabel = _factory_label(spec)
-    labels = ["status:ready", "status:in-progress", "status:in-review", "status:verified", "status:blocked"]
-    labels += [flabel] if flabel else []
-    create_labels = '"status:ready"' + (f', "--label", "{flabel}"' if flabel else "")
+    digest = _digest_title(spec)
+    labels = ["status:ready", "status:in-progress", "status:in-review", "status:verified", "status:blocked",
+              "status:po-decision", "status:po-review", "status:approved", "digest", "eval-finding", flabel]
+    create_labels = f'"status:ready", "--label", "{flabel}"'
     return f"""#!/usr/bin/env bash
 # Seed Wave 1..N GitHub Issues for {proj['name']} ({repo})
+# Creates the status, PO inbox, digest, eval-finding and factory labels, the pinned digest issue "{digest}" (only if
+# absent), and the wave issues. DRY_RUN=1 (the default) only prints what it would do.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${{BASH_SOURCE[0]}}")" && pwd)"
 ISSUES_FILE="$SCRIPT_DIR/../waves/issues.json"
 REPO="${{GITHUB_REPO:-{repo}}}"
+FACTORY_LABEL="{flabel}"
+DIGEST_TITLE="{digest}"
 
 if [[ ! -f "$ISSUES_FILE" ]]; then
   echo "Missing $ISSUES_FILE" >&2
@@ -1462,6 +1621,21 @@ for lbl in {" ".join(f'"{l}"' for l in labels)}; do
     echo "[dry-run] gh label create $lbl --repo $REPO"
   fi
 done
+
+# One pinned digest issue per factory: each lead adds one comment a day (spec §7.3).
+if [[ "${{DRY_RUN:-1}}" == "0" ]]; then
+  existing="$(gh issue list --repo "$REPO" --state open --label digest --label "$FACTORY_LABEL" \\
+    --search "$DIGEST_TITLE in:title" --json number --jq '.[0].number // empty')"
+  if [[ -z "$existing" ]]; then
+    url="$(gh issue create --repo "$REPO" --title "$DIGEST_TITLE" --label digest --label "$FACTORY_LABEL" \\
+      --body "Daily digest: each lead adds one comment a day (what shipped, what is blocked and on whom, the PO inbox).")"
+    gh issue pin "$url" --repo "$REPO"
+  else
+    echo "Digest issue #$existing already exists"
+  fi
+else
+  echo "[dry-run] gh issue create --repo $REPO --title \\"$DIGEST_TITLE\\" --label digest --label $FACTORY_LABEL (only if absent), then gh issue pin"
+fi
 
 # DRY_RUN goes in as an argument: the quoted heredoc below is not expanded by the shell.
 python3 - "$ISSUES_FILE" "$REPO" "${{DRY_RUN:-1}}" <<'PY'
@@ -1508,7 +1682,9 @@ def _render_root_agents_md(spec: dict[str, Any], roster_notes: list[str] | None 
         vcs_lines = (
             f"- **Repository:** `{vcs['repo']}`\n"
             f"- **Build Project (`{proj['slug']}`):** Branch `{vcs['build_branch']}` -> Cloud Run `{infra['serving_service']}`\n"
-            f"- **Evaluation Project (`{proj['eval_slug']}`):** Disjoint orphan branch `{vcs['eval_branch']}` -> Cloud Run `{infra['eval_service']}`"
+            f"- **Evaluation Project (`{proj['eval_slug']}`):** Disjoint orphan branch `{vcs['eval_branch']}` -> Cloud Run `{infra['eval_service']}`\n"
+            f"- **PO inbox:** `gh issue list -R {vcs['repo']} --label status:po-decision`; daily digest on the pinned "
+            f"issue \"{_digest_title(spec)}\"; issues labeled `{_factory_label(spec)}`"
         )
     else:
         vcs_lines = (
@@ -1525,6 +1701,7 @@ def _render_root_agents_md(spec: dict[str, Any], roster_notes: list[str] | None 
 {vcs_lines}
 - **Knowledge Plane:** [`knowledge-plane/INDEX.md`](knowledge-plane/INDEX.md) (copy `knowledge-plane/` to the root of the build workspace)
 - **Heartbeat Mode:** `{team.get('heartbeat_mode', 'direct-lead')}` (`{team.get('heartbeat_cron', '*/15 * * * *')}`) + Watchdog (`{team.get('watchdog_cron', '*/5 * * * *')}`)
+- **Autonomy:** `{autonomy(spec)}` (what agents decide alone and what waits for the PO: the leads' Decision rights)
 
 ## 2. Build & Verification Commands
 - **Build:** `{stack['build_command']}`
