@@ -285,7 +285,8 @@ to whatever runs there; nothing that exists is changed.
 ### Step 5: Prepare the sandbox and the repository
 
 1. Create the sandbox resources: the deployer and runtime service accounts, IAM, and the Firestore database and
-   indexes for the factory's control plane. Review the plan first:
+   indexes for the factory's control plane. With `infrastructure.deploy: none`, the script skips deployer and runtime
+   identities (leave `DEPLOYER_SA_NAME` and `RUNTIME_SA_NAME` empty in your `.env`). Review the plan first:
 
    ```bash
    DRY_RUN=1 scripts/setup-sandbox.sh
@@ -439,8 +440,9 @@ For example, "it must be fast" isn't accepted as a latency target.
 | Topic | What you decide | Why it matters |
 |---|---|---|
 | Mission and boundaries | The mission, at least two non-goals, and whether to use Git now. With Git, also the repository and the build and evaluation branches. | Without non-goals, agents expand scope or escalate product decisions to you (L4, L25). |
-| Runtime, data, and IAM | Build, test, and lint commands, cloud stores, and the exact IAM roles for the deployer service account. | A missing role blocked the first wave of the search factory mid-sprint (L5). |
-| Roster, models, and cost | Build and evaluation roles, harness and model per role, heartbeat mode, WIP limit, and budget. | Each harness has runtime requirements, and idle heartbeats on expensive models waste budget (L6, L9, L22). |
+| Deploy target | Whether the factory deploys a Cloud Run service (`service`) or has nothing to deploy (`none`): a library, CLI, or monorepo package. | With `deploy: none`, the factory skips deployer identities, deployers, and live checks; the evaluation team grades code, API contracts, and quality directly (L29). |
+| Runtime, data, and IAM | Build, test, and lint commands, cloud stores, and the exact IAM roles for the deployer service account (when deploying a service). | A missing role blocked the first wave of the search factory mid-sprint (L5). |
+| Team and specialists | Build and evaluation roster: default specialists (`researcher`, `doc-writer`, `investigator`), candidate specialists proposed from discovery, dropped defaults (with reasons), autonomy level (`standard`, `supervised`, `autonomous`), harness and model per role, heartbeat mode, WIP limit, and budget. | Specialists handle research, investigation, and docs; explicit autonomy levels keep human-on-the-loop boundaries clear; and idle heartbeats on expensive models waste budget (L6, L9, L22, L29). |
 | Evaluation pyramid | The health endpoint, API contract invariants, a numeric domain quality metric and threshold, safety invariants, and latency targets (p50, p95, p99). | Without a numeric oracle, the evaluation team can't grade a wave or file regressions (L15, L25). |
 | Backlog waves | Wave 1 and wave 2 items with an owner role, testable acceptance criteria, and the requirement IDs they deliver. | The lead agent dispatches work only from ready backlog items (L1, L2, L18). |
 | Knowledge plane | Which existing documents to learn from, and the requirements, invariants, and decisions that are missing. | When the reviewer couldn't find the real ADR paths, it guessed, issued a wrong FAIL, and the factory deadlocked for about 60 hours (L4). |
@@ -461,7 +463,7 @@ The compiled kit contains the following files:
 | `eval-workspace/tools/factory_store.py` | The Firestore client that evaluation agents use to read agent status and record evaluation runs. |
 | `config/heartbeat-message.txt` | The message that the heartbeat schedule sends to the lead agent. |
 | `templates/_shared/agents.md` | The shared operating protocol that every agent follows. |
-| `templates/ROLE/` | The `scion-agent.yaml`, `system-prompt.md`, and `agents.md` files for each role. |
+| `templates/ROLE/` | The `scion-agent.yaml`, `system-prompt.md`, and `agents.md` files for each role. Each template incorporates compiled prompt sections (specialist protocols, repository focus paths, briefs, and autonomy decision rights). |
 | `knowledge-plane/` | The knowledge plane. See [Understand the knowledge plane](#understand-the-knowledge-plane). |
 | `eval-workspace/golden/` | Notes for the evaluation team's golden datasets. Copy this directory to the evaluation workspace only. |
 | `waves/issues.json` | The backlog waves. |

@@ -80,6 +80,8 @@ that waits for the PO stalls the factory for hours (L17).
 The factory control plane (agent status and evaluation runs) lives in serverless Firestore; the script creates the
 database and its indexes (see [`config/firestore/README.md`](../config/firestore/README.md)). Add `--with-spanner`
 only if the product itself has a requirement that Firestore or BigQuery can't meet.
+When the factory has nothing to deploy (`infrastructure.deploy: none`), `scripts/setup-sandbox.sh` skips the deployer
+and runtime identities; leave `DEPLOYER_SA_NAME` and `RUNTIME_SA_NAME` empty in `factory.env`.
 
 **Check:** run it again; every step reports "exists" and nothing new is created.
 

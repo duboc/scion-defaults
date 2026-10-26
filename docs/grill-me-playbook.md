@@ -30,6 +30,10 @@ A Scion software factory has two layers.
 1. The agent shows you the detected facts and asks you to confirm them.
 1. The agent asks the unresolved questions one topic at a time, in pillar order. When an answer isn't testable, the
    agent quotes the question's challenge prompt and asks again.
+1. For deploy and team, the agent asks whether `infrastructure.deploy` is `service` or `none`. It presents the default
+   roster (including researcher, doc-writer, investigator), reviews candidate specialists from discovery with their
+   evidence, adds confirmed specialists with `scion-factory add-role`, records drops with a reason under
+   `team.dropped_defaults`, and asks for the autonomy level (`team.autonomy`).
 1. For the knowledge plane, the agent reads the detected sources and proposes requirements, invariants, and glossary
    terms with a quote from each source. You confirm, correct, or reject each proposal. Where sources are missing, the
    agent elicits the same items from you.
@@ -45,11 +49,17 @@ The `check` command fails, and the agent doesn't compile, if any of the followin
 - Git is enabled, but `vcs.repo` isn't `OWNER/NAME`, a branch is missing, or both branches are the same (L25).
   When Git is disabled, none of these fields is required.
 - `project.non_goals` is empty (L4).
+- `infrastructure.deploy` is missing or not `service` or `none` (L29).
+- `infrastructure.deploy` is `service` and `infrastructure.deployer_iam_roles` is empty (L5). With `deploy: none`,
+  deployer IAM roles are omitted.
+- `team.autonomy` is missing or not `supervised`, `standard`, or `autonomous`.
+- A default specialist (`researcher`, `doc-writer`, `investigator`) is missing without a recorded reason in
+  `team.dropped_defaults`.
 - The build or test command is missing (L18).
-- `infrastructure.deployer_iam_roles` is empty (L5).
 - The build team has fewer than three roles, or the evaluation team has fewer than two roles (L25).
 - Any role has no concrete responsibility.
-- The L1 health endpoint, the L2 invariants, or the L4 invariants are missing.
+- The L1 health endpoint, the L2 invariants, or the L4 invariants are missing (for `deploy: none`, L1 to L5 grade code
+  and contracts directly).
 - `evaluation_pyramid.l3_domain_quality.target_threshold` isn't a number (L15).
 - `evaluation_pyramid.l5_latency_slo.p95_ms` isn't a number (L15).
 - Wave 1 has no issues, or an issue has no acceptance criteria (L18).
@@ -68,8 +78,9 @@ Each question maps to a failure that happened in production. The lessons are in
 | `mission_and_non_goals` | `1_mission_and_boundaries` | Agents build out-of-scope features, or send product decisions to your inbox. | [L4, L15, L25](lessons-learned.md) |
 | `branch_isolation_topology` | `1_mission_and_boundaries` | Evaluation agents overwrite application code, or grade unmerged local files. Without Git, the evaluation team needs its own workspace for the same reason. | [L18, L23, L25](lessons-learned.md) |
 | `stack_verification_commands` | `2_runtime_data_and_iam` | A broken commit in the shared `/workspace` blocks every specialist in the project. | [L18, L23](lessons-learned.md) |
+| `deploy_target` | `2_runtime_data_and_iam` | Factories with nothing to deploy used placeholder services, stalling deployers and live checks. With `deploy: none`, deployers are omitted and evaluation grades code and API contracts directly. | [L29](lessons-learned.md) |
 | `cloud_stores_and_deployer_iam` | `2_runtime_data_and_iam` | The deployer stops mid-wave with `PERMISSION_DENIED` on a data store or Cloud Run, or the product picks a provisioned database that a serverless store would serve. | [L5, L13, L23](lessons-learned.md) |
-| `team_roster_and_harnesses` | `3_roster_models_and_cost` | Gemini 4 Argon on Vertex AI returns 404 without `GOOGLE_CLOUD_LOCATION=global`, and Antigravity hooks stall for 60 seconds without `SCION_TELEMETRY_ENABLED=false`. | [L6, L7, L8, L16, L22](lessons-learned.md) |
+| `team_roster_and_harnesses` | `3_roster_models_and_cost` | Without default specialists, unfamiliar code gets built without research, bugs lack root causes, and docs drift. Without an autonomy level, agents either flood the PO or overstep decision rights. Each harness also has runtime requirements (L6, L7, L8, L16, L22). | [L4, L6, L7, L8, L9, L16, L22, L29](lessons-learned.md) |
 | `heartbeat_and_budget_guardrails` | `3_roster_models_and_cost` | Waking an Opus lead every 15 minutes on an idle repository wastes tokens, and an uncapped WIP limit causes rebase conflicts. | [L9, L10, L17, L21, L24](lessons-learned.md) |
 | `eval_l1_l2_contracts` | `4_evaluation_pyramid_oracle` | Expensive L3 and L4 evaluations run against broken or unmigrated endpoints. | [L15, L23](lessons-learned.md) |
 | `eval_l3_metric` | `4_evaluation_pyramid_oracle` | Without a numeric domain metric, such as `ndcg_at_10` in the search factory, the evaluation team can't verify waves or file regression issues. | [L15, L25](lessons-learned.md) |

@@ -152,9 +152,11 @@ GRILL_QUESTIONS: list[dict[str, Any]] = [
         "pillar": "3_roster_models_and_cost",
         "field_path": "team.build_roles / team.eval_roles",
         "question": (
-            "Which specialist roles make up your Build Team and Evaluation Team, "
-            "and which harness/model pairs (`claude`, `opencode`, `antigravity`, `hermes`) "
-            "are assigned to each?"
+            "Confirm the default roster (lead, backend, reviewer, plus the three default specialists: "
+            "`researcher`, `doc-writer`, `investigator` on build; `eval-lead`, `domain-evaluator` on eval). "
+            "Review each proposed specialist from discovery with its evidence, add confirmed specialists "
+            "with `./scripts/scion-factory add-role`, record drops under `team.dropped_defaults` with a reason, "
+            "and select harness/model pairs for each role."
         ),
         "why_we_ask": (
             "Each harness has distinct runtime requirements: OpenCode Gemini 4 Argon "
@@ -164,9 +166,9 @@ GRILL_QUESTIONS: list[dict[str, Any]] = [
         ),
         "lessons": ["L6", "L7", "L8", "L16", "L22"],
         "challenge_prompt": (
-            "Ensure you have at least a `lead`, implementation specialist(s), `reviewer`, "
-            "and `deployer` on the build side, plus an independent `eval-lead`, "
-            "`domain-evaluator`, and `eval-deployer` on the eval side."
+            "Confirm the default roster with three default specialists (`researcher`, `doc-writer`, `investigator`). "
+            "Review each proposed specialist with its evidence, drop a default only with a reason, and add a "
+            "`deployer` or `eval-deployer` only when `infrastructure.deploy` is `service`."
         ),
     },
     {

@@ -7,6 +7,8 @@ One folder per role, plus `_shared/agents.md`: the operating protocol every agen
 scripts/render-templates.py            # -> build/templates/<role>/ (git-ignored)
 ```
 
+The reference folders here demonstrate the 10 roles from the original psearch reference factory. For newly compiled factories, [`scripts/role_library.py`](../scripts/role_library.py) is the canonical source of compiled role protocols, specialist definitions (such as `researcher`, `doc-writer`, `investigator`, and catalog roles), repository-specific focus paths, and human-on-the-loop decision rights.
+
 ## The team
 
 | Role | Project | Harness | GCP identity | Purpose |
