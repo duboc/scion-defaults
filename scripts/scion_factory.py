@@ -19,6 +19,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import copy
 import json
 import os
 import re
@@ -35,6 +36,7 @@ except ImportError:
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import discovery  # noqa: E402
 import knowledge_plane as kp  # noqa: E402
+import role_library  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
@@ -454,6 +456,137 @@ def inspect_repository(repo_path: str | Path) -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
+# Team Model: default specialists, explicit drops, autonomy, deploy
+# ---------------------------------------------------------------------------
+#
+# Every roster carries the library's always-roles (role_library.ALWAYS_BUILD / ALWAYS_EVAL). New drafts get them with
+# `default: true`; older specs and presets get the missing ones at compile time (`normalize_team`), with a note in the
+# kit's AGENTS.md. The PO drops a default only explicitly: `team.dropped_defaults: [{role, reason}]`. A renamed role
+# with the same `default_kind` (for example `go-dev` with `default_kind: implementer`) counts as the default.
+
+DEPLOY_MODES = ("service", "none")
+AUTONOMY_LEVELS = ("supervised", "standard", "autonomous")
+
+
+def deploy_mode(spec: dict[str, Any]) -> str:
+    """`infrastructure.deploy`: `service` when absent (older specs), otherwise the raw value (the draft's `""` too)."""
+    infra = spec.get("infrastructure") or {}
+    if "deploy" not in infra:
+        return "service"
+    value = infra["deploy"]
+    return value if isinstance(value, str) else str(value)
+
+
+def autonomy(spec: dict[str, Any]) -> str:
+    """`team.autonomy`, defaulting to `standard` (spec §7.4)."""
+    value = (spec.get("team") or {}).get("autonomy")
+    if value is None:
+        return "standard"
+    return value if isinstance(value, str) else str(value)
+
+
+def _dropped_defaults(spec: dict[str, Any]) -> set[str]:
+    drops = (spec.get("team") or {}).get("dropped_defaults") or []
+    return {str(d.get("role")) for d in drops if isinstance(d, dict) and d.get("role")}
+
+
+def _role_kind(role_spec: dict[str, Any]) -> str:
+    """A role's `default_kind`: explicit, else the library's for a library role, else the role name."""
+    role = str(role_spec.get("role", ""))
+    if role_spec.get("default_kind"):
+        return str(role_spec["default_kind"])
+    lib = role_library.ROLES.get(role)
+    return lib["default_kind"] if lib else role
+
+
+def normalize_team(spec: dict[str, Any]) -> tuple[dict[str, Any], list[str]]:
+    """Return a deep copy of `spec` with every missing always-role appended, plus notes on what was added.
+
+    A role in `team.dropped_defaults` is never added. A roster role with the same `default_kind` as a missing
+    always-role counts as that role, so a renamed implementer doesn't get a second `backend`.
+    """
+    out = copy.deepcopy(spec)
+    team = out.setdefault("team", {})
+    dropped = _dropped_defaults(out)
+    notes: list[str] = []
+    for key, always in (("build_roles", role_library.ALWAYS_BUILD), ("eval_roles", role_library.ALWAYS_EVAL)):
+        roster = team.get(key)
+        if not isinstance(roster, list):
+            roster = []
+            team[key] = roster
+        names = {str(r.get("role")) for r in roster if isinstance(r, dict)}
+        kinds = {_role_kind(r) for r in roster if isinstance(r, dict)}
+        for role in always:
+            if role in dropped or role in names or role_library.ROLES[role]["default_kind"] in kinds:
+                continue
+            roster.append(dict(role_library.library_role_entry(role), default=True))
+            names.add(role)
+            kinds.add(role_library.ROLES[role]["default_kind"])
+            notes.append(f"added default role {role}")
+    return out, notes
+
+
+def add_role(spec_path: str | Path, role: str, team: str | None = None, evidence: list[str] | tuple[str, ...] = ()
+             ) -> dict[str, Any]:
+    """Add a library role (with the evidence discovery found) to a FactorySpec in place. Recompile the kit afterwards.
+
+    Idempotent: a role already in either roster is left as is. Raises ValueError for an unknown role, a bad team, or
+    a role that needs a deployed service when the spec says `infrastructure.deploy: none`.
+    """
+    lib = role_library.ROLES.get(role)
+    if lib is None:
+        raise ValueError(f"unknown role {role!r}; library roles: {', '.join(sorted(role_library.ROLES))}")
+    team_name = team or lib["team"]
+    if team_name not in ("build", "eval"):
+        raise ValueError(f"--team must be build or eval, not {team_name!r}")
+    spec = load_spec(spec_path)
+    if lib["needs_service"] and deploy_mode(spec) == "none":
+        raise ValueError(f"{role} needs a deployed service, but this factory has infrastructure.deploy: none")
+    roster_team = spec.setdefault("team", {})
+    existing = [r.get("role") for key in ("build_roles", "eval_roles") for r in (roster_team.get(key) or [])
+                if isinstance(r, dict)]
+    if role in existing:
+        return spec
+    entry = dict(role_library.library_role_entry(role), default=lib["kind"] == "always")
+    if evidence:
+        entry["evidence"] = [str(e) for e in evidence]
+    roster_team.setdefault(f"{team_name}_roles", []).append(entry)
+    # Adding a dropped default back undoes the drop.
+    if roster_team.get("dropped_defaults"):
+        roster_team["dropped_defaults"] = [d for d in roster_team["dropped_defaults"]
+                                           if not (isinstance(d, dict) and d.get("role") == role)]
+    save_spec(spec, spec_path)
+    return spec
+
+
+def _team_readiness(spec: dict[str, Any]) -> tuple[list[str], list[str]]:
+    """Errors and warnings for the deploy / autonomy enums, explicit drops, and missing default roles."""
+    errors: list[str] = []
+    mode = deploy_mode(spec)
+    if mode not in DEPLOY_MODES:
+        errors.append(f"infrastructure.deploy must be `service` or `none` (got {mode!r}): "
+                      "does this factory deploy a service?")
+    level = autonomy(spec)
+    if level not in AUTONOMY_LEVELS:
+        errors.append(f"team.autonomy must be one of {', '.join(AUTONOMY_LEVELS)} (got {level!r})")
+    drops = (spec.get("team") or {}).get("dropped_defaults")
+    if drops is not None and not isinstance(drops, list):
+        errors.append("team.dropped_defaults must be a list of {role, reason}")
+        drops = []
+    for drop in drops or []:
+        if not isinstance(drop, dict) or not drop.get("role"):
+            errors.append("team.dropped_defaults entries need a role and a reason")
+        elif not str(drop.get("reason") or "").strip():
+            errors.append(f"dropped_defaults: {drop['role']} needs a reason")
+    warnings = [
+        f"team is missing default role {note.removeprefix('added default role ')}: compile adds it "
+        "(drop it in team.dropped_defaults with a reason to leave it out)"
+        for note in normalize_team(spec)[1]
+    ]
+    return errors, warnings
+
+
+# ---------------------------------------------------------------------------
 # Readiness Scorer (`evaluate_spec_readiness`)
 # ---------------------------------------------------------------------------
 
@@ -555,6 +688,8 @@ def evaluate_spec_readiness(spec: dict[str, Any]) -> dict[str, Any]:
                            "normally the build project slug")
 
     missing.extend(kp.validate_knowledge_plane(spec))
+    team_errors, warnings = _team_readiness(spec)
+    missing.extend(team_errors)
 
     total_checks = 17
     passed = max(0, total_checks - len(missing))
@@ -562,6 +697,7 @@ def evaluate_spec_readiness(spec: dict[str, Any]) -> dict[str, Any]:
         "ready": len(missing) == 0,
         "missing_or_weak": missing,
         "score": f"{passed}/{total_checks}",
+        "warnings": warnings,
     }
 
 
@@ -1183,7 +1319,7 @@ PY
 """
 
 
-def _render_root_agents_md(spec: dict[str, Any]) -> str:
+def _render_root_agents_md(spec: dict[str, Any], roster_notes: list[str] | None = None) -> str:
     proj = spec["project"]
     stack = spec["stack"]
     infra = spec["infrastructure"]
@@ -1199,6 +1335,12 @@ def _render_root_agents_md(spec: dict[str, Any]) -> str:
         f"| `{r['role']}` | `{proj['eval_slug']}` | `{r['harness']}` | `{r['model']}` | {r['responsibility']} |"
         for r in team["eval_roles"]
     )
+    notes_section = ""
+    if roster_notes:
+        notes_section = "\n### Roster notes\n" + "\n".join(f"- {n}" for n in roster_notes) + (
+            "\n\nThe compiler added these default specialists because the spec doesn't list them. To leave one out, "
+            "add it to `team.dropped_defaults` with a reason and recompile.\n"
+        )
     vcs = spec.get("vcs") or {}
     if vcs.get("enabled"):
         vcs_lines = (
@@ -1238,7 +1380,7 @@ def _render_root_agents_md(spec: dict[str, Any]) -> str:
 | Role | Project | Harness | Model | Responsibility |
 |------|---------|---------|-------|----------------|
 {eval_rows}
-
+{notes_section}
 ## 4. L1–L5 Evaluation Pyramid Oracle
 - **L1 Health:** `{spec['evaluation_pyramid']['l1_health']['endpoint']}`
 - **L2 Contract:** {'; '.join(spec['evaluation_pyramid']['l2_contract']['invariants'])}
@@ -1406,6 +1548,8 @@ def compile_factory_boilerplate(
     readiness = evaluate_spec_readiness(spec)
     if not readiness["ready"]:
         raise ValueError(f"FactorySpec is not ready to compile: {readiness['missing_or_weak']}")
+    # Older specs and presets get the missing default specialists; the kit's factory.yaml records the full roster.
+    spec, roster_notes = normalize_team(spec)
 
     out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
@@ -1427,7 +1571,7 @@ def compile_factory_boilerplate(
     # 1. Canonical spec & root AGENTS.md
     save_spec(spec, out / "factory.yaml")
     written_files.append("factory.yaml")
-    _write("AGENTS.md", _render_root_agents_md(spec))
+    _write("AGENTS.md", _render_root_agents_md(spec, roster_notes))
 
     git = _vcs_enabled(spec)
     backlog_ref = (
@@ -1516,21 +1660,11 @@ def compile_factory_boilerplate(
 # Claude Code and Antigravity run on a stock Hub without harness patches (full e2e, lessons-learned.md L28): the
 # bundled Hermes config crashes on a fresh image and the bundled OpenCode launcher stops at a permission prompt.
 # The interview can still choose OpenCode or Hermes per role; see docs/setup-runbook.md step 7 for their patches.
-DEFAULT_BUILD_ROLES: list[dict[str, str]] = [
-    {"role": "lead", "harness": "claude", "model": "opus"},
-    {"role": "backend", "harness": "antigravity", "model": "Gemini 4 Argon (High)"},
-    {"role": "frontend", "harness": "antigravity", "model": "Gemini 4 Argon (High)"},
-    {"role": "reviewer", "harness": "antigravity", "model": "Gemini 4 Argon (High)"},
-    {"role": "deployer", "harness": "claude", "model": "opus", "gcp_identity": "deployer-sa"},
-]
+# The draft roster is exactly the role library's always-roles (spec §5.1-§5.3); catalog specialists such as frontend
+# or deployer come from discovery (`proposed_roles`) and `scion-factory add-role`.
+DEFAULT_BUILD_ROLES: list[dict[str, Any]] = [role_library.library_role_entry(r) for r in role_library.ALWAYS_BUILD]
 
-DEFAULT_EVAL_ROLES: list[dict[str, str]] = [
-    {"role": "eval-lead", "harness": "antigravity", "model": "Gemini 4 Argon (High)"},
-    {"role": "domain-evaluator", "harness": "antigravity", "model": "Gemini 4 Argon (High)"},
-    {"role": "factory-analyst", "harness": "antigravity", "model": "Gemini 4 Argon (High)"},
-    {"role": "ui-craftsman", "harness": "antigravity", "model": "Gemini 4 Argon (High)"},
-    {"role": "eval-deployer", "harness": "antigravity", "model": "Gemini 4 Argon (High)", "gcp_identity": "deployer-sa"},
-]
+DEFAULT_EVAL_ROLES: list[dict[str, Any]] = [role_library.library_role_entry(r) for r in role_library.ALWAYS_EVAL]
 
 
 def _slugify(value: str) -> str:
@@ -1572,6 +1706,7 @@ def draft_spec_from_repo(repo_path: str | Path | None) -> dict[str, Any]:
             "port": detected.get("port", 8080),
         },
         "infrastructure": {
+            "deploy": "",  # intent: `service` or `none` (spec §8); the interview must answer
             "cloud_stores": detected.get("cloud_stores", []),
             "serving_service": f"{slug}-serving",
             "eval_service": f"{slug}-eval-dashboard",
@@ -1583,8 +1718,10 @@ def draft_spec_from_repo(repo_path: str | Path | None) -> dict[str, Any]:
             "heartbeat_cron": "*/15 * * * *",
             "watchdog_cron": "*/5 * * * *",
             "max_wip": 2,
-            "build_roles": [dict(r, responsibility="") for r in DEFAULT_BUILD_ROLES],
-            "eval_roles": [dict(r, responsibility="") for r in DEFAULT_EVAL_ROLES],
+            "autonomy": "standard",
+            "dropped_defaults": [],
+            "build_roles": [dict(r, responsibility="", default=True) for r in DEFAULT_BUILD_ROLES],
+            "eval_roles": [dict(r, responsibility="", default=True) for r in DEFAULT_EVAL_ROLES],
         },
         "evaluation_pyramid": {
             "l1_health": {"endpoint": "", "checks": []},
@@ -1615,14 +1752,19 @@ def prepare_grill_session(repo_path: str | Path | None, out_path: str | Path, fo
     if repo_path:
         inspection = inspect_repository(repo_path)
         detected, questions = inspection["detected"], inspection["unresolved_questions"]
+        # Until the interview answers infrastructure.deploy, propose as for a service.
+        mode = deploy_mode(spec)
+        proposed = discovery.discover_roles(Path(repo_path), subdir=_monorepo(spec)[1],
+                                            deploy=mode if mode in DEPLOY_MODES else "service")
     else:
-        detected, questions = {}, get_grill_questions()
+        detected, questions, proposed = {}, get_grill_questions(), []
 
     return {
         "draft_path": str(out),
         "detected": detected,
         "readiness": evaluate_spec_readiness(spec),
         "questions": questions,
+        "proposed_roles": proposed,
     }
 
 
@@ -1685,6 +1827,14 @@ def main(argv: list[str] | None = None) -> int:
     p_git.add_argument("--build-branch", default="main")
     p_git.add_argument("--eval-branch", default="eval-dashboard")
 
+    p_role = sub.add_parser("add-role", help="Add a library specialist (for example one discovery proposed) to a FactorySpec")
+    p_role.add_argument("spec_path", help="Path to factory.yaml")
+    p_role.add_argument("--role", required=True, help="Library role, e.g. security-auditor")
+    p_role.add_argument("--team", choices=("build", "eval"), default=None,
+                        help="Roster to add it to (default: the role's team in the library)")
+    p_role.add_argument("--evidence", action="append", default=[],
+                        help="Why the role is needed (repeatable), e.g. a path discovery found")
+
     args = parser.parse_args(argv)
 
     if args.cmd == "inspect":
@@ -1725,6 +1875,8 @@ def main(argv: list[str] | None = None) -> int:
             print(f"Readiness Score: {report['score']} (ready={report['ready']})")
             for item in report["missing_or_weak"]:
                 print(f"  - MISSING/WEAK: {item}")
+            for item in report["warnings"]:
+                print(f"  - WARNING: {item}")
         return 0 if report["ready"] else 1
 
     if args.cmd == "compile":
@@ -1745,6 +1897,28 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Enabled Git for {args.spec_path}: {args.repo} ({args.build_branch} / {args.eval_branch}); ready={report['ready']}")
         print("Next: run scripts/enable-git.sh from the current kit (dry run first), then recompile the kit and push templates.")
         return 0 if report["ready"] else 1
+
+    if args.cmd == "add-role":
+        before = load_spec(args.spec_path)
+        present = {r.get("role") for key in ("build_roles", "eval_roles")
+                   for r in ((before.get("team") or {}).get(key) or []) if isinstance(r, dict)}
+        try:
+            spec = add_role(args.spec_path, args.role, team=args.team, evidence=args.evidence)
+        except ValueError as err:
+            print(f"error: {err}", file=sys.stderr)
+            return 2
+        team_name = next(t for t in ("build", "eval")
+                         if any(r.get("role") == args.role for r in spec["team"].get(f"{t}_roles") or []))
+        report = evaluate_spec_readiness(spec)
+        print(json.dumps({
+            "spec_path": str(args.spec_path),
+            "role": args.role,
+            "team": team_name,
+            "added": args.role not in present,
+            "ready": report["ready"],
+            "next": "recompile the kit and push the new template",
+        }, indent=2))
+        return 0
 
     return 1
 
