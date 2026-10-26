@@ -247,15 +247,18 @@ def test_watchdog_env_keeps_the_knowledge_plane_settings_for_cron(watchdog, monk
     """install_cron writes watchdog.env for the cron runs; settings it leaves out silently fall back to defaults."""
     monkeypatch.setenv("KNOWLEDGE_PLANE_SOURCES", "project1=src/project1/knowledge-plane")
     monkeypatch.setenv("KNOWLEDGE_PLANE_SOURCE_PROJECT", "project1")
+    monkeypatch.setenv("WATCHDOG_WAKE_ROLES", "lead,eval-lead,backend")
     content = watchdog.watchdog_env_content("/usr/bin:/bin")
     assert "KNOWLEDGE_PLANE_SOURCES=project1=src/project1/knowledge-plane\n" in content
     assert "KNOWLEDGE_PLANE_SOURCE_PROJECT=project1\n" in content
+    assert "WATCHDOG_WAKE_ROLES=lead,eval-lead,backend\n" in content
     assert "PATH=/usr/bin:/bin\n" in content
 
 
 def test_run_on_hub_forwards_the_knowledge_plane_settings():
     text = (ROOT / "scripts" / "run-on-hub.sh").read_text()
     assert "KNOWLEDGE_PLANE_SOURCES" in text and "KNOWLEDGE_PLANE_SOURCE_PROJECT" in text
+    assert "WATCHDOG_WAKE_ROLES" in text
 
 
 def test_watchdog_projects_default_to_the_factory_env(watchdog):

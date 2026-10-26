@@ -12,7 +12,7 @@
 # The interpreter is chosen by extension (.py -> python3, anything else -> bash). These factory.env variables
 # are forwarded to the remote script's environment: SANDBOX_PROJECT SANDBOX_REGION FIRESTORE_PROJECT
 # FIRESTORE_DATABASE BUILD_PROJECT EVAL_PROJECT FACTORY_PROJECTS BILLING_PROJECT GITHUB_REPO PO_EMAIL HUB_LOCAL_URL
-# KNOWLEDGE_PLANE_SOURCES KNOWLEDGE_PLANE_SOURCE_PROJECT.
+# KNOWLEDGE_PLANE_SOURCES KNOWLEDGE_PLANE_SOURCE_PROJECT WATCHDOG_WAKE_ROLES.
 set -euo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -23,7 +23,7 @@ if [[ ! -f "$env_file" ]]; then
 fi
 # A value set on the command line wins over factory.env, e.g. FACTORY_PROJECTS=... for a Hub with several factories.
 overrides=()
-for var in FACTORY_PROJECTS KNOWLEDGE_PLANE_SOURCES KNOWLEDGE_PLANE_SOURCE_PROJECT; do
+for var in FACTORY_PROJECTS KNOWLEDGE_PLANE_SOURCES KNOWLEDGE_PLANE_SOURCE_PROJECT WATCHDOG_WAKE_ROLES; do
   if [[ -n "${!var:-}" ]]; then overrides+=("$var=${!var}"); fi
 done
 set -a
@@ -47,7 +47,7 @@ forward=()
 for var in HUB_PROJECT HUB_PROJECT_ID ADMIN_EMAIL PO_EMAIL SANDBOX_PROJECT SANDBOX_REGION \
            FIRESTORE_PROJECT FIRESTORE_DATABASE BUILD_PROJECT EVAL_PROJECT FACTORY_PROJECTS \
            BILLING_PROJECT GITHUB_REPO HUB_LOCAL_URL \
-           KNOWLEDGE_PLANE_SOURCES KNOWLEDGE_PLANE_SOURCE_PROJECT; do
+           KNOWLEDGE_PLANE_SOURCES KNOWLEDGE_PLANE_SOURCE_PROJECT WATCHDOG_WAKE_ROLES; do
   if [[ -n "${!var:-}" ]]; then
     forward+=("$(printf '%s=%q' "$var" "${!var}")")
   fi
