@@ -601,9 +601,17 @@ fix now lives. Dates are UTC. "Encoded in" points to the script, template rule o
       `305-security-audit.md`), and `5e39085` landed on `factory/main` (`#305` -> `status:verified`).
     - On `#301` (`LFI via /..%2f traversal`), `investigator` and `safety-evaluator` traced the vulnerability to the same
       `src/frontend/proxy.py` (`proxy_assets` and `serve_spa` joined URL-decoded paths to `DIST_DIR` without checking
-      `.resolve().is_relative_to(DIST_DIR.resolve())`), wrote `/scion-volumes/scratchpad/reports/301-investigation.md`
-      and regression tests, and handed remediation to `backend`.
-  - **Human-on-the-loop `status:po-decision` (`#327`) without stalling the factory:**
+      `.resolve().is_relative_to(DIST_DIR.resolve())`), wrote `/scion-volumes/scratchpad/reports/301-investigation.md`,
+      and handed remediation to `backend`. `reviewer` and `security-auditor` both rendered `PASS`, and `476b5d3` landed
+      on `factory/main` (`#301` -> `status:verified`).
+  - **Cross-app feature delivery (`#321`) + caller security audit:**
+    - For `#321` (`CampaignEndedPage` when lifecycle is `archived` or `endDate` has passed), `frontend` built
+      `src/frontend/components/CampaignEndedPage.tsx` and management branding fields (`src/management/`), while `backend`
+      implemented `GET /api/config/<slug>` with a whitelisted `serialize_ended_branding()` envelope and discovered during
+      its caller audit that `POST /api/users/lookup` and `POST /api/performances` previously allowed starting sessions on
+      expired campaigns — closing that gap with `403 CAMPAIGN_ENDED` (`0e30d8b`, `#321` -> `status:verified`, all 4 Wave 1
+      issues verified).
+  - **Human-on-the-loop `status:po-decision` (`#327`, `#331`) without stalling the factory:**
     - On its first wake-up, `lead` saw that `#296` (LGPD consent copy) explicitly asked the PM to pick between two legal
       wordings and that `src/frontend/` had no `locales/{pt,en,es}.json` yet (requiring an ADR under
       `autonomy: standard`). `lead` opened `#327` (`status:po-decision`, `factory:bananacast`) with 3 concrete options
