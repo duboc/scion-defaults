@@ -87,6 +87,95 @@ def default_factory_projects(env):
 
 FACTORY_PROJECTS = default_factory_projects(os.environ)
 MAX_RESTARTS_PER_HOUR = int(os.environ.get("MAX_RESTARTS_PER_HOUR", "3"))
+WATCHDOG_SUBPROCESS_TIMEOUT_SEC = int(os.environ.get("WATCHDOG_SUBPROCESS_TIMEOUT_SEC", "600"))
+
+_HARNESS_COMMS = {
+    "sciontool",
+    "tmux",
+    "tmux: client",
+    "tmux: server",
+    "sh",
+    "bash",
+    "zsh",
+    "-zsh",
+    "-bash",
+    "agy",
+    "claude",
+    "opencode",
+    "hermes",
+    "ps",
+    "sleep",
+}
+
+_HARNESS_ARG_PREFIXES = (
+    "sciontool ",
+    "tmux new-session",
+    "sh -c tmux new-session",
+    "sh -c '/home/scion/.scion/harness/",
+    "/home/scion/.scion/harness/",
+    "agy ",
+    "claude ",
+    "opencode ",
+    "hermes ",
+    "ps -eo ",
+)
+
+
+def find_hung_subprocesses(ps_output: str, max_age_sec: int = WATCHDOG_SUBPROCESS_TIMEOUT_SEC) -> list[dict]:
+    """Return non-harness child commands inside an agent container that have run for >= max_age_sec."""
+    hung = []
+    for raw_line in (ps_output or "").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("PID "):
+            continue
+        parts = line.split(None, 2)
+        if len(parts) < 3:
+            continue
+        try:
+            pid = int(parts[0])
+            etimes = int(parts[1])
+        except ValueError:
+            continue
+        if pid <= 1 or etimes < max_age_sec:
+            continue
+        rest = parts[2].strip()
+        # `ps -eo pid,etimes,comm,args` aligns comm in a 15-char column, or comm is the first token of rest
+        comm = rest[:15].strip() if len(rest) > 15 else rest.split(None, 1)[0]
+        args = rest[15:].strip() if len(rest) > 15 and rest[15:16] == " " else (rest.split(None, 1)[1] if " " in rest else rest)
+        if comm in _HARNESS_COMMS or any(args.startswith(pfx) for pfx in _HARNESS_ARG_PREFIXES):
+            continue
+        hung.append({"pid": pid, "etimes": etimes, "comm": comm, "args": args})
+    return hung
+
+
+def list_container_hung_subprocesses(cname: str, max_age_sec: int = WATCHDOG_SUBPROCESS_TIMEOUT_SEC) -> list[dict]:
+    try:
+        res = subprocess.run(
+            ["docker", "exec", cname, "ps", "-eo", "pid,etimes,comm,args"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        if res.returncode != 0:
+            return []
+        return find_hung_subprocesses(res.stdout, max_age_sec=max_age_sec)
+    except Exception as e:
+        print(f"WARNING: failed to inspect processes in {cname}: {e}", file=sys.stderr)
+        return []
+
+
+def kill_container_subprocess(cname: str, child_pid: int) -> bool:
+    try:
+        res = subprocess.run(
+            ["docker", "exec", cname, "kill", "-9", str(child_pid)],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        return res.returncode == 0
+    except Exception as e:
+        print(f"WARNING: failed to kill PID {child_pid} in {cname}: {e}", file=sys.stderr)
+        return False
 
 
 def default_wake_roles(env=None):
@@ -508,6 +597,46 @@ def check_agent_liveness(conn, state, apply):
                 else:
                     print("  (dry-run: would restart agent and notify lead)")
 
+        # Issue 3: Running container with a hung non-harness child subprocess (e.g. un-timed server or deadlocked socket)
+        elif phase == "running" and is_container_running:
+            hung = list_container_hung_subprocesses(cname, WATCHDOG_SUBPROCESS_TIMEOUT_SEC)
+            for h in hung:
+                child_pid = h["pid"]
+                etimes = h["etimes"]
+                cmd_preview = (h["args"] or h["comm"])[:120]
+                print(f"Check 3 (Agent liveness): Agent '{key}' has HUNG SUBPROCESS pid={child_pid} ({etimes}s): {cmd_preview}")
+                if apply:
+                    if kill_container_subprocess(cname, child_pid):
+                        print(f"  Killed hung subprocess pid={child_pid} in '{cname}'.")
+                        api("POST", f"/api/v1/projects/{pid}/agents/{agent_slug}/message", {
+                            "message": (
+                                f"Watchdog -> {agent_slug}: killed hung subprocess PID {child_pid} ({cmd_preview}) after {etimes}s. "
+                                "Prefer in-process test clients (TestClient / test_client()) or wrap live commands in timeout 30s, then continue your brief."
+                            )
+                        })
+                        lead = lead_agent_for(proj_slug, agents_by_project.get(proj_slug, []))
+                        if agent_slug != lead:
+                            api("POST", f"/api/v1/projects/{pid}/agents/{lead}/message", {
+                                "message": (
+                                    f"Watchdog -> {lead}: reaped hung subprocess PID {child_pid} ({etimes}s: {cmd_preview}) in {agent_slug} "
+                                    "and nudged the worker to continue its brief."
+                                )
+                            })
+                        log_alert(
+                            "WATCHDOG_RECOVERY",
+                            {
+                                "event": "HUNG_SUBPROCESS_KILLED",
+                                "agent": agent_slug,
+                                "project": proj_slug,
+                                "pid": child_pid,
+                                "elapsed_sec": etimes,
+                                "command": cmd_preview,
+                            },
+                            severity="WARNING",
+                        )
+                else:
+                    print(f"  (dry-run: would kill pid={child_pid} in {cname} and notify {agent_slug} + lead)")
+
 
 # ---------------------------------------------------------------------------
 # Check 4: PO Inbox Escalation Forwarder
@@ -560,8 +689,18 @@ def check_po_inbox(conn, state, apply):
         print("Check 4 (PO Inbox): OK (no new messages to PO)")
         return
 
-    print(f"Check 4 (PO Inbox): {len(rows)} new message(s) to PO")
-    for r in rows:
+    # Scion automatically sends `type = 'state-change'` notifications (COMPLETED / STALLED) to the parent user who
+    # started lead and eval-lead. Only explicit `instruction` messages represent human-on-the-loop PO escalations.
+    escalations = [r for r in rows if (r["type"] or "instruction") != "state-change"]
+    if apply:
+        state["last_user_msg_ts"] = str(rows[-1]["created"])
+
+    if not escalations:
+        print(f"Check 4 (PO Inbox): OK ({len(rows)} state-change notification(s) ignored; no PO escalations)")
+        return
+
+    print(f"Check 4 (PO Inbox): {len(escalations)} new escalation(s) to PO")
+    for r in escalations:
         created_str = str(r["created"])
         msg_text = r["msg"] or ""
         sender = r["sender"] or ""
@@ -582,7 +721,6 @@ def check_po_inbox(conn, state, apply):
                 "message": msg_text[:2000],
             }
             log_alert("PO_ESCALATION", payload, severity="ERROR")
-            state["last_user_msg_ts"] = created_str
         else:
             print("    (dry-run: would emit Cloud Logging PO_ESCALATION alert)")
 

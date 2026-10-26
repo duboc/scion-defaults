@@ -580,3 +580,63 @@ fix now lives. Dates are UTC. "Encoded in" points to the script, template rule o
   [`scripts/scion-admin.py`](../scripts/scion-admin.py), [`scripts/setup-sandbox.sh`](../scripts/setup-sandbox.sh),
   [`templates/lead`](../templates/lead/system-prompt.md), [`templates/eval-lead`](../templates/eval-lead/system-prompt.md),
   README step 8, [setup-runbook.md](setup-runbook.md) steps 8 and M8.
+
+## L30. Multi-app repositories, the 13-agent specialist fabric (`deploy: none`), and autonomous self-healing
+
+- **When:** 2026-10-26, running the specialist agent fabric against `duboc/bananacast` (a multi-app repository with
+  `src/backend` in Python/Flask, `src/frontend` in React/Vite TypeScript + a FastAPI reverse proxy, `src/management`
+  in Next.js TypeScript, and `src/infrastructure/terraform` in HCL) on an existing single-node Scion Hub with
+  `infrastructure.deploy: none` and `team.autonomy: standard`.
+- **Roster (13 agents across 2 Hub projects, spawned by the 2 leads):**
+  - `bananacast` (10 build agents): `lead`, `backend`, `reviewer`, `researcher`, `doc-writer`, `investigator`,
+    `security-auditor`, `frontend`, `test-engineer`, `migration-specialist`.
+  - `bananacast-eval` (3 eval agents): `eval-lead`, `domain-evaluator`, `safety-evaluator`.
+- **What the specialist fabric caught and shipped on `factory/main` (`main` untouched):**
+  - **Root-causing two 5-month-old security issues (`#305` and `#301`) that didn't reproduce in Flask:**
+    - On `#305` (`/openapi.json` publicly exposed), `security-auditor` and `safety-evaluator` independently discovered
+      that `src/frontend/Dockerfile` runs a Python FastAPI reverse proxy (`src/frontend/proxy.py`) where
+      `FastAPI(docs_url=None, redoc_url=None)` omitted `openapi_url=None`, exposing `/openapi.json` before the SPA
+      catch-all route. `backend` fixed both `src/backend/app.py` and `src/frontend/proxy.py` with regression tests,
+      `reviewer` and `security-auditor` both rendered `PASS` (`/scion-volumes/scratchpad/reports/305-review.md`,
+      `305-security-audit.md`), and `5e39085` landed on `factory/main` (`#305` -> `status:verified`).
+    - On `#301` (`LFI via /..%2f traversal`), `investigator` and `safety-evaluator` traced the vulnerability to the same
+      `src/frontend/proxy.py` (`proxy_assets` and `serve_spa` joined URL-decoded paths to `DIST_DIR` without checking
+      `.resolve().is_relative_to(DIST_DIR.resolve())`), wrote `/scion-volumes/scratchpad/reports/301-investigation.md`
+      and regression tests, and handed remediation to `backend`.
+  - **Human-on-the-loop `status:po-decision` (`#327`) without stalling the factory:**
+    - On its first wake-up, `lead` saw that `#296` (LGPD consent copy) explicitly asked the PM to pick between two legal
+      wordings and that `src/frontend/` had no `locales/{pt,en,es}.json` yet (requiring an ADR under
+      `autonomy: standard`). `lead` opened `#327` (`status:po-decision`, `factory:bananacast`) with 3 concrete options
+      and a recommendation (`1A, 2A`), posted the daily digest on `#326`, and kept WIP at 2/2 (`#301` and `#305`) while
+      `researcher` wrote a 31 KB pre-work brief (`/scion-volumes/scratchpad/reports/296-321-research.md`).
+    - Once the PO answered `1A, 2A` on `#327` (`status:approved`), `doc-writer` recorded `ADR-002` (`929186e`),
+      `frontend` and `test-engineer` coordinated directly via `scion message` to ship `src/frontend/locales/{pt,en,es}.json`,
+      `src/frontend/i18n.ts`, and `src/backend/tests/test_locale_parity.py` (`47f81b5`, `#296` -> `status:verified`),
+      and `doc-writer` followed up with `docs/i18n.md` (`29b75af`, "docs follow code").
+  - **Independent code-pyramid evaluation (`deploy: none`) and `eval-finding` loop:**
+    - `eval-lead`, `domain-evaluator`, and `safety-evaluator` graded commits `1aca349`, `5e39085`, and `47f81b5` across
+      L1–L5, recorded runs in Firestore (`eval_runs`), and filed `eval-finding` issue `#328` (`59` `pip-audit`
+      advisories in `src/backend/requirements.txt`), which `lead` picked up and assigned to `researcher`.
+- **Four gaps found and fixed during the run:**
+  1. **Multi-app repository inspection (`inspect_repository`):** repositories without a root manifest that organize code
+     under `src/backend`, `src/frontend`, `src/management` returned `primary_language: "unknown"`. `inspect_repository`
+     now scans conventional app subdirectories (`src/*`, `apps/*`, `services/*`, `packages/*`), records
+     `detected["apps"]`, detects Flask, and scopes commands (`cd src/backend && pytest -q`).
+  2. **Per-language test-ratio evidence (`discovery.py`):** a Python backend with 18 pytest files next to a 100-file
+     TypeScript frontend with 0 tests previously reported `low test ratio: 0/100`. `discovery.py` now evaluates test
+     ratios per language (`low test ratio (typescript): 0 test files / 100 source files`).
+  3. **Watchdog false `PO_ESCALATION` alerts on Scion `state-change` messages (`factory-watchdog.py` Check 4):**
+     because the PO starts `lead` and `eval-lead`, the PO is their parent in Scion's lineage tree, so Scion sends
+     `type = 'state-change'` rows (`COMPLETED`, `STALLED`) to `user:<id>` at the end of every turn. `check_po_inbox`
+     previously paged `PO_ESCALATION` on every row; it now ignores `type == 'state-change'` while advancing the bookmark,
+     alerting the human PO only on explicit `instruction` escalations.
+  4. **Hung child subprocesses inside running containers (`factory-watchdog.py` Check 3 + `role_library.py`):**
+     `investigator` ran a one-liner that started an in-process `uvicorn.Server` and called blocking `socket.recv()` on
+     the same `asyncio` event loop, deadlocking PID `506` for 15 minutes while the container itself stayed `Up` and
+     `running`. Role protocols now require in-process test clients (`TestClient`, `app.test_client()`) or `timeout 30s`,
+     and `Check 3` in `factory-watchdog.py` now inspects `ps -eo pid,etimes,comm,args` in running containers, reaps
+     non-harness child commands older than `WATCHDOG_SUBPROCESS_TIMEOUT_SEC` (10 min), and messages both the worker and
+     its lead to continue autonomously.
+- **Encoded in:** [`scripts/scion_factory.py`](../scripts/scion_factory.py),
+  [`scripts/discovery.py`](../scripts/discovery.py), [`scripts/role_library.py`](../scripts/role_library.py),
+  [`scripts/factory-watchdog.py`](../scripts/factory-watchdog.py), [`README.md`](../README.md).

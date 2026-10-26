@@ -67,3 +67,100 @@ def test_check_agent_liveness_leaves_idle_specialist_asleep(watchdog, monkeypatc
     assert "(dry-run: would wake agent via API)" in out
     assert "Agent 'proj1/kubelet-backend' is SUSPENDED" in out
     assert "left asleep (lead wakes it with a brief)" in out
+
+
+def test_check_po_inbox_ignores_state_change_and_escalates_only_instructions(watchdog):
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    conn.execute("CREATE TABLE users (id TEXT, email TEXT, role TEXT, created TEXT)")
+    conn.execute(
+        "CREATE TABLE messages (id TEXT, project_id TEXT, sender TEXT, sender_id TEXT, "
+        "recipient TEXT, recipient_id TEXT, msg TEXT, type TEXT, created TEXT)"
+    )
+    conn.execute("INSERT INTO users VALUES ('u1', 'po@example.com', 'admin', '2026-10-26T00:00:00Z')")
+    conn.execute(
+        "INSERT INTO messages VALUES ('m1', 'p1', 'agent:lead', 'a1', 'user:u1', 'u1', "
+        "'lead: PO decision needed: #327', 'instruction', '2026-10-26T20:57:28Z')"
+    )
+    conn.execute(
+        "INSERT INTO messages VALUES ('m2', 'p1', 'agent:lead', 'a1', 'user:u1', 'u1', "
+        "'lead has reached a state of COMPLETED: Wake-up done', 'state-change', '2026-10-26T20:57:42Z')"
+    )
+    conn.execute(
+        "INSERT INTO messages VALUES ('m3', 'p2', 'agent:eval-lead', 'a2', 'user:u1', 'u1', "
+        "'eval-lead has STALLED (was working): Harness started', 'state-change', '2026-10-26T21:04:47Z')"
+    )
+    conn.commit()
+
+    alerts = []
+    watchdog.log_alert = lambda event_type, payload, severity="ERROR": alerts.append((event_type, payload, severity))
+
+    state = {"last_user_msg_ts": "2026-10-26T20:00:00Z"}
+    watchdog.check_po_inbox(conn, state, apply=True)
+
+    assert len(alerts) == 1
+    assert alerts[0][0] == "PO_ESCALATION"
+    assert alerts[0][1]["message_id"] == "m1"
+    assert alerts[0][1]["type"] == "instruction"
+    # Bookmark advances past the trailing state-change rows too so they aren't re-scanned forever.
+    assert state["last_user_msg_ts"] == "2026-10-26T21:04:47Z"
+
+
+def test_find_hung_subprocesses_identifies_old_non_harness_child_commands(watchdog):
+    sample_ps = """  PID ELAPSED COMMAND         COMMAND
+    1    1800 sciontool       sciontool init -- sh -c tmux new-session -d -s scion
+   39    1799 sh              sh -c tmux new-session -d -s scion
+   40    1799 tmux: client    tmux new-session -d -s scion
+   42    1799 tmux: server    tmux new-session -d -s scion
+   43    1799 sh              sh -c '/home/scion/.scion/harness/agy-wrapper.sh' '--model' 'gemini 4 argon (high)'
+   44    1799 zsh             -zsh
+   45    1798 agy             agy --dangerously-skip-permissions --model gemini 4 argon (high) -prompt-interactive Read
+  506     912 python3         /tmp/venv/bin/python3 -c import asyncio, socket, sys; uvicorn.Server(config)
+  590      45 pytest          /tmp/venv/bin/pytest -q
+  655       0 ps              ps -eo pid,etimes,comm,args
+"""
+    hung = watchdog.find_hung_subprocesses(sample_ps, max_age_sec=600)
+    assert len(hung) == 1
+    assert hung[0]["pid"] == 506
+    assert hung[0]["etimes"] == 912
+    assert "uvicorn.Server" in hung[0]["args"]
+
+
+def test_check_agent_liveness_reaps_hung_subprocess_and_notifies_worker_and_lead(watchdog, monkeypatch):
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    conn.execute("CREATE TABLE projects (id TEXT, slug TEXT)")
+    conn.execute("CREATE TABLE agents (id TEXT, project_id TEXT, slug TEXT, name TEXT, phase TEXT, status TEXT, template TEXT, deleted_at TEXT)")
+    conn.execute("INSERT INTO projects VALUES ('p1', 'bananacast')")
+    conn.execute("INSERT INTO agents VALUES ('a1', 'p1', 'lead', 'lead', 'running', '', 'lead', NULL)")
+    conn.execute("INSERT INTO agents VALUES ('a2', 'p1', 'investigator', 'investigator', 'running', '', 'investigator', NULL)")
+    conn.commit()
+
+    monkeypatch.setattr(watchdog, "FACTORY_PROJECTS", ["bananacast"])
+    monkeypatch.setattr(
+        watchdog,
+        "get_docker_containers",
+        lambda: {"bananacast--lead": "Up 20 minutes", "bananacast--investigator": "Up 20 minutes"},
+    )
+    monkeypatch.setattr(
+        watchdog,
+        "list_container_hung_subprocesses",
+        lambda cname, max_age_sec: (
+            [{"pid": 506, "etimes": 912, "comm": "python3", "args": "/tmp/venv/bin/python3 -c import asyncio, socket"}]
+            if cname == "bananacast--investigator"
+            else []
+        ),
+    )
+    killed = []
+    monkeypatch.setattr(watchdog, "kill_container_subprocess", lambda cname, pid: killed.append((cname, pid)) or True)
+    messages = []
+    monkeypatch.setattr(watchdog, "api", lambda method, path, body=None: (messages.append((method, path, body)) or (200, {})))
+    monkeypatch.setattr(watchdog, "log_alert", lambda *a, **kw: None)
+
+    watchdog.check_agent_liveness(conn, {}, apply=True)
+
+    assert killed == [("bananacast--investigator", 506)]
+    paths = [m[1] for m in messages]
+    assert "/api/v1/projects/p1/agents/investigator/message" in paths
+    assert "/api/v1/projects/p1/agents/lead/message" in paths
+

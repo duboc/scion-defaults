@@ -85,3 +85,10 @@ def test_role_def_structure_and_counts():
         assert "responsibility" in d
         assert "protocol" in d
         assert "needs_service" in d
+
+
+def test_investigator_and_auditor_protocols_forbid_untimed_server_daemons():
+    for r in ("investigator", "security-auditor", "test-engineer", "domain-evaluator", "safety-evaluator"):
+        proto = role_library.role_protocol(r, deploy="none").lower()
+        assert "timeout" in proto or "testclient" in proto or "test_client" in proto, f"{r} protocol missing timeout/TestClient guardrail"
+
