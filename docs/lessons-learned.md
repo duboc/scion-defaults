@@ -565,6 +565,16 @@ fix now lives. Dates are UTC. "Encoded in" points to the script, template rule o
     first `go test` in each container (15–105 s), with no change needed.
   - Each `go test` of one package compiled in under two minutes on `medium`.
   - Six shared clones used about 9 GB of disk.
+- **Teardown that keeps the Hub (2026-10-26):**
+  - `scion hub projects delete <slug> --yes --force` removed the agents and the shared checkouts.
+  - The Hub left a 36-byte marker per slug in `~/.scion/hub-workspaces/<slug>`, holding the deleted project's ID.
+    Remove them by hand before you reuse a slug.
+  - `setup-sandbox.sh` has no reverse. Remove its project bindings first (the deployer and runtime service accounts;
+    `serviceUsageConsumer` and `datastore.user` on the Hub VM's service account; `cloudbuild.builds.builder` and
+    `datastore.viewer` on the default compute service account), then delete the service accounts, the data bucket
+    and the Firestore database. Removing the bindings first avoids leaving `deleted:serviceAccount:` members behind.
+  - The roles that `deploy.sh` grants the Hub VM stay (`aiplatform.user`, `logging.logWriter`, and the others).
+  - Forks: `gh issue delete`, delete the `factory/*` refs and the labels, then `gh repo edit --enable-issues=false`.
 - **Encoded in:** [`scripts/scion_factory.py`](../scripts/scion_factory.py) (chain of command, `factory:<prefix>`,
   close rule), [`scripts/knowledge_plane.py`](../scripts/knowledge_plane.py),
   [`scripts/scion-admin.py`](../scripts/scion-admin.py), [`scripts/setup-sandbox.sh`](../scripts/setup-sandbox.sh),

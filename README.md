@@ -426,7 +426,10 @@ scripts/run-on-hub.sh scripts/scion-admin.py scion hub projects delete "$BUILD_P
 scripts/run-on-hub.sh scripts/scion-admin.py scion hub projects delete "$EVAL_PROJECT" --yes --force
 ```
 
-The GitHub repository keeps the knowledge plane, the evaluation branch, and the wave issues.
+The GitHub repository keeps the knowledge plane, the evaluation branch, and the wave issues. The Hub keeps a small
+marker per deleted slug in `~/.scion/hub-workspaces/` on the VM; remove it before you reuse the slug. The sandbox
+resources that `scripts/setup-sandbox.sh` created stay too; to remove them, follow the teardown notes in
+[L29](docs/lessons-learned.md#l29-a-real-monorepo-kubernetes-as-three-factories-and-leads-that-start-their-own-teams).
 
 ## The interview
 
