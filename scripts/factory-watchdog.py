@@ -89,6 +89,26 @@ FACTORY_PROJECTS = default_factory_projects(os.environ)
 MAX_RESTARTS_PER_HOUR = int(os.environ.get("MAX_RESTARTS_PER_HOUR", "3"))
 
 
+def default_wake_roles(env=None):
+    if env is None:
+        env = os.environ
+    raw = env.get("WATCHDOG_WAKE_ROLES", "")
+    roles = {r.strip() for r in raw.split(",") if r.strip()}
+    return roles or {"lead", "eval-lead"}
+
+
+WATCHDOG_WAKE_ROLES = default_wake_roles(os.environ)
+
+
+def should_wake(agent_slug: str, template: str, wake_roles: set[str] | None = None) -> bool:
+    if wake_roles is None:
+        wake_roles = default_wake_roles()
+    role = (template or "").strip()
+    if role:
+        return role in wake_roles
+    return any(agent_slug == r or agent_slug.endswith(f"-{r}") for r in wake_roles)
+
+
 def mint_admin_jwt():
     if not os.path.exists(HUB_DB):
         sys.exit(f"hub.db not found at {HUB_DB}")
@@ -411,6 +431,11 @@ def check_agent_liveness(conn, state, apply):
         # Issue 1: Suspended agent
         if phase == "suspended":
             print(f"Check 3 (Agent liveness): Agent '{key}' is SUSPENDED")
+            template = a["template"] or ""
+            wake_roles = default_wake_roles(os.environ) if "WATCHDOG_WAKE_ROLES" in os.environ else WATCHDOG_WAKE_ROLES
+            if not should_wake(agent_slug, template, wake_roles):
+                print("  left asleep (lead wakes it with a brief)")
+                continue
             if circuit_broken:
                 print(f"  CIRCUIT BREAKER: {key} reached {len(recent_restarts)} restarts/hr (limit: {MAX_RESTARTS_PER_HOUR}). Skipping restart.")
                 if now - alerted_map.get(key, 0) > 3600:
@@ -653,7 +678,7 @@ def watchdog_env_content(path):
              f"HUB_PROJECT_ID={HUB_PROJECT_ID}",
              f"FACTORY_PROJECTS={','.join(FACTORY_PROJECTS)}",
              f"MAX_RESTARTS_PER_HOUR={MAX_RESTARTS_PER_HOUR}"]
-    for key in ("KNOWLEDGE_PLANE_SOURCES", "KNOWLEDGE_PLANE_SOURCE_PROJECT"):
+    for key in ("KNOWLEDGE_PLANE_SOURCES", "KNOWLEDGE_PLANE_SOURCE_PROJECT", "WATCHDOG_WAKE_ROLES"):
         if os.environ.get(key):
             lines.append(f"{key}={os.environ[key]}")
     lines.append(f"PATH={path}")

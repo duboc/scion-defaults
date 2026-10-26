@@ -101,3 +101,51 @@ def test_only_the_po_closes_issues(mono):
     shared = (out / "templates" / "_shared" / "agents.md").read_text()
     assert "The PO accepts work by closing the issue" in shared
     assert "never close an issue" in shared
+
+
+def test_renamed_build_lead_is_detected_by_kind_when_not_first(tmp_path):
+    spec = scion_factory.load_spec(PRESET)
+    backend_role = dict(scion_factory.role_library.library_role_entry("backend"), default=True)
+    tech_lead_role = dict(scion_factory.role_library.library_role_entry("lead"), default=True)
+    tech_lead_role["role"] = "tech-lead"
+    tech_lead_role["default_kind"] = "lead"
+    reviewer_role = dict(scion_factory.role_library.library_role_entry("reviewer"), default=True)
+    spec["team"]["build_roles"] = [backend_role, tech_lead_role, reviewer_role]
+    for issue in spec.get("issues") or []:
+        if issue.get("owner_role") == "lead":
+            issue["owner_role"] = "tech-lead"
+
+    out = tmp_path / "kit"
+    scion_factory.compile_factory_boilerplate(spec, out)
+
+    assert not (out / "templates" / "lead").exists()
+    tech_lead_prompt = (out / "templates" / "tech-lead" / "system-prompt.md").read_text()
+    assert "## Chain of command" in tech_lead_prompt
+    assert "You lead this team and you start it" in tech_lead_prompt
+    assert "| Teammate | Start it with |" in tech_lead_prompt
+    assert "scion start backend -t backend" in tech_lead_prompt
+
+    backend_prompt = (out / "templates" / "backend" / "system-prompt.md").read_text()
+    assert "You report to `tech-lead`" in backend_prompt
+
+
+def test_renamed_eval_lead_is_detected_by_kind_when_not_first(tmp_path):
+    spec = scion_factory.load_spec(PRESET)
+    evaluator_role = dict(scion_factory.role_library.library_role_entry("domain-evaluator"), default=True)
+    eval_principal_role = dict(scion_factory.role_library.library_role_entry("eval-lead"), default=True)
+    eval_principal_role["role"] = "eval-principal"
+    eval_principal_role["default_kind"] = "eval-lead"
+    spec["team"]["eval_roles"] = [evaluator_role, eval_principal_role]
+
+    out = tmp_path / "kit"
+    scion_factory.compile_factory_boilerplate(spec, out)
+
+    assert not (out / "templates" / "eval-lead").exists()
+    eval_principal_prompt = (out / "templates" / "eval-principal" / "system-prompt.md").read_text()
+    assert "## Chain of command" in eval_principal_prompt
+    assert "You lead this team and you start it" in eval_principal_prompt
+    assert "| Teammate | Start it with |" in eval_principal_prompt
+    assert "scion start domain-evaluator -t domain-evaluator" in eval_principal_prompt
+
+    evaluator_prompt = (out / "templates" / "domain-evaluator" / "system-prompt.md").read_text()
+    assert "You report to `eval-principal`" in evaluator_prompt

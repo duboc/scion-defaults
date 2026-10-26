@@ -40,6 +40,7 @@ The JSON output contains:
 - `draft_path`: The draft specification. Static facts are filled in; intent fields are empty.
 - `detected`: The language, commands, port, cloud stores, `knowledge_sources` (requirements, ADRs, contracts, design
   docs, and guides found in the repository), and `vcs` (whether the repository uses Git, and its GitHub remote).
+- `proposed_roles`: The candidate specialist roles proposed by repository discovery, each with `role`, `team`, and `evidence`.
 - `readiness`: The current readiness report. It fails for a new draft.
 - `questions`: The unresolved interview questions, each with `pillar`, `question`, `why_we_ask`, `lessons`,
   `challenge_prompt`, and `field_path`.
@@ -59,14 +60,34 @@ Work through the `questions` in pillar order. For each question:
 | Pillar | Fields to fill |
 |---|---|
 | `1_mission_and_boundaries` | `project.name`, `project.mission`, `project.non_goals`, and the `vcs` section |
-| `2_runtime_data_and_iam` | `stack.*` commands, `infrastructure.cloud_stores`, `infrastructure.deployer_iam_roles` |
-| `3_roster_models_and_cost` | `team.build_roles[*].responsibility`, `team.eval_roles[*].responsibility`, `team.heartbeat_mode`, `team.max_wip`, `infrastructure.budget_usd` |
+| `2_runtime_data_and_iam` | `stack.*` commands, `infrastructure.deploy` (`service` or `none`), `infrastructure.cloud_stores`, `infrastructure.deployer_iam_roles` |
+| `3_roster_models_and_cost` | `team.build_roles`, `team.eval_roles`, `team.dropped_defaults`, `team.autonomy`, `team.heartbeat_mode`, `team.max_wip`, `infrastructure.budget_usd` |
 | `4_evaluation_pyramid_oracle` | `evaluation_pyramid.l1_health` through `evaluation_pyramid.l5_latency_slo` |
 | `5_backlog_waves_and_autonomy` | `waves[*].issues[*]` with `owner_role`, `acceptance_criteria`, and `requirements` (REQ- IDs) |
 | `6_knowledge_plane` | `knowledge_plane.sources`, `knowledge_plane.requirements`, `knowledge_plane.invariants`, `knowledge_plane.decisions`, `knowledge_plane.glossary` |
 
-The draft includes the proven default roster. Ask the human whether to keep, rename, add, or remove roles before you
-fill in responsibilities. Use `presets/*.factory.yaml` as worked examples when the human needs inspiration.
+### Team: roster, proposed specialists, and autonomy
+
+The draft specification starts with the default roster:
+- **Build team:** `lead`, `backend`, `reviewer`, plus the three default specialists: `researcher`, `doc-writer`, and `investigator`.
+- **Evaluation team:** `eval-lead` and `domain-evaluator`.
+
+Work through the team configuration with the human:
+
+1. **Deploy mode:** Ask for `infrastructure.deploy`: `service` (the factory deploys and tests a live service) or `none` (a library, CLI, or monorepo package with nothing to deploy). With `none`, do not add `deployer` or `eval-deployer` roles.
+2. **Review proposed specialists:** Present the default roster and each item in `proposed_roles` with its evidence. For each specialist the human confirms, run:
+   ```bash
+   ./scripts/scion-factory add-role factory.yaml --role R --evidence "..."
+   ```
+3. **Drop defaults only with a reason:** If the human decides to drop any of the default specialists (`researcher`, `doc-writer`, `investigator`), record the drop and reason under `team.dropped_defaults`:
+   ```yaml
+   team:
+     dropped_defaults:
+       - role: researcher
+         reason: "complete static specification and no external dependencies"
+   ```
+4. **Autonomy level:** Ask for `team.autonomy`: `standard` (default; agents decide implementation and tell the PO about verified work, while scope, cost, IAM, ADRs, and acceptance wait for the PO), `supervised` (the PO approves the plan on GitHub before implementation starts), or `autonomous` (only cost, IAM, and acceptance wait for the PO).
+5. **Never invent intent:** Always present candidates and evidence to the human; confirm every specialist addition, default drop, autonomy level, and deploy choice before updating `factory.yaml`.
 
 ### Git is optional
 

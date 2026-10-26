@@ -27,6 +27,10 @@
 # The dashboard's runtime SA (DASHBOARD_RUNTIME_SA, default: the project's default compute SA) gets read access to
 # Firestore (roles/datastore.viewer) and the secret. A dedicated, read-only SA is better; create one and set DASHBOARD_RUNTIME_SA.
 #
+# Nothing to deploy (infrastructure.deploy: none; the kit's factory.env.example has no DEPLOYER_SA_NAME or
+# RUNTIME_SA_NAME): steps 2-3, the deployer grants of step 4, and step 5 are skipped. Setting only one of the two is
+# an error.
+#
 # The roles are deliberately broad for a throwaway sandbox (see architecture.md, Identities). Tighten them for
 # anything shared.
 set -euo pipefail
@@ -48,15 +52,28 @@ for arg in "$@"; do
   case "$arg" in
     --with-spanner) with_spanner=1 ;;
     --with-bigquery) with_bigquery=1 ;;
-    -h|--help) sed -n '2,27p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,32p' "$0"; exit 0 ;;
     *) echo "unknown argument: $arg" >&2; exit 2 ;;
   esac
 done
 
 P="$SANDBOX_PROJECT"
 R="$SANDBOX_REGION"
-DEPLOYER_SA="$DEPLOYER_SA_NAME@$P.iam.gserviceaccount.com"
-RUNTIME_SA="$RUNTIME_SA_NAME@$P.iam.gserviceaccount.com"
+# A factory with nothing to deploy has neither SA name (spec section 8): no deploy identities to set up.
+DEPLOYER_SA_NAME="${DEPLOYER_SA_NAME:-}"
+RUNTIME_SA_NAME="${RUNTIME_SA_NAME:-}"
+if [[ -z "$DEPLOYER_SA_NAME" && -z "$RUNTIME_SA_NAME" ]]; then
+  deploys=0
+  DEPLOYER_SA="none"
+  RUNTIME_SA="none"
+elif [[ -z "$DEPLOYER_SA_NAME" || -z "$RUNTIME_SA_NAME" ]]; then
+  echo "set both DEPLOYER_SA_NAME and RUNTIME_SA_NAME (a factory that deploys a service), or neither (nothing to deploy)" >&2
+  exit 2
+else
+  deploys=1
+  DEPLOYER_SA="$DEPLOYER_SA_NAME@$P.iam.gserviceaccount.com"
+  RUNTIME_SA="$RUNTIME_SA_NAME@$P.iam.gserviceaccount.com"
+fi
 DRY_RUN="${DRY_RUN:-0}"
 # Never stop at an interactive prompt (e.g. "API not enabled, enable and retry?"): it hangs automation (L13).
 export CLOUDSDK_CORE_DISABLE_PROMPTS=1
@@ -104,42 +121,56 @@ apis=(run.googleapis.com cloudbuild.googleapis.com artifactregistry.googleapis.c
 [[ "$with_bigquery" == 1 ]] && apis+=(bigquery.googleapis.com)
 run gcloud services enable "${apis[@]}" --project="$P"
 
-step "2-3. service accounts"
-for sa in "$DEPLOYER_SA_NAME:Scion deployer agents" "$RUNTIME_SA_NAME:Cloud Run runtime of the product"; do
-  name="${sa%%:*}"
-  if exists gcloud iam service-accounts describe "$name@$P.iam.gserviceaccount.com" --project="$P"; then
-    echo "$name: exists"
-  else
-    run gcloud iam service-accounts create "$name" --project="$P" --display-name="${sa#*:}"
-  fi
-done
+if [[ "$deploys" == 0 ]]; then
+  echo "nothing to deploy (no DEPLOYER_SA_NAME / RUNTIME_SA_NAME): skipping steps 2-3 (deployer and runtime SAs and their roles), the Hub VM grants on the deployer SA (step 4) and step 5 (Cloud Build identity)"
+fi
 
-deployer_roles=(roles/run.admin roles/cloudbuild.builds.editor roles/artifactregistry.admin roles/storage.admin
-                roles/logging.viewer roles/serviceusage.serviceUsageConsumer roles/aiplatform.user
-                roles/iam.serviceAccountUser roles/datastore.user)
-[[ "$with_spanner" == 1 ]] && deployer_roles+=(roles/spanner.admin roles/spanner.databaseAdmin)
-[[ "$with_bigquery" == 1 ]] && deployer_roles+=(roles/bigquery.admin)
-for role in "${deployer_roles[@]}"; do bind_project "serviceAccount:$DEPLOYER_SA" "$role"; done
-echo "deployer project roles: ${deployer_roles[*]}"
+if [[ "$deploys" == 1 ]]; then
+  step "2-3. service accounts"
+  for sa in "$DEPLOYER_SA_NAME:Scion deployer agents" "$RUNTIME_SA_NAME:Cloud Run runtime of the product"; do
+    name="${sa%%:*}"
+    if exists gcloud iam service-accounts describe "$name@$P.iam.gserviceaccount.com" --project="$P"; then
+      echo "$name: exists"
+    else
+      run gcloud iam service-accounts create "$name" --project="$P" --display-name="${sa#*:}"
+    fi
+  done
 
-bind_project "serviceAccount:$RUNTIME_SA" roles/aiplatform.user
-iam gcloud iam service-accounts add-iam-policy-binding "$RUNTIME_SA" --project="$P" \
-  --member="serviceAccount:$DEPLOYER_SA" --role=roles/iam.serviceAccountUser --quiet
-echo "runtime SA: roles/aiplatform.user; deployer can act as it"
+  deployer_roles=(roles/run.admin roles/cloudbuild.builds.editor roles/artifactregistry.admin roles/storage.admin
+                  roles/logging.viewer roles/serviceusage.serviceUsageConsumer roles/aiplatform.user
+                  roles/iam.serviceAccountUser roles/datastore.user)
+  [[ "$with_spanner" == 1 ]] && deployer_roles+=(roles/spanner.admin roles/spanner.databaseAdmin)
+  [[ "$with_bigquery" == 1 ]] && deployer_roles+=(roles/bigquery.admin)
+  for role in "${deployer_roles[@]}"; do bind_project "serviceAccount:$DEPLOYER_SA" "$role"; done
+  echo "deployer project roles: ${deployer_roles[*]}"
+
+  bind_project "serviceAccount:$RUNTIME_SA" roles/aiplatform.user
+  iam gcloud iam service-accounts add-iam-policy-binding "$RUNTIME_SA" --project="$P" \
+    --member="serviceAccount:$DEPLOYER_SA" --role=roles/iam.serviceAccountUser --quiet
+  echo "runtime SA: roles/aiplatform.user; deployer can act as it"
+fi
 
 step "4. Hub VM service account"
-for role in roles/iam.serviceAccountTokenCreator roles/iam.serviceAccountUser; do
-  iam gcloud iam service-accounts add-iam-policy-binding "$DEPLOYER_SA" --project="$P" \
-    --member="serviceAccount:$HUB_VM_SA" --role="$role" --quiet
-done
+if [[ "$deploys" == 1 ]]; then
+  for role in roles/iam.serviceAccountTokenCreator roles/iam.serviceAccountUser; do
+    iam gcloud iam service-accounts add-iam-policy-binding "$DEPLOYER_SA" --project="$P" \
+      --member="serviceAccount:$HUB_VM_SA" --role="$role" --quiet
+  done
+fi
 for role in roles/serviceusage.serviceUsageConsumer roles/datastore.user; do
   bind_project "serviceAccount:$HUB_VM_SA" "$role"
 done
-echo "VM SA: token creator + user on the deployer SA; serviceUsageConsumer + datastore.user on $P"
+if [[ "$deploys" == 1 ]]; then
+  echo "VM SA: token creator + user on the deployer SA; serviceUsageConsumer + datastore.user on $P"
+else
+  echo "VM SA: serviceUsageConsumer + datastore.user on $P"
+fi
 
-step "5. Cloud Build identity for source deploys"
-bind_project "serviceAccount:$COMPUTE_SA" roles/cloudbuild.builds.builder
-echo "default compute SA: cloudbuild.builds.builder"
+if [[ "$deploys" == 1 ]]; then
+  step "5. Cloud Build identity for source deploys"
+  bind_project "serviceAccount:$COMPUTE_SA" roles/cloudbuild.builds.builder
+  echo "default compute SA: cloudbuild.builds.builder"
+fi
 
 if [[ "$with_spanner" == 1 ]]; then
   step "6. Spanner"
@@ -154,9 +185,11 @@ if [[ "$with_spanner" == 1 ]]; then
   else
     run gcloud spanner databases create "$SPANNER_DATABASE" --instance="$SPANNER_INSTANCE" --project="$P"
   fi
-  iam gcloud spanner databases add-iam-policy-binding "$SPANNER_DATABASE" --instance="$SPANNER_INSTANCE" \
-    --project="$P" --member="serviceAccount:$RUNTIME_SA" --role=roles/spanner.databaseUser --quiet
-  echo "databaseUser on $SPANNER_DATABASE: runtime SA (product only; the factory control plane is on Firestore)"
+  if [[ "$deploys" == 1 ]]; then
+    iam gcloud spanner databases add-iam-policy-binding "$SPANNER_DATABASE" --instance="$SPANNER_INSTANCE" \
+      --project="$P" --member="serviceAccount:$RUNTIME_SA" --role=roles/spanner.databaseUser --quiet
+    echo "databaseUser on $SPANNER_DATABASE: runtime SA (product only; the factory control plane is on Firestore)"
+  fi
 fi
 
 if [[ "$with_bigquery" == 1 ]]; then

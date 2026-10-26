@@ -267,12 +267,17 @@
       "type": "object",
       "required": [
         "cloud_stores",
-        "serving_service",
-        "eval_service",
-        "budget_usd",
-        "deployer_iam_roles"
+        "budget_usd"
       ],
       "properties": {
+        "deploy": {
+          "type": "string",
+          "enum": [
+            "service",
+            "none"
+          ],
+          "description": "Whether the factory deploys a service. `none` (a library, CLI, or monorepo package) needs no serving service, eval service, or deployer IAM roles. Absent means `service` (older specs)."
+        },
         "cloud_stores": {
           "type": "array",
           "items": {
@@ -294,6 +299,25 @@
             "type": "string"
           }
         }
+      },
+      "if": {
+        "not": {
+          "required": [
+            "deploy"
+          ],
+          "properties": {
+            "deploy": {
+              "const": "none"
+            }
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "serving_service",
+          "eval_service",
+          "deployer_iam_roles"
+        ]
       }
     },
     "team": {
@@ -324,16 +348,46 @@
           "type": "integer",
           "default": 2
         },
+        "autonomy": {
+          "type": "string",
+          "enum": [
+            "supervised",
+            "standard",
+            "autonomous"
+          ],
+          "default": "standard",
+          "description": "Decision rights for the leads (spec section 7.4)."
+        },
+        "dropped_defaults": {
+          "type": "array",
+          "description": "Default roles the PO left out on purpose, each with a reason.",
+          "items": {
+            "type": "object",
+            "required": [
+              "role",
+              "reason"
+            ],
+            "properties": {
+              "role": {
+                "type": "string"
+              },
+              "reason": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          }
+        },
         "build_roles": {
           "type": "array",
           "items": {
-            "type": "object"
+            "$ref": "#/$defs/role"
           }
         },
         "eval_roles": {
           "type": "array",
           "items": {
-            "type": "object"
+            "$ref": "#/$defs/role"
           }
         }
       }
@@ -341,11 +395,9 @@
     "evaluation_pyramid": {
       "type": "object",
       "required": [
-        "l1_health",
         "l2_contract",
         "l3_domain_quality",
-        "l4_safety_grounding",
-        "l5_latency_slo"
+        "l4_safety_grounding"
       ],
       "properties": {
         "l1_health": {
@@ -373,7 +425,8 @@
             "p99_ms"
           ]
         }
-      }
+      },
+      "description": "`l1_health` and `l5_latency_slo` describe a deployed service; with `infrastructure.deploy: none` they are optional and the evaluation team grades the code (spec section 8)."
     },
     "waves": {
       "type": "array",
@@ -427,6 +480,96 @@
         "subdir",
         "agent_prefix"
       ]
+    }
+  },
+  "if": {
+    "not": {
+      "properties": {
+        "infrastructure": {
+          "required": [
+            "deploy"
+          ],
+          "properties": {
+            "deploy": {
+              "const": "none"
+            }
+          }
+        }
+      }
+    }
+  },
+  "then": {
+    "properties": {
+      "evaluation_pyramid": {
+        "required": [
+          "l1_health",
+          "l5_latency_slo"
+        ]
+      }
+    }
+  },
+  "$defs": {
+    "role": {
+      "type": "object",
+      "required": [
+        "role"
+      ],
+      "properties": {
+        "role": {
+          "type": "string"
+        },
+        "harness": {
+          "type": "string"
+        },
+        "model": {
+          "type": "string"
+        },
+        "responsibility": {
+          "type": "string"
+        },
+        "gcp_identity": {
+          "type": "string"
+        },
+        "focus": {
+          "type": "object",
+          "description": "Repo-specific scope for the role: owned paths, commands it runs, documents it keeps.",
+          "properties": {
+            "paths": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "commands": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "docs": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        "evidence": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Why discovery proposed the role (paths, counts, labels)."
+        },
+        "default": {
+          "type": "boolean",
+          "description": "True for the library's always-roles (spec section 5.3)."
+        },
+        "default_kind": {
+          "type": "string",
+          "description": "The default this role stands in for, e.g. `implementer` for a renamed backend such as `go-dev`."
+        }
+      }
     }
   }
 }

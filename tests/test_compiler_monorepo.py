@@ -146,10 +146,14 @@ def test_monorepo_factories_share_one_repo_backlog_through_a_factory_label(mono)
     assert "`factory:pulse-ledger`" in shared
 
 
-def test_single_repo_factory_has_no_factory_label(tmp_path):
+def test_single_repo_factory_labels_issues_with_its_slug(tmp_path):
+    """Every factory gets `factory:<slug>`, not only monorepo ones, so one query covers a repository (spec §7.2)."""
     out = _compile(tmp_path, _spec())
-    assert "factory:" not in (out / "scripts" / "seed-github-waves.sh").read_text()
-    assert "--label factory:" not in (out / "templates" / "lead" / "system-prompt.md").read_text()
+    seed = (out / "scripts" / "seed-github-waves.sh").read_text()
+    assert '"factory:pulse-ledger"' in seed
+    assert '"--label", "factory:pulse-ledger"' in seed
+    lead = (out / "templates" / "lead" / "system-prompt.md").read_text()
+    assert "--label status:ready --label factory:pulse-ledger" in lead
 
 
 def test_seed_script_dry_run_never_calls_github(mono, tmp_path):
