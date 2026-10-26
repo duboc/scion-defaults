@@ -356,6 +356,159 @@ def save_spec(spec: dict[str, Any], path: str | Path) -> None:
 # Static Repository Introspection (`inspect_repository`)
 # ---------------------------------------------------------------------------
 
+# Manifests that mark a directory as an app with a known stack.
+_STACK_MANIFESTS = ("go.mod", "pyproject.toml", "requirements.txt", "package.json", "Cargo.toml")
+# Conventional folders that hold several apps (each child is an app) and single-app folders at the root.
+_APP_CONTAINERS = ("src", "apps", "services", "packages")
+_APP_DIRS = ("backend", "frontend", "server", "api")
+_APP_KEYS = ("path", "language", "framework", "build_command", "test_command", "lint_command")
+_APP_WALK_SKIP = {".venv", "venv", "env", "__pycache__", "dist", "build", "target", ".next", "coverage"}
+_APP_WALK_MAX_FILES = 20000
+_LANG_SOURCE_EXTS = {"python": (".py",), "typescript": (".ts", ".tsx", ".js", ".jsx"), "go": (".go",)}
+
+
+def _inspect_stack_dir(directory: Path, cloud_stores: set[str]) -> dict[str, str]:
+    """Detect the stack of one directory from its manifests; adds cloud stores it finds to `cloud_stores`.
+
+    Returns {language, framework, build_command, test_command, lint_command}; language is "unknown" when the
+    directory has no Go, Python or Node manifest. Commands run from `directory`.
+    """
+    stack = {"language": "unknown", "framework": "", "build_command": "", "test_command": "", "lint_command": ""}
+
+    # Detect Go
+    go_mod = directory / "go.mod"
+    if go_mod.exists():
+        stack["language"] = "go"
+        stack["build_command"] = "go build -buildvcs=false ./..."
+        stack["test_command"] = "go test ./..."
+        stack["lint_command"] = "go vet ./..."
+        mod_text = go_mod.read_text(errors="ignore").lower()
+        if "spanner" in mod_text:
+            cloud_stores.add("spanner")
+        if "bigquery" in mod_text:
+            cloud_stores.add("bigquery")
+        if "aiplatform" in mod_text or "genai" in mod_text or "vertex" in mod_text:
+            cloud_stores.add("vertex-ai")
+        if "storage" in mod_text:
+            cloud_stores.add("gcs")
+        if "firestore" in mod_text:
+            cloud_stores.add("firestore")
+
+    # Detect Python (pyproject.toml and/or requirements.txt)
+    py_files = [p for p in (directory / "pyproject.toml", directory / "requirements.txt") if p.exists()]
+    if py_files:
+        if stack["language"] == "unknown":
+            stack["language"] = "python"
+            stack["build_command"] = "python3 -m compileall ."
+            stack["test_command"] = "pytest -q"
+            stack["lint_command"] = "ruff check ."
+        py_text = "\n".join(p.read_text(errors="ignore") for p in py_files).lower()
+        if "spanner" in py_text:
+            cloud_stores.add("spanner")
+        if "bigquery" in py_text:
+            cloud_stores.add("bigquery")
+        if "aiplatform" in py_text or "genai" in py_text or "vertex" in py_text:
+            cloud_stores.add("vertex-ai")
+        if "firestore" in py_text:
+            cloud_stores.add("firestore")
+        if "google-cloud-storage" in py_text:
+            cloud_stores.add("gcs")
+        if "fastapi" in py_text:
+            stack["framework"] = "FastAPI"
+        elif re.search(r"(?<![a-z0-9_-])flask(?![a-z0-9_])", py_text):
+            stack["framework"] = "Flask"
+
+    # Detect Node/TypeScript
+    pkg_json = directory / "package.json"
+    if pkg_json.exists():
+        if stack["language"] == "unknown":
+            stack["language"] = "typescript"
+            stack["build_command"] = "npm run build"
+            stack["test_command"] = "npm test"
+            stack["lint_command"] = "npm run lint"
+        pkg_text = pkg_json.read_text(errors="ignore").lower()
+        if "spanner" in pkg_text:
+            cloud_stores.add("spanner")
+        if "bigquery" in pkg_text:
+            cloud_stores.add("bigquery")
+
+    # Override test/build commands if Makefile defines them
+    makefile = directory / "Makefile"
+    if makefile.exists():
+        mk_text = makefile.read_text(errors="ignore")
+        m_test = re.search(r"^test:\s*\n\t(.+)$", mk_text, flags=re.MULTILINE)
+        if m_test:
+            stack["test_command"] = m_test.group(1).strip()
+
+    return stack
+
+
+def _is_test_file(name: str, language: str) -> bool:
+    if language == "python":
+        return (name.startswith("test_") or name.endswith("_test.py")) and name.endswith(".py")
+    if language == "typescript":
+        return bool(re.search(r"\.(test|spec)\.[jt]sx?$", name))
+    if language == "go":
+        return name.endswith("_test.go")
+    return False
+
+
+def _count_app_files(directory: Path, language: str) -> tuple[int, bool]:
+    """Return (source files, has tests) for one app, skipping vendored, virtualenv and build output dirs."""
+    exts = _LANG_SOURCE_EXTS.get(language, ())
+    sources, has_tests, seen = 0, False, 0
+    for dirpath, dirnames, filenames in os.walk(directory):
+        dirnames[:] = sorted(
+            d for d in dirnames
+            if d not in discovery.SKIP_DIRS and d not in _APP_WALK_SKIP and not d.startswith(".")
+        )
+        for name in sorted(filenames):
+            seen += 1
+            if seen > _APP_WALK_MAX_FILES:
+                return sources, has_tests
+            if _is_test_file(name, language):
+                has_tests = True
+            elif name.endswith(exts):
+                sources += 1
+    return sources, has_tests
+
+
+def _app_candidates(root: Path) -> list[Path]:
+    """Conventional app folders: src/, apps/, services/, packages/ and their children, then backend/ and co."""
+    found: list[Path] = []
+    for container in _APP_CONTAINERS:
+        base = root / container
+        if not base.is_dir() or base.is_symlink():
+            continue
+        found.append(base)
+        found.extend(
+            child for child in sorted(base.iterdir())
+            if child.is_dir() and not child.is_symlink() and not child.name.startswith(".")
+            and child.name not in discovery.SKIP_DIRS
+        )
+    found.extend(root / d for d in _APP_DIRS if (root / d).is_dir() and not (root / d).is_symlink())
+    return found
+
+
+def _find_apps(root: Path, cloud_stores: set[str]) -> list[dict[str, Any]]:
+    """Inspect conventional app folders; returns apps with a known stack, in path order, commands `cd`-prefixed."""
+    apps: list[dict[str, Any]] = []
+    for directory in _app_candidates(root):
+        if not any((directory / m).exists() for m in _STACK_MANIFESTS):
+            continue
+        stack = _inspect_stack_dir(directory, cloud_stores)
+        if stack["language"] == "unknown":
+            continue
+        rel = directory.relative_to(root).as_posix()
+        app: dict[str, Any] = {"path": rel, "language": stack["language"], "framework": stack["framework"]}
+        for key in ("build_command", "test_command", "lint_command"):
+            app[key] = f"cd {shlex.quote(rel)} && {stack[key]}" if stack[key] else ""
+        app["source_files"], app["has_tests"] = _count_app_files(directory, stack["language"])
+        apps.append(app)
+    apps.sort(key=lambda a: a["path"])
+    return apps
+
+
 def inspect_repository(repo_path: str | Path) -> dict[str, Any]:
     """Inspect an existing repository to auto-detect stack, commands, ports, and stores."""
     root = Path(repo_path)
@@ -385,71 +538,32 @@ def inspect_repository(repo_path: str | Path) -> dict[str, Any]:
         if (root / candidate).exists():
             detected["existing_files"].append(candidate)
 
-    # Detect Go
-    go_mod = root / "go.mod"
-    if go_mod.exists():
-        detected["primary_language"] = "go"
-        detected["build_command"] = "go build -buildvcs=false ./..."
-        detected["test_command"] = "go test ./..."
-        detected["lint_command"] = "go vet ./..."
-        mod_text = go_mod.read_text(errors="ignore").lower()
-        if "spanner" in mod_text:
-            cloud_stores.add("spanner")
-        if "bigquery" in mod_text:
-            cloud_stores.add("bigquery")
-        if "aiplatform" in mod_text or "genai" in mod_text or "vertex" in mod_text:
-            cloud_stores.add("vertex-ai")
-        if "storage" in mod_text:
-            cloud_stores.add("gcs")
-        if "firestore" in mod_text:
-            cloud_stores.add("firestore")
+    root_stack = _inspect_stack_dir(root, cloud_stores)
+    for key in ("framework", "build_command", "test_command", "lint_command"):
+        detected[key] = root_stack[key]
+    detected["primary_language"] = root_stack["language"]
+    detected["apps"] = []
 
-    # Detect Python (pyproject.toml and/or requirements.txt)
-    py_files = [p for p in (root / "pyproject.toml", root / "requirements.txt") if p.exists()]
-    if py_files:
-        if detected["primary_language"] == "unknown":
-            detected["primary_language"] = "python"
-            detected["build_command"] = "python3 -m compileall ."
-            detected["test_command"] = "pytest -q"
-            detected["lint_command"] = "ruff check ."
-        py_text = "\n".join(p.read_text(errors="ignore") for p in py_files).lower()
-        if "spanner" in py_text:
-            cloud_stores.add("spanner")
-        if "bigquery" in py_text:
-            cloud_stores.add("bigquery")
-        if "aiplatform" in py_text or "genai" in py_text or "vertex" in py_text:
-            cloud_stores.add("vertex-ai")
-        if "firestore" in py_text:
-            cloud_stores.add("firestore")
-        if "google-cloud-storage" in py_text:
-            cloud_stores.add("gcs")
-        if "fastapi" in py_text:
-            detected["framework"] = "FastAPI"
-
-    # Detect Node/TypeScript
-    pkg_json = root / "package.json"
-    if pkg_json.exists():
-        if detected["primary_language"] == "unknown":
-            detected["primary_language"] = "typescript"
-            detected["build_command"] = "npm run build"
-            detected["test_command"] = "npm test"
-            detected["lint_command"] = "npm run lint"
-        pkg_text = pkg_json.read_text(errors="ignore").lower()
-        if "spanner" in pkg_text:
-            cloud_stores.add("spanner")
-        if "bigquery" in pkg_text:
-            cloud_stores.add("bigquery")
-
-    # Override test/build commands if Makefile defines them
-    makefile = root / "Makefile"
-    if makefile.exists():
-        mk_text = makefile.read_text(errors="ignore")
-        m_test = re.search(r"^test:\s*\n\t(.+)$", mk_text, flags=re.MULTILINE)
-        if m_test:
-            detected["test_command"] = m_test.group(1).strip()
+    # Multi-app repos (src/backend, apps/web, ...) carry no stack manifest at the root: look one or two levels
+    # down in conventional app folders and take the top-level stack from the best app.
+    if not any((root / m).exists() for m in _STACK_MANIFESTS):
+        apps = _find_apps(root, cloud_stores)
+        detected["apps"] = [{k: a[k] for k in _APP_KEYS} for a in apps]
+        if apps:
+            best = min(apps, key=lambda a: (not a["has_tests"], -a["source_files"], a["path"]))
+            detected["primary_language"] = best["language"]
+            for key in ("framework", "build_command", "test_command", "lint_command"):
+                # A root Makefile `test:` target still wins over the app's test command.
+                if key == "test_command" and detected["test_command"]:
+                    continue
+                detected[key] = best[key]
+            detected["_primary_app_dir"] = best["path"]
 
     # Detect exposed port from Dockerfile
     dockerfile = root / "Dockerfile"
+    if not dockerfile.exists() and detected.get("_primary_app_dir"):
+        dockerfile = root / detected["_primary_app_dir"] / "Dockerfile"
+    detected.pop("_primary_app_dir", None)
     if dockerfile.exists():
         df_text = dockerfile.read_text(errors="ignore")
         m_port = re.search(r"^\s*EXPOSE\s+(\d+)", df_text, flags=re.MULTILINE | re.IGNORECASE)
