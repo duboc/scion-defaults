@@ -100,6 +100,7 @@ team:
     model: Gemini 4 Argon (High)
     responsibility: Orchestrates 5-layer evaluation sweeps and Control Tower updates
   - role: search-evaluator
+    default_kind: domain-evaluator
     harness: antigravity
     model: Gemini 4 Argon (High)
     responsibility: Executes golden search queries, alpha sweeps, and NDCG@10 / MRR@10 probes

@@ -1,0 +1,139 @@
+project:
+  name: Verso
+  slug: verso
+  eval_slug: verso-eval
+  mission: Build a dependency-free Go library that parses, compares, and constrains semantic versions with a stable,
+    documented public API.
+  non_goals:
+  - A command-line tool or HTTP service around the library
+  - Package-manager-specific version schemes (npm ranges, PEP 440)
+vcs:
+  enabled: true
+  provider: github
+  repo: example-org/verso
+  build_branch: main
+  eval_branch: eval-dashboard
+knowledge_plane:
+  root: knowledge-plane
+  sources:
+    requirements: []
+    adrs: []
+    contracts: []
+    design: []
+    guides: []
+  requirements:
+  - id: REQ-001
+    title: Strict SemVer 2.0.0 parsing
+    acceptance:
+    - Parse accepts every valid version in the SemVer 2.0.0 test corpus and rejects every invalid one
+    - Parse errors name the offending position and never panic
+  - id: REQ-002
+    title: Total ordering with precedence rules
+    acceptance:
+    - Compare implements SemVer 2.0.0 precedence, including pre-release identifiers
+    - Build metadata never changes the result of Compare
+  - id: REQ-003
+    title: Version constraints
+    acceptance:
+    - Constraint strings such as ">=1.2.0, <2.0.0" and "~1.4" parse and match as documented
+    - Every constraint operator has an example test in the package documentation
+  invariants:
+  - The module imports only the Go standard library.
+  - No exported identifier is removed or changes signature without a major version bump.
+  - Every exported identifier has a doc comment.
+  - '`go test -race ./...` passes offline.'
+  decisions:
+  - id: ADR-001
+    title: Immutable value type for versions
+    status: Accepted
+    requirements:
+    - REQ-001
+    - REQ-002
+    context: Callers share versions across goroutines and use them as map keys.
+    decision: Version is a comparable struct value with unexported fields; methods never mutate it.
+    consequences: Versions are safe to share and compare with ==; adding fields later is a compatible change only
+      while the struct stays comparable.
+  glossary:
+  - term: Precedence
+    definition: How two versions are ordered under SemVer 2.0.0 section 11.
+  - term: Constraint
+    definition: A set of comparisons that a version must all satisfy.
+stack:
+  primary_language: go
+  framework: Go module (library)
+  build_command: go build ./...
+  test_command: go test -race ./...
+  lint_command: go vet ./...
+  port: 0
+infrastructure:
+  deploy: none
+  cloud_stores: []
+  budget_usd: 50
+team:
+  heartbeat_mode: direct-lead
+  heartbeat_cron: '*/15 * * * *'
+  watchdog_cron: '*/5 * * * *'
+  max_wip: 2
+  autonomy: standard
+  build_roles:
+  - role: lead
+    harness: claude
+    model: opus
+    responsibility: Triages library issues, briefs specialists, and accepts work against the exported API invariants
+  - role: backend
+    harness: antigravity
+    model: Gemini 4 Argon (High)
+    responsibility: Implements parsing, comparison, and constraint matching in idiomatic, allocation-light Go
+  - role: reviewer
+    harness: claude
+    model: opus
+    responsibility: Reviews diffs for API compatibility, SemVer correctness, and test coverage
+  eval_roles:
+  - role: eval-lead
+    harness: antigravity
+    model: Gemini 4 Argon (High)
+    responsibility: Coordinates the L1-L5 code evaluation of each build-branch commit and records the runs
+  - role: domain-evaluator
+    harness: antigravity
+    model: Gemini 4 Argon (High)
+    responsibility: Runs the build, tests, apidiff, coverage, govulncheck, and benchmarks against build-branch commits
+evaluation_pyramid:
+  l2_contract:
+    endpoints: []
+    invariants:
+    - apidiff against the last release tag reports no incompatible change to the exported API
+    - Every exported identifier has a doc comment (go vet and a doc-comment check pass)
+  l3_domain_quality:
+    primary_metric: test_coverage_pct
+    target_threshold: 90
+    probe_description: Run go test -race -coverprofile=cover.out ./... and read the total statement coverage from go tool
+      cover -func.
+  l4_safety_grounding:
+    invariants:
+    - govulncheck ./... reports no known vulnerability in called code
+    - go.mod requires no module outside the standard library
+waves:
+- wave: 1
+  title: Parse and compare
+  issues:
+  - title: 'Wave 1.1: Strict SemVer 2.0.0 parser with positional errors'
+    owner_role: backend
+    acceptance_criteria:
+    - The SemVer 2.0.0 corpus test passes and invalid inputs return errors without panics
+    requirements:
+    - REQ-001
+  - title: 'Wave 1.2: Compare with pre-release precedence'
+    owner_role: backend
+    acceptance_criteria:
+    - Table tests cover every precedence rule, and build metadata never changes the result
+    requirements:
+    - REQ-002
+- wave: 2
+  title: Constraints
+  issues:
+  - title: 'Wave 2.1: Constraint parsing and matching'
+    owner_role: backend
+    acceptance_criteria:
+    - Every documented operator has an example test that passes
+    requirements:
+    - REQ-003

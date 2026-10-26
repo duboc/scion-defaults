@@ -395,11 +395,9 @@
     "evaluation_pyramid": {
       "type": "object",
       "required": [
-        "l1_health",
         "l2_contract",
         "l3_domain_quality",
-        "l4_safety_grounding",
-        "l5_latency_slo"
+        "l4_safety_grounding"
       ],
       "properties": {
         "l1_health": {
@@ -427,7 +425,8 @@
             "p99_ms"
           ]
         }
-      }
+      },
+      "description": "`l1_health` and `l5_latency_slo` describe a deployed service; with `infrastructure.deploy: none` they are optional and the evaluation team grades the code (spec section 8)."
     },
     "waves": {
       "type": "array",
@@ -481,6 +480,32 @@
         "subdir",
         "agent_prefix"
       ]
+    }
+  },
+  "if": {
+    "not": {
+      "properties": {
+        "infrastructure": {
+          "required": [
+            "deploy"
+          ],
+          "properties": {
+            "deploy": {
+              "const": "none"
+            }
+          }
+        }
+      }
+    }
+  },
+  "then": {
+    "properties": {
+      "evaluation_pyramid": {
+        "required": [
+          "l1_health",
+          "l5_latency_slo"
+        ]
+      }
     }
   },
   "$defs": {

@@ -106,6 +106,23 @@ GRILL_QUESTIONS: list[dict[str, Any]] = [
         ),
     },
     {
+        "id": "deploy_target",
+        "pillar": "2_runtime_data_and_iam",
+        "field_path": "infrastructure.deploy",
+        "question": (
+            "Does this factory deploy a service (`service`), or is there nothing to deploy (`none`): a library, "
+            "a CLI, or a package of a monorepo?"
+        ),
+        "why_we_ask": (
+            "Factories with nothing to deploy used placeholder `none` services, so their deployers and live checks "
+            "had nothing to work on. With `none`, the factory has no deployer, no service and no live checks, and "
+            "the evaluation team grades the code itself: build and tests, API compatibility, a quality metric, "
+            "dependency and vulnerability checks, and benchmarks (Lesson L29)."
+        ),
+        "lessons": ["L29"],
+        "challenge_prompt": "Is there a Cloud Run service to deploy? A library, CLI or monorepo package is `none`",
+    },
+    {
         "id": "cloud_stores_and_deployer_iam",
         "pillar": "2_runtime_data_and_iam",
         "field_path": "infrastructure.cloud_stores / infrastructure.deployer_iam_roles",
@@ -485,6 +502,48 @@ def autonomy(spec: dict[str, Any]) -> str:
     return value if isinstance(value, str) else str(value)
 
 
+# Factories with nothing to deploy (spec §8): the evaluation team grades the code of the build branch's commits, not
+# a live service. The interview's L2/L3/L4 answers fill in the invariants and the metric; the L2 and L4 tools come
+# from the stack (role_library.CODE_PYRAMID_TOOLS).
+ASK_PO_TOOL = "ask the PO for the tool"
+NOTHING_TO_DEPLOY = "none (nothing to deploy)"
+
+
+def _code_tool(spec: dict[str, Any], layer: str) -> str | None:
+    lang = str((spec.get("stack") or {}).get("primary_language") or "").strip().lower()
+    tools = role_library.CODE_PYRAMID_TOOLS.get({"golang": "go"}.get(lang, lang))
+    return tools[layer] if tools else None
+
+
+def render_code_pyramid(spec: dict[str, Any]) -> str:
+    """The five L1-L5 lines of the code evaluation pyramid (spec §8), with the stack's tools."""
+    stack = spec["stack"]
+    pyramid = spec.get("evaluation_pyramid") or {}
+    l3 = pyramid.get("l3_domain_quality") or {}
+    vcs = spec.get("vcs") or {}
+    lang = stack.get("primary_language", "")
+    head = f"the head of `{vcs['build_branch']}`" if _vcs_enabled(spec) else "the build workspace"
+
+    def tool(layer: str) -> str:
+        found = _code_tool(spec, layer)
+        return f"`{found}`" if found else f"no standard tool for `{lang}` ({ASK_PO_TOOL})"
+
+    def invariants(key: str) -> str:
+        items = (pyramid.get(key) or {}).get("invariants") or []
+        return f" Invariants: {'; '.join(items)}" if items else ""
+
+    probe = f" ({l3['probe_description']})" if l3.get("probe_description") else ""
+    return "\n".join([
+        f"1. **L1 Builds and tests:** `{stack['build_command']}` and `{stack['test_command']}` pass at {head}.",
+        f"2. **L2 API compatibility:** {tool('l2')} against the last release finds no incompatible change to the "
+        f"public API.{invariants('l2_contract')}",
+        f"3. **L3 Quality metric:** `{l3.get('primary_metric')} >= {l3.get('target_threshold')}`{probe}",
+        f"4. **L4 Safety:** {tool('l4')} finds no known vulnerability in the dependencies.{invariants('l4_safety_grounding')}",
+        "5. **L5 Performance:** when the repository has benchmarks, they stay within the recorded baseline; without "
+        "benchmarks, L5 passes with a note.",
+    ])
+
+
 def _dropped_defaults(spec: dict[str, Any]) -> set[str]:
     drops = (spec.get("team") or {}).get("dropped_defaults") or []
     return {str(d.get("role")) for d in drops if isinstance(d, dict) and d.get("role")}
@@ -630,12 +689,15 @@ def evaluate_spec_readiness(spec: dict[str, Any]) -> dict[str, Any]:
         if _is_vague(stack.get(key)):
             missing.append(f"stack.{key} is missing or vague (Lesson L18)")
 
+    # With nothing to deploy (spec §8) there is no service, deployer, health endpoint or latency SLO to ask for.
+    serves = deploy_mode(spec) != "none"
     infra = spec.get("infrastructure") or {}
-    for key in ("serving_service", "eval_service"):
-        if _is_vague(infra.get(key)):
-            missing.append(f"infrastructure.{key} is missing")
-    if not isinstance(infra.get("deployer_iam_roles"), list) or len(infra.get("deployer_iam_roles", [])) < 1:
-        missing.append("infrastructure.deployer_iam_roles must list explicit GCP IAM roles for deployer-sa (Lesson L5)")
+    if serves:
+        for key in ("serving_service", "eval_service"):
+            if _is_vague(infra.get(key)):
+                missing.append(f"infrastructure.{key} is missing")
+        if not isinstance(infra.get("deployer_iam_roles"), list) or len(infra.get("deployer_iam_roles", [])) < 1:
+            missing.append("infrastructure.deployer_iam_roles must list explicit GCP IAM roles for deployer-sa (Lesson L5)")
 
     team = spec.get("team") or {}
     build_roles = team.get("build_roles") or []
@@ -647,10 +709,20 @@ def evaluate_spec_readiness(spec: dict[str, Any]) -> dict[str, Any]:
     for role_spec in list(build_roles) + list(eval_roles):
         if _is_vague(role_spec.get("responsibility")):
             missing.append(f"team role '{role_spec.get('role', '?')}' is missing a concrete responsibility")
+        if serves:
+            continue
+        name = role_spec.get("role", "?")
+        lib = role_library.ROLES.get(str(name))
+        if lib and lib["needs_service"]:
+            missing.append(f"team role '{name}' needs a deployed service, but the factory has deploy: none "
+                           "(remove the role, or answer deploy: service if the factory deploys one)")
+        if role_spec.get("gcp_identity"):
+            missing.append(f"team role '{name}' has gcp_identity `{role_spec['gcp_identity']}`, but the factory has "
+                           "deploy: none (nothing to deploy needs a deployer identity; remove it)")
 
     pyramid = spec.get("evaluation_pyramid") or {}
     l1 = pyramid.get("l1_health") or {}
-    if _is_vague(l1.get("endpoint")):
+    if serves and _is_vague(l1.get("endpoint")):
         missing.append("evaluation_pyramid.l1_health.endpoint is missing")
     l2 = pyramid.get("l2_contract") or {}
     if not l2.get("invariants"):
@@ -664,7 +736,7 @@ def evaluate_spec_readiness(spec: dict[str, Any]) -> dict[str, Any]:
     if not l4.get("invariants"):
         missing.append("evaluation_pyramid.l4_safety_grounding.invariants is missing")
     l5 = pyramid.get("l5_latency_slo") or {}
-    if not isinstance(l5.get("p95_ms"), (int, float)):
+    if serves and not isinstance(l5.get("p95_ms"), (int, float)):
         missing.append("evaluation_pyramid.l5_latency_slo.p95_ms must be a numeric millisecond SLO")
 
     waves = spec.get("waves") or []
@@ -780,17 +852,26 @@ def _render_shared_agents_md_base(spec: dict[str, Any]) -> str:
     infra = spec["infrastructure"]
     vcs = spec.get("vcs") or {}
     l3 = spec["evaluation_pyramid"]["l3_domain_quality"]
-    l5 = spec["evaluation_pyramid"]["l5_latency_slo"]
     lint = stack.get("lint_command") or "true"
     git = _vcs_enabled(spec)
+    serves = deploy_mode(spec) != "none"
 
     if git:
-        topology = (
-            f"- **Build Project (`{proj['slug']}`):** Pushes application code to `{vcs['build_branch']}` in "
-            f"`{vcs['repo']}` and deploys `{infra['serving_service']}`.\n"
-            f"- **Eval Project (`{proj['eval_slug']}`):** Pushes the independent evaluation control tower to the "
-            f"disjoint orphan branch `{vcs['eval_branch']}` and deploys `{infra['eval_service']}` (Lesson L25)."
-        )
+        if serves:
+            topology = (
+                f"- **Build Project (`{proj['slug']}`):** Pushes application code to `{vcs['build_branch']}` in "
+                f"`{vcs['repo']}` and deploys `{infra['serving_service']}`.\n"
+                f"- **Eval Project (`{proj['eval_slug']}`):** Pushes the independent evaluation control tower to the "
+                f"disjoint orphan branch `{vcs['eval_branch']}` and deploys `{infra['eval_service']}` (Lesson L25)."
+            )
+        else:
+            topology = (
+                f"- **Build Project (`{proj['slug']}`):** Pushes code to `{vcs['build_branch']}` in `{vcs['repo']}`. "
+                "Nothing to deploy (`infrastructure.deploy: none`): a verified commit is the result.\n"
+                f"- **Eval Project (`{proj['eval_slug']}`):** Pushes the independent evaluation control tower to the "
+                f"disjoint orphan branch `{vcs['eval_branch']}` and grades the code of `{vcs['build_branch']}`'s "
+                "commits (Lesson L25)."
+            )
         flabel = _factory_label(spec)
         backlog = f"""## 3. Backlog & Status (Lessons L1, L18)
 - The backlog is GitHub issues in `{vcs['repo']}`. Status labels move `status:ready` -> `status:in-progress` -> `status:in-review` -> `status:verified` (or `status:blocked`).
@@ -835,12 +916,20 @@ After the deploy, record the revision, the rollback revision, and the commit in 
 """
         turn_ref = "issue # and commit SHA"
     else:
-        topology = (
-            f"- **Build Project (`{proj['slug']}`):** Works in the shared `/workspace` (no version control yet) and "
-            f"deploys `{infra['serving_service']}`.\n"
-            f"- **Eval Project (`{proj['eval_slug']}`):** Works in its own Hub project workspace, isolated from the "
-            f"build workspace, and deploys `{infra['eval_service']}` (Lesson L25)."
-        )
+        if serves:
+            topology = (
+                f"- **Build Project (`{proj['slug']}`):** Works in the shared `/workspace` (no version control yet) and "
+                f"deploys `{infra['serving_service']}`.\n"
+                f"- **Eval Project (`{proj['eval_slug']}`):** Works in its own Hub project workspace, isolated from the "
+                f"build workspace, and deploys `{infra['eval_service']}` (Lesson L25)."
+            )
+        else:
+            topology = (
+                f"- **Build Project (`{proj['slug']}`):** Works in the shared `/workspace` (no version control yet). "
+                "Nothing to deploy (`infrastructure.deploy: none`): verified code in the workspace is the result.\n"
+                f"- **Eval Project (`{proj['eval_slug']}`):** Works in its own Hub project workspace, isolated from the "
+                "build workspace, and grades the build workspace's code (Lesson L25)."
+            )
         backlog = """## 3. Backlog & Status (Lessons L1, L18)
 - The backlog is `/workspace/backlog/issues.json`. Each item has an `id`, `title`, `owner_role`, `requirements`, `acceptance_criteria`, and `status` (`ready` -> `in-progress` -> `in-review` -> `verified`, or `blocked`).
 - The lead is the only writer of `backlog/issues.json`. Workers never edit it; they report progress and results to the lead with `scion message`.
@@ -872,6 +961,28 @@ After the deploy, record the revision, the rollback revision, the snapshot path,
             "missing IAM roles, missing secrets/quotas, or genuine spec contradictions."
         )
 
+    live_rule = "Only the deployer writes `knowledge-plane/state/LIVE.md`."
+    if serves:
+        l5 = spec["evaluation_pyramid"]["l5_latency_slo"]
+        pyramid = f"""## 7. L1–L5 Evaluation Pyramid Contract
+- **L1 Health:** `GET {spec['evaluation_pyramid']['l1_health']['endpoint']}`
+- **L2 Contract Invariants:** {'; '.join(spec['evaluation_pyramid']['l2_contract']['invariants'])}
+- **L3 Primary Domain Metric:** `{l3['primary_metric']} >= {l3['target_threshold']}` ({l3.get('probe_description', '')})
+- **L4 Safety & Grounding:** {'; '.join(spec['evaluation_pyramid']['l4_safety_grounding']['invariants'])}
+- **L5 Latency SLO:** `p50 <= {l5.get('p50_ms', 100)}ms`, `p95 <= {l5['p95_ms']}ms`, `p99 <= {l5.get('p99_ms', 500)}ms`
+"""
+    else:
+        # Nothing to deploy (spec §8): no deploy section, no deployer, and the pyramid grades the code.
+        live_rule = "`knowledge-plane/state/LIVE.md` records that nothing is deployed; leave it as is."
+        deploy = """## 5. Nothing to Deploy
+This factory has `infrastructure.deploy: none` (a library, a CLI or a package): there is no service and no
+deployer, and no agent deploys anything. The evaluation team grades the code itself (section 7).
+"""
+        pyramid = f"""## 7. L1–L5 Code Evaluation Pyramid
+The evaluation team grades the code of the build's commits, not a live service:
+{render_code_pyramid(spec)}
+"""
+
     return f"""# Shared Factory Agent Protocol — {proj['name']} (`{proj['slug']}` & `{proj['eval_slug']}`)
 
 Every agent in this Scion software factory MUST follow these operational rules (derived from Lessons L1–L27).
@@ -886,7 +997,7 @@ Every agent in this Scion software factory MUST follow these operational rules (
 - Build agents read `/workspace/knowledge-plane/INDEX.md` before planning, implementing, reviewing, or deploying. Evaluation agents read the same knowledge plane read-only at `{kp.EVAL_KP_MOUNT}/INDEX.md`.
 - Open files through the paths in the index. Never guess a file name.
 - Cite `REQ-` and `ADR-` IDs in work items, reviews, and evaluation results. Record new decisions with `knowledge-plane/adr/_template.md`.
-- Only the deployer writes `knowledge-plane/state/LIVE.md`. Evaluation golden datasets never go into the build knowledge plane.
+- {live_rule} Evaluation golden datasets never go into the build knowledge plane.
 - After you change the knowledge plane, run `python3 /workspace/knowledge-plane/kp-check.py` and fix every problem it reports.
 
 {backlog}
@@ -897,13 +1008,7 @@ Every agent in this Scion software factory MUST follow these operational rules (
 - **Signal turn completion (L2):** End every turn by running `sciontool status task_completed "<concise summary with {turn_ref}>"` (or `sciontool status ask_user "<blocker>"` when genuinely blocked).
 {escalation}
 
-## 7. L1–L5 Evaluation Pyramid Contract
-- **L1 Health:** `GET {spec['evaluation_pyramid']['l1_health']['endpoint']}`
-- **L2 Contract Invariants:** {'; '.join(spec['evaluation_pyramid']['l2_contract']['invariants'])}
-- **L3 Primary Domain Metric:** `{l3['primary_metric']} >= {l3['target_threshold']}` ({l3.get('probe_description', '')})
-- **L4 Safety & Grounding:** {'; '.join(spec['evaluation_pyramid']['l4_safety_grounding']['invariants'])}
-- **L5 Latency SLO:** `p50 <= {l5.get('p50_ms', 100)}ms`, `p95 <= {l5['p95_ms']}ms`, `p99 <= {l5.get('p99_ms', 500)}ms`
-"""
+{pyramid}"""
 
 
 def _render_scion_agent_yaml(role_spec: dict[str, Any], spec: dict[str, Any] | None = None) -> str:
@@ -1274,10 +1379,22 @@ def _render_role_system_prompt_base(spec: dict[str, Any], role_spec: dict[str, A
     infra = spec["infrastructure"]
     pyramid = spec["evaluation_pyramid"]
     l3 = pyramid["l3_domain_quality"]
-    l5 = pyramid["l5_latency_slo"]
     role = role_spec["role"]
     project_slug = proj["eval_slug"] if is_eval else proj["slug"]
-    service = infra["eval_service"] if is_eval else infra["serving_service"]
+    if deploy_mode(spec) == "none":
+        # Nothing to deploy (spec §8): no target service, and the pyramid grades the code.
+        target = f"- **Deploy Target:** {NOTHING_TO_DEPLOY}; the evaluation team grades the code"
+        oracle = f"## Evaluation Oracle (L1–L5 Code Pyramid)\n{render_code_pyramid(spec)}"
+    else:
+        l5 = pyramid["l5_latency_slo"]
+        service = infra["eval_service"] if is_eval else infra["serving_service"]
+        target = f"- **Target Cloud Run Service:** `{service}`"
+        oracle = f"""## Evaluation Oracle (L1–L5 Pyramid)
+1. **L1 Health:** `{pyramid['l1_health']['endpoint']}` -> {', '.join(pyramid['l1_health'].get('checks', []))}
+2. **L2 Contract:** {', '.join(pyramid['l2_contract'].get('endpoints', []))} — Invariants: {'; '.join(pyramid['l2_contract']['invariants'])}
+3. **L3 Domain Quality:** `{l3['primary_metric']} >= {l3['target_threshold']}` (Secondary: `{l3.get('secondary_metric', 'n/a')} >= {l3.get('secondary_threshold', 0)}`). Probe: {l3.get('probe_description', '')}
+4. **L4 Safety & Grounding:** {'; '.join(pyramid['l4_safety_grounding']['invariants'])}
+5. **L5 Latency SLO:** `p50 <= {l5.get('p50_ms', 100)}ms`, `p95 <= {l5['p95_ms']}ms`, `p99 <= {l5.get('p99_ms', 500)}ms`"""
     vcs = spec.get("vcs") or {}
     kp_index = f"{kp.EVAL_KP_MOUNT}/INDEX.md" if is_eval else "/workspace/knowledge-plane/INDEX.md"
     team = spec["team"]["eval_roles"] if is_eval else spec["team"]["build_roles"]
@@ -1330,11 +1447,13 @@ def _render_role_system_prompt_base(spec: dict[str, Any], role_spec: dict[str, A
     last_step = len(re.findall(r"^\d+\. ", loop, re.MULTILINE)) + 1
     factory_data = ""
     if is_eval:
+        measured = ("`p50_ms`/`p95_ms`/`p99_ms`" if deploy_mode(spec) != "none"
+                    else "`layer_results` with each tool's output and the L5 benchmark deltas")
         factory_data = f"""## Factory Data (Firestore)
 The control plane is serverless Firestore; see `config/firestore/README.md` in the kit for the data contract.
 - Agent status of both teams: `python3 /workspace/tools/factory_store.py list-agents --project-slug {proj['slug']}`
 - Recent evaluation runs: `python3 /workspace/tools/factory_store.py list-eval-runs --project-slug {proj['slug']}`
-- Record each evaluation run as one JSON object (`run_id`, `project_slug`, `source`, `overall_status`, `l1_passed`…`l5_passed`, `primary_metric_name` = `{l3['primary_metric']}`, `primary_metric_value`, `p50_ms`/`p95_ms`/`p99_ms`, `requirements`): `python3 /workspace/tools/factory_store.py put-eval-run --file run.json`. Use `--dry-run` first when you change the payload shape.
+- Record each evaluation run as one JSON object (`run_id`, `project_slug`, `source`, `overall_status`, `l1_passed`…`l5_passed`, `primary_metric_name` = `{l3['primary_metric']}`, `primary_metric_value`, {measured}, `requirements`): `python3 /workspace/tools/factory_store.py put-eval-run --file run.json`. Use `--dry-run` first when you change the payload shape.
 
 """
 
@@ -1344,7 +1463,7 @@ The control plane is serverless Firestore; see `config/firestore/README.md` in t
 - **Project:** `{project_slug}` ({location})
 - **Harness / Model:** `{role_spec['harness']}` / `{role_spec['model']}`
 - **Primary Responsibility:** {role_spec['responsibility']}
-- **Target Cloud Run Service:** `{service}`
+{target}
 
 ## System Mission
 {proj['mission']}
@@ -1356,12 +1475,7 @@ The control plane is serverless Firestore; see `config/firestore/README.md` in t
 - **Lint Command:** `{stack.get('lint_command', 'true')}`
 - **Cloud Backing Stores:** {', '.join(infra.get('cloud_stores', [])) or 'none'}
 
-## Evaluation Oracle (L1–L5 Pyramid)
-1. **L1 Health:** `{pyramid['l1_health']['endpoint']}` -> {', '.join(pyramid['l1_health'].get('checks', []))}
-2. **L2 Contract:** {', '.join(pyramid['l2_contract'].get('endpoints', []))} — Invariants: {'; '.join(pyramid['l2_contract']['invariants'])}
-3. **L3 Domain Quality:** `{l3['primary_metric']} >= {l3['target_threshold']}` (Secondary: `{l3.get('secondary_metric', 'n/a')} >= {l3.get('secondary_threshold', 0)}`). Probe: {l3.get('probe_description', '')}
-4. **L4 Safety & Grounding:** {'; '.join(pyramid['l4_safety_grounding']['invariants'])}
-5. **L5 Latency SLO:** `p50 <= {l5.get('p50_ms', 100)}ms`, `p95 <= {l5['p95_ms']}ms`, `p99 <= {l5.get('p99_ms', 500)}ms`
+{oracle}
 
 {factory_data}## Operating Loop
 {loop}
@@ -1479,6 +1593,16 @@ def _render_factory_env_example(spec: dict[str, Any]) -> str:
     eval_names = " ".join(r["role"] for r in team["eval_roles"])
     iam_roles = " ".join(infra.get("deployer_iam_roles", []))
     vcs = spec.get("vcs") or {}
+    if deploy_mode(spec) == "none":
+        # Nothing to deploy (spec §8): no service, runtime or deployer variables.
+        service_vars = "# Nothing to deploy (infrastructure.deploy: none): no service, runtime or deployer variables.\n"
+    else:
+        service_vars = f"""DEPLOYER_SA_NAME=deployer-sa
+RUNTIME_SA_NAME={infra['serving_service']}
+DEPLOYER_IAM_ROLES="{iam_roles}"
+SERVING_SERVICE={infra['serving_service']}
+DASHBOARD_SERVICE={infra['eval_service']}
+"""
 
     prefix, subdir = _monorepo(spec)
     monorepo = (
@@ -1508,12 +1632,7 @@ FIRESTORE_PROJECT=your-sandbox-gcp-project   # factory control plane: agent stat
 FIRESTORE_DATABASE='(default)'
 DATA_BUCKET=your-sandbox-gcp-project-factory-data   # factory data bucket (scripts/setup-sandbox.sh creates it)
 BQ_DATASET={proj['slug'].replace('-', '_')}_dataset          # only with scripts/setup-sandbox.sh --with-bigquery
-DEPLOYER_SA_NAME=deployer-sa
-RUNTIME_SA_NAME={infra['serving_service']}
-DEPLOYER_IAM_ROLES="{iam_roles}"
-SERVING_SERVICE={infra['serving_service']}
-DASHBOARD_SERVICE={infra['eval_service']}
-
+{service_vars}
 # --- Factory ---
 VCS_ENABLED={'true' if vcs.get('enabled') else 'false'}
 GITHUB_REPO={vcs.get('repo', '')}
@@ -1537,14 +1656,10 @@ MAX_WIP={team.get('max_wip', 2)}
 {monorepo}"""
 
 
-def _render_verify_factory_sh(spec: dict[str, Any]) -> str:
+def _render_verify_prelude(spec: dict[str, Any], env_vars: str) -> str:
+    """verify-factory.sh up to the generated-artifact checks; `env_vars` are the script's optional inputs."""
     proj = spec["project"]
     backlog_check = "" if _vcs_enabled(spec) else 'test -f "$ROOT_DIR/backlog/issues.json"'
-
-    infra = spec["infrastructure"]
-    l1_ep = spec["evaluation_pyramid"]["l1_health"]["endpoint"]
-    l3 = spec["evaluation_pyramid"]["l3_domain_quality"]
-    l5 = spec["evaluation_pyramid"]["l5_latency_slo"]
 
     return f"""#!/usr/bin/env bash
 # End-to-End Infrastructure & L1-L5 Evaluation Oracle Verification Script
@@ -1561,9 +1676,7 @@ fi
 
 BUILD_PROJECT_SLUG="${{BUILD_PROJECT:-{proj['slug']}}}"
 EVAL_PROJECT_SLUG="${{EVAL_PROJECT:-{proj['eval_slug']}}}"
-SERVING_URL="${{SERVING_URL:-}}"
-EVAL_URL="${{EVAL_URL:-}}"
-
+{env_vars}
 echo "[1/4] Verifying generated factory artifacts for $BUILD_PROJECT_SLUG and $EVAL_PROJECT_SLUG..."
 test -f "$ROOT_DIR/factory.yaml"
 test -f "$ROOT_DIR/config/firestore/README.md"
@@ -1575,7 +1688,18 @@ test -f "$ROOT_DIR/knowledge-plane/INDEX.md"
 test -f "$ROOT_DIR/knowledge-plane/kp-check.py"
 {backlog_check}
 echo "  Knowledge plane present. In the build workspace, run: python3 knowledge-plane/kp-check.py"
+"""
 
+
+def _render_verify_factory_sh(spec: dict[str, Any]) -> str:
+    if deploy_mode(spec) == "none":
+        return _render_verify_code_sh(spec)
+    proj = spec["project"]
+    l1_ep = spec["evaluation_pyramid"]["l1_health"]["endpoint"]
+    l3 = spec["evaluation_pyramid"]["l3_domain_quality"]
+    l5 = spec["evaluation_pyramid"]["l5_latency_slo"]
+
+    return _render_verify_prelude(spec, 'SERVING_URL="${SERVING_URL:-}"\nEVAL_URL="${EVAL_URL:-}"\n') + f"""
 echo "[2/4] Verifying L1 Health endpoint ({l1_ep}) if SERVING_URL is set..."
 if [[ -n "$SERVING_URL" ]]; then
   http_code="$(curl -s -o /dev/null -w '%{{http_code}}' "$SERVING_URL{l1_ep}")"
@@ -1604,6 +1728,59 @@ else
 fi
 
 echo "[4/4] Verification complete for {proj['name']}."
+"""
+
+
+def _render_verify_code_sh(spec: dict[str, Any]) -> str:
+    """verify-factory.sh for a factory with nothing to deploy (spec §8): L1 build and tests and the L4 tool, no curl."""
+    proj = spec["project"]
+    stack = spec["stack"]
+    l3 = spec["evaluation_pyramid"]["l3_domain_quality"]
+    subdir = _monorepo(spec)[1]
+    workdir = f'"$WORKSPACE_DIR/{subdir}"' if subdir else '"$WORKSPACE_DIR"'
+    l4 = _code_tool(spec, "l4")
+    if l4:
+        l4_tool = l4.split()[0]
+        l4_step = f"""echo "[3/4] Verifying L4 Safety ({l4}) if WORKSPACE_DIR is set..."
+if [[ -n "$WORKSPACE_DIR" ]]; then
+  if ! command -v {l4_tool} >/dev/null 2>&1; then
+    echo "ERROR: L4 tool {l4_tool} is not installed (install it, or ask the PO to change the L4 tool)" >&2
+    exit 1
+  fi
+  if ! ( {l4} ); then
+    echo "ERROR: L4 check failed: {l4}" >&2
+    exit 1
+  fi
+  echo "  L4 Safety OK"
+else
+  echo "  SKIP L4 check (set WORKSPACE_DIR to a checkout of the product repository)"
+fi
+"""
+    else:
+        lang = stack.get("primary_language", "")
+        l4_step = f"""echo "[3/4] L4 Safety: no standard tool for {lang} ({ASK_PO_TOOL})."
+echo "  SKIP L4 check until the PO names the tool"
+"""
+    env_vars = 'WORKSPACE_DIR="${WORKSPACE_DIR:-}"   # a checkout of the product repository to run the code checks in\n'
+    return _render_verify_prelude(spec, env_vars) + f"""
+echo "[2/4] Verifying L1 Builds and tests if WORKSPACE_DIR is set (nothing to deploy: no live checks)..."
+if [[ -n "$WORKSPACE_DIR" ]]; then
+  cd {workdir}
+  if ! ( {stack['build_command']} ); then
+    echo "ERROR: L1 build failed: {stack['build_command']}" >&2
+    exit 1
+  fi
+  if ! ( {stack['test_command']} ); then
+    echo "ERROR: L1 tests failed: {stack['test_command']}" >&2
+    exit 1
+  fi
+  echo "  L1 Builds and tests OK"
+else
+  echo "  SKIP L1 build and tests (set WORKSPACE_DIR to a checkout of the product repository)"
+fi
+
+{l4_step}
+echo "[4/4] Verification complete for {proj['name']}. The evaluation team grades L2 API compatibility, L3 ({l3['primary_metric']} >= {l3['target_threshold']}) and L5 benchmarks."
 """
 
 
@@ -1687,7 +1864,11 @@ def _render_root_agents_md(spec: dict[str, Any], roster_notes: list[str] | None 
     infra = spec["infrastructure"]
     team = spec["team"]
     l3 = spec["evaluation_pyramid"]["l3_domain_quality"]
-    l5 = spec["evaluation_pyramid"]["l5_latency_slo"]
+    serves = deploy_mode(spec) != "none"
+    # Where each team's work lands: a Cloud Run service, or nothing to deploy (spec §8).
+    build_target = f"Cloud Run `{infra['serving_service']}`" if serves else NOTHING_TO_DEPLOY
+    eval_target = (f"Cloud Run `{infra['eval_service']}`" if serves
+                   else "grades the build's code (the L1–L5 code pyramid)")
 
     build_rows = "\n".join(
         f"| `{r['role']}` | `{proj['slug']}` | `{r['harness']}` | `{r['model']}` | {r['responsibility']} |"
@@ -1707,8 +1888,8 @@ def _render_root_agents_md(spec: dict[str, Any], roster_notes: list[str] | None 
     if vcs.get("enabled"):
         vcs_lines = (
             f"- **Repository:** `{vcs['repo']}`\n"
-            f"- **Build Project (`{proj['slug']}`):** Branch `{vcs['build_branch']}` -> Cloud Run `{infra['serving_service']}`\n"
-            f"- **Evaluation Project (`{proj['eval_slug']}`):** Disjoint orphan branch `{vcs['eval_branch']}` -> Cloud Run `{infra['eval_service']}`\n"
+            f"- **Build Project (`{proj['slug']}`):** Branch `{vcs['build_branch']}` -> {build_target}\n"
+            f"- **Evaluation Project (`{proj['eval_slug']}`):** Disjoint orphan branch `{vcs['eval_branch']}` -> {eval_target}\n"
             f"- **PO inbox:** `gh issue list -R {vcs['repo']} --label status:po-decision`; daily digest on the pinned "
             f"issue \"{_digest_title(spec)}\"; issues labeled `{_factory_label(spec)}`"
         )
@@ -1716,9 +1897,21 @@ def _render_root_agents_md(spec: dict[str, Any], roster_notes: list[str] | None 
         vcs_lines = (
             "- **Version control:** Not configured yet. Backlog in `backlog/issues.json`; deploys from workspace snapshots. "
             "Run `scion-factory enable-git` and `scripts/enable-git.sh` to add Git later.\n"
-            f"- **Build Project (`{proj['slug']}`):** Shared workspace -> Cloud Run `{infra['serving_service']}`\n"
-            f"- **Evaluation Project (`{proj['eval_slug']}`):** Separate workspace -> Cloud Run `{infra['eval_service']}`"
+            f"- **Build Project (`{proj['slug']}`):** Shared workspace -> {build_target}\n"
+            f"- **Evaluation Project (`{proj['eval_slug']}`):** Separate workspace -> {eval_target}"
         )
+
+    if serves:
+        l5 = spec["evaluation_pyramid"]["l5_latency_slo"]
+        pyramid = f"""## 4. L1–L5 Evaluation Pyramid Oracle
+- **L1 Health:** `{spec['evaluation_pyramid']['l1_health']['endpoint']}`
+- **L2 Contract:** {'; '.join(spec['evaluation_pyramid']['l2_contract']['invariants'])}
+- **L3 Domain Metric:** `{l3['primary_metric']} >= {l3['target_threshold']}`
+- **L4 Safety & Grounding:** {'; '.join(spec['evaluation_pyramid']['l4_safety_grounding']['invariants'])}
+- **L5 Latency SLO:** `p50 <= {l5.get('p50_ms', 100)}ms`, `p95 <= {l5['p95_ms']}ms`, `p99 <= {l5.get('p99_ms', 500)}ms`
+"""
+    else:
+        pyramid = f"## 4. L1–L5 Code Evaluation Pyramid\n{render_code_pyramid(spec)}\n"
 
     return f"""# {proj['name']} — Scion Autonomous Software Factory (`AGENTS.md`)
 
@@ -1746,13 +1939,7 @@ def _render_root_agents_md(spec: dict[str, Any], roster_notes: list[str] | None 
 |------|---------|---------|-------|----------------|
 {eval_rows}
 {notes_section}
-## 4. L1–L5 Evaluation Pyramid Oracle
-- **L1 Health:** `{spec['evaluation_pyramid']['l1_health']['endpoint']}`
-- **L2 Contract:** {'; '.join(spec['evaluation_pyramid']['l2_contract']['invariants'])}
-- **L3 Domain Metric:** `{l3['primary_metric']} >= {l3['target_threshold']}`
-- **L4 Safety & Grounding:** {'; '.join(spec['evaluation_pyramid']['l4_safety_grounding']['invariants'])}
-- **L5 Latency SLO:** `p50 <= {l5.get('p50_ms', 100)}ms`, `p95 <= {l5['p95_ms']}ms`, `p99 <= {l5.get('p99_ms', 500)}ms`
-"""
+{pyramid}"""
 
 
 def _render_backlog(spec: dict[str, Any]) -> list[dict[str, Any]]:

@@ -124,6 +124,7 @@ team:
     model: Gemini 4 Argon (High)
     responsibility: Audits factory telemetry, Cloud Trace proofs, and cost guardrails
   - role: search-evaluator
+    default_kind: domain-evaluator
     harness: antigravity
     model: Gemini 4 Argon (High)
     responsibility: Runs 5-preset structural parity and policy guardrail probes

@@ -364,13 +364,17 @@ Don't copy the factory protocol here. How agents coordinate lives in `templates/
 """
 
     snapshot_row = "| Source commit | — |" if vcs_enabled else "| Source snapshot (SHA-256) | — |"
+    infra = spec.get("infrastructure") or {}
+    # A factory with nothing to deploy (infrastructure.deploy: none, spec §8) has no service.
+    service = ("none (nothing to deploy)" if infra.get("deploy") == "none"
+               else f"`{infra['serving_service']}`")
     files[f"{KP_ROOT}/state/LIVE.md"] = f"""# Live state
 
 Only the deployer writes this file, after every deploy and every rollback. Other agents read it.
 
 | Field | Value |
 |---|---|
-| Service | `{spec['infrastructure']['serving_service']}` |
+| Service | {service} |
 | Live revision | — |
 | Rollback revision | — |
 {snapshot_row}
