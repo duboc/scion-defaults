@@ -28,7 +28,15 @@ Run all commands from the root of the `scion-defaults` repository.
 
 ## Step 0: Target Hub mode
 
-Ask the user for the target Hub mode: **New Full GKE Scion Hub**, **Existing GKE / Cloud Run Scion Hub**, or **Existing Single-VM Hub**. If installing Scion from scratch on GKE, guide the user to run `scripts/setup-gke-hub.sh` before proceeding.
+Ask the user for the target Hub mode: **New Full GKE Scion Hub**, **Existing GKE / Cloud Run Scion Hub**, or **Existing Single-VM Hub**. If installing Scion from scratch on GKE, guide the user to use `scripts/setup-gke-hub.sh` with the appropriate tier flag:
+- For Full GKE Multi-Hub HA: `--tier terraform-ha`
+- For Hybrid VM + GKE: `--tier hybrid-gke`
+
+The full command syntax is:
+```bash
+DRY_RUN=1 scripts/setup-gke-hub.sh --tier <tier> --scion-repo <dir> --harnesses claude,antigravity --dry-run
+```
+After reviewing the plan, apply it using `--approve-apply`.
 
 ## Step 1: Detect static facts and write the draft
 
@@ -64,7 +72,7 @@ Work through the `questions` in pillar order. For each question:
 | Pillar | Fields to fill |
 |---|---|
 | `1_mission_and_boundaries` | `project.name`, `project.mission`, `project.non_goals`, and the `vcs` section |
-| `2_runtime_data_and_iam` | `stack.*` commands, `infrastructure.runtime` (`kubernetes` or `docker`), `infrastructure.deploy` (`service` or `none`), `infrastructure.cloud_stores`, `infrastructure.deployer_iam_roles` |
+| `2_runtime_data_and_iam` | `stack.*` commands, `infrastructure.runtime` (`kubernetes` or `docker`), `infrastructure.runtime_profile` (`""` or `"gke"`), `infrastructure.worker_sa_name` (default `"agent-worker"`), `infrastructure.deploy` (`service` or `none`), `infrastructure.cloud_stores`, `infrastructure.deployer_iam_roles` |
 | `3_roster_models_and_cost` | `team.build_roles`, `team.eval_roles`, `team.dropped_defaults`, `team.autonomy`, `team.heartbeat_mode`, `team.max_wip`, `infrastructure.budget_usd` |
 | `4_evaluation_pyramid_oracle` | `evaluation_pyramid.l1_health` through `evaluation_pyramid.l5_latency_slo` |
 | `5_backlog_waves_and_autonomy` | `waves[*].issues[*]` with `owner_role`, `acceptance_criteria`, and `requirements` (REQ- IDs) |
@@ -78,7 +86,7 @@ The draft specification starts with the default roster:
 
 Work through the team configuration with the human:
 
-1. **Deploy mode:** Ask for `infrastructure.runtime` (`kubernetes` or `docker`), `infrastructure.deploy`: `service` (the factory deploys and tests a live service) or `none` (a library, CLI, or monorepo package with nothing to deploy). With `none`, do not add `deployer` or `eval-deployer` roles.
+1. **Deploy mode:** Ask for `infrastructure.runtime` (`kubernetes` or `docker`), `infrastructure.runtime_profile` (`""` or `"gke"`), `infrastructure.worker_sa_name` (default `"agent-worker"`), `infrastructure.deploy`: `service` (the factory deploys and tests a live service) or `none` (a library, CLI, or monorepo package with nothing to deploy). With `none`, do not add `deployer` or `eval-deployer` roles.
 2. **Review proposed specialists:** Present the default roster and each item in `proposed_roles` with its evidence. For each specialist the human confirms, run:
    ```bash
    ./scripts/scion-factory add-role factory.yaml --role R --evidence "..."

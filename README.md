@@ -40,10 +40,12 @@ flowchart LR
     Compile --> Kit["Factory kit: templates, oracle, DDL, waves"]
 ```
 
-The factory is serverless wherever possible. Agents run on the Scion Hub, products deploy to Cloud Run, and the
-factory's own data (agent status and evaluation runs) lives in Firestore, so there is no database instance to size or
-pay for while idle. The interview steers products toward serverless stores too, and asks you to justify a
-provisioned store such as Spanner, AlloyDB, or Cloud SQL.
+The factory supports three supported execution topologies:
+1. **Full GKE Multi-Hub HA:** Scion Hub running on Cloud Run or GKE, with agent pods running on GKE Autopilot.
+2. **Hybrid VM + GKE (`gke_target`):** A single-VM Scion Hub connecting to a GKE cluster for agent execution.
+3. **Single-VM Docker fallback:** A standalone VM using Docker for agents.
+
+In all topologies, the factory control plane (agent status and evaluation runs) uses Firestore, so there is no database instance to size or pay for while idle. Products deploy to Cloud Run. The interview steers products toward serverless stores too, and asks you to justify a provisioned store such as Spanner, AlloyDB, or Cloud SQL.
 
 The tools separate two kinds of information:
 
