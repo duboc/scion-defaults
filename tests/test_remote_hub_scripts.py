@@ -65,7 +65,7 @@ class FakeHubHandler(BaseHTTPRequestHandler):
             self._send_json(200, {"urls": [{"path": "config.yaml", "url": self.server.url + "/dl/config.yaml"}]})
             return
         if self.path.startswith("/api/v1/harness-configs?scope=global"):
-            self._send_json(200, {"items": [{"name": "claude", "id": "hc-claude"}]})
+            self._send_json(200, {"items": list(self.server.hub_state.harness_configs.values())})
             return
         if self.path.startswith("/dl/config.yaml"):
             self.send_response(200)
@@ -85,6 +85,11 @@ class FakeHubHandler(BaseHTTPRequestHandler):
                 self._send_json(200, {"urls": urls})
                 return
             elif self.path.endswith("/finalize"):
+                data = json.loads(body.decode("utf-8"))
+                tid = self.path.split("/")[-2]
+                for t in self.server.hub_state.templates:
+                    if t.get("id") == tid:
+                        t["manifest"] = data.get("manifest")
                 self._send_json(200, {"status": "ok"})
                 return
             else:
@@ -105,9 +110,12 @@ class FakeHubHandler(BaseHTTPRequestHandler):
                 return
             else:
                 data = json.loads(body.decode("utf-8"))
-                data["id"] = "hc-new"
                 name = data["name"]
-                self.server.hub_state.harness_configs[name] = {"files": {}}
+                if name in self.server.hub_state.harness_configs:
+                    self._send_json(409, {"error": "already exists"})
+                    return
+                data["id"] = f"hc-{name}"
+                self.server.hub_state.harness_configs[name] = {"id": f"hc-{name}", "name": name, "files": {}}
                 self._send_json(200, data)
                 return
                 
@@ -155,7 +163,7 @@ class FakeHubState:
     def __init__(self, url):
         self.url = url
         self.templates = []
-        self.harness_configs = {}
+        self.harness_configs = {"claude": {"id": "hc-claude", "name": "claude", "files": {}}}
         self.service_accounts = []
         self.project_settings = {"proj-1": {}}
 
@@ -193,8 +201,9 @@ def fake_hub():
     server.server_close()
 
 
+
 def test_push_templates_direct_api_isolates_shared_storage_and_uploads(fake_hub, tmp_path):
-    # Pre-seed a legacy template sharing another template's storagePath on fake_hub (no SQLite hub.db anywhere)
+    import shutil
     fake_hub.seed_shared_storage_collision(project_id="proj-1", role="lead")
     env = {
         **os.environ,
@@ -202,13 +211,31 @@ def test_push_templates_direct_api_isolates_shared_storage_and_uploads(fake_hub,
         "SCION_HUB_TOKEN": "tok-admin",
         "FACTORY_ENV": str(write_minimal_env(tmp_path)),
     }
+    shutil.copytree(os.path.join(ROOT, "templates"), tmp_path / "templates")
+    helper = tmp_path / "templates" / "lead" / "home" / ".local" / "bin" / "helper.sh"
+    helper.parent.mkdir(parents=True, exist_ok=True)
+    helper.write_text("echo helper")
+    helper.chmod(0o755)
+
     res = subprocess.run(
-        [sys.executable, "scripts/push-templates.py", "--project", "demo", "--roles", "lead", "--apply"],
+        [sys.executable, "scripts/push-templates.py", "--project", "demo", "--roles", "lead", "--apply", "--templates", str(tmp_path / "templates")],
         cwd=ROOT, env=env, capture_output=True, text=True,
     )
     assert res.returncode == 0, res.stderr
     assert "rename it to lead-legacy" in res.stdout
     assert "other templates unchanged: yes" in res.stdout
+    
+    # Find the newly created lead template and check its files
+    new_lead = [t for t in fake_hub.templates if t["slug"] == "lead" and t["id"] != "tmpl-lead"][0]
+    # Check what files were passed to finalize
+
+    new_lead = [t for t in fake_hub.templates if t["slug"] == "lead" and t["id"] != "tmpl-lead"][0]
+    assert "manifest" in new_lead
+    manifest_files = {f["path"]: f for f in new_lead["manifest"]["files"]}
+    assert "home/.local/bin/helper.sh" in manifest_files
+    assert manifest_files["home/.local/bin/helper.sh"]["mode"] == 0o755
+
+
 
 
 def test_scion_admin_project_settings_and_service_accounts_over_api(fake_hub, tmp_path):
@@ -241,6 +268,12 @@ def test_make_factory_harness_configs_via_api_wraps_command_base(fake_hub):
     assert '["sh", "/home/scion/.local/bin/factory-cd.sh"' in uploaded["files"]["config.yaml"]
     assert "home/.local/bin/factory-cd.sh" in uploaded["files"]
 
+    res2 = subprocess.run(
+        [sys.executable, "scripts/make-factory-harness-configs.py", "--via-api", "--harness", "claude", "--apply"],
+        cwd=ROOT, env=env, capture_output=True, text=True,
+    )
+    assert res2.returncode == 0, res2.stderr
+
 
 def test_hub_preflight_api_mode_checks_registry_images_and_merges_k8s_projects(fake_hub):
     spec = importlib.util.spec_from_file_location("hub_preflight", os.path.join(ROOT, "scripts", "hub-preflight.py"))
@@ -263,3 +296,25 @@ def test_hub_preflight_api_mode_checks_registry_images_and_merges_k8s_projects(f
     assert report["ok"] is True
     assert report["factory_projects"] == "existing,alpha,alpha-eval"
     assert any("scion-opencode" in w for w in report["warnings"])
+
+def test_scion_admin_projects_local_fallback(tmp_path):
+    import sqlite3
+    db_path = tmp_path / "hub.db"
+    conn = sqlite3.connect(db_path)
+    conn.execute("CREATE TABLE projects (id TEXT, slug TEXT)")
+    conn.execute("INSERT INTO projects (id, slug) VALUES ('proj-local', 'local-slug')")
+    conn.commit()
+    conn.close()
+
+    env = {**os.environ, "SCION_HOME": str(tmp_path)}
+    # Ensure HUB_URL is NOT set
+    if "HUB_URL" in env:
+        del env["HUB_URL"]
+
+    res = subprocess.run(
+        [sys.executable, "scripts/scion-admin.py", "projects"],
+        cwd=ROOT, env=env, capture_output=True, text=True,
+    )
+    assert res.returncode == 0, res.stderr
+    assert "local-slug" in res.stdout
+    assert "proj-local" in res.stdout

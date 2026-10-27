@@ -52,10 +52,15 @@ def _db():
 
 
 def project_id(slug):
-    try:
-        return _hub_client().project_id(slug)
-    except Exception:
+    if os.environ.get("HUB_URL", "").strip():
+        try:
+            return _hub_client().project_id(slug)
+        except Exception:
+            sys.exit(f"unknown project slug: {slug}")
+    row = _db().execute("SELECT id FROM projects WHERE slug = ?", (slug,)).fetchone()
+    if not row:
         sys.exit(f"unknown project slug: {slug}")
+    return row["id"]
 
 
 def _token():
@@ -121,8 +126,12 @@ def api(method, path, body=None, timeout=60):
 
 
 def cmd_projects(_args):
-    for row in _hub_client().list_projects():
-        print(f"{row['slug']:<25} {row['id']}")
+    if os.environ.get("HUB_URL", "").strip():
+        for row in _hub_client().list_projects():
+            print(f"{row['slug']:<25} {row['id']}")
+    else:
+        for row in _db().execute("SELECT slug, id FROM projects ORDER BY slug"):
+            print(f"{row['slug']:<25} {row['id']}")
 
 
 def cmd_message(args):

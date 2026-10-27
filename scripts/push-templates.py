@@ -260,14 +260,14 @@ def push_templates_via_api(client, project_slug: str, roles: list[str], rendered
         files = {}
         for root, _, fs in os.walk(role_dir):
             for f in fs:
-                if f in ("agents.md", "system-prompt.md", "scion-agent.yaml"):
-                    path = os.path.relpath(os.path.join(root, f), role_dir)
-                    with open(os.path.join(root, f), "rb") as fd:
-                        files[path] = fd.read()
+                full = os.path.join(root, f)
+                path = os.path.relpath(full, role_dir)
+                with open(full, "rb") as fd:
+                    files[path] = (fd.read(), 0o755 if os.access(full, os.X_OK) else 0o644)
         
         harness = "claude"
         if "scion-agent.yaml" in files:
-            yaml = files["scion-agent.yaml"].decode("utf-8")
+            yaml = files["scion-agent.yaml"][0].decode("utf-8")
             m = re.search(r"harness:\s*(\S+)", yaml)
             if m:
                 harness = harness_type(m.group(1))
@@ -287,25 +287,25 @@ def push_templates_via_api(client, project_slug: str, roles: list[str], rendered
                     st, r = client.request("POST", f"/api/v1/templates", body={"name": role, "slug": role, "harness": harness, "scope": "project", "scopeId": pid})
                     tid = r["id"]
                     touched.add(tid)
-                    payload = {"files": [{"path": path, "size": len(raw)} for path, raw in files.items()]}
+                    payload = {"files": [{"path": path, "size": len(raw)} for path, (raw, mode) in files.items()]}
                     st, up_r = client.request("POST", f"/api/v1/templates/{tid}/upload", body=payload)
                     urls = up_r.get("urls") or up_r.get("uploadUrls") or up_r.get("files") or []
                     for entry in urls:
-                        raw = files[entry["path"]]
+                        raw = files[entry["path"]][0]
                         client.request(entry.get("method", "PUT"), entry["url"], raw=raw, headers=entry.get("headers") or {"Content-Type": "application/octet-stream"})
-                    manifest = {"version": "1.0", "harness": harness, "files": [{"path": p, "size": len(r), "hash": "sha256:" + hashlib.sha256(r).hexdigest(), "mode": 0o644} for p, r in files.items()]}
+                    manifest = {"version": "1.0", "harness": harness, "files": [{"path": p, "size": len(r), "hash": "sha256:" + hashlib.sha256(r).hexdigest(), "mode": mode} for p, (r, mode) in files.items()]}
                     st, res = client.request("POST", f"/api/v1/templates/{tid}/finalize", body={"manifest": manifest})
                     print(f"{role}: created {tid}, status={res.get('status')} hash={res.get('contentHash')}")
             else:
                 print(f"{role}: update in place {row['id']}")
                 if apply:
-                    payload = {"files": [{"path": path, "size": len(raw)} for path, raw in files.items()]}
+                    payload = {"files": [{"path": path, "size": len(raw)} for path, (raw, mode) in files.items()]}
                     st, r = client.request("POST", f"/api/v1/templates/{row['id']}/upload", body=payload)
                     urls = r.get("urls") or r.get("uploadUrls") or r.get("files") or []
                     for entry in urls:
-                        raw = files[entry["path"]]
+                        raw = files[entry["path"]][0]
                         client.request(entry.get("method", "PUT"), entry["url"], raw=raw, headers=entry.get("headers") or {"Content-Type": "application/octet-stream"})
-                    manifest = {"version": "1.0", "harness": harness, "files": [{"path": p, "size": len(r), "hash": "sha256:" + hashlib.sha256(r).hexdigest(), "mode": 0o644} for p, r in files.items()]}
+                    manifest = {"version": "1.0", "harness": harness, "files": [{"path": p, "size": len(r), "hash": "sha256:" + hashlib.sha256(r).hexdigest(), "mode": mode} for p, (r, mode) in files.items()]}
                     st, res = client.request("POST", f"/api/v1/templates/{row['id']}/finalize", body={"manifest": manifest})
                     print(f"{role}: updated, status={res.get('status')} hash={res.get('contentHash')}")
                     
@@ -315,13 +315,13 @@ def push_templates_via_api(client, project_slug: str, roles: list[str], rendered
                 st, r = client.request("POST", f"/api/v1/templates", body={"name": role, "slug": role, "harness": harness, "scope": "project", "scopeId": pid})
                 tid = r["id"]
                 touched.add(tid)
-                payload = {"files": [{"path": path, "size": len(raw)} for path, raw in files.items()]}
+                payload = {"files": [{"path": path, "size": len(raw)} for path, (raw, mode) in files.items()]}
                 st, up_r = client.request("POST", f"/api/v1/templates/{tid}/upload", body=payload)
                 urls = up_r.get("urls") or up_r.get("uploadUrls") or up_r.get("files") or []
                 for entry in urls:
-                    raw = files[entry["path"]]
+                    raw = files[entry["path"]][0]
                     client.request(entry.get("method", "PUT"), entry["url"], raw=raw, headers=entry.get("headers") or {"Content-Type": "application/octet-stream"})
-                manifest = {"version": "1.0", "harness": harness, "files": [{"path": p, "size": len(r), "hash": "sha256:" + hashlib.sha256(r).hexdigest(), "mode": 0o644} for p, r in files.items()]}
+                manifest = {"version": "1.0", "harness": harness, "files": [{"path": p, "size": len(r), "hash": "sha256:" + hashlib.sha256(r).hexdigest(), "mode": mode} for p, (r, mode) in files.items()]}
                 st, res = client.request("POST", f"/api/v1/templates/{tid}/finalize", body={"manifest": manifest})
                 print(f"{role}: created {tid}, status={res.get('status')} hash={res.get('contentHash')}")
 

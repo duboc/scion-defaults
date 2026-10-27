@@ -157,8 +157,11 @@ def via_api(client, harnesses, apply):
         
         if apply:
             payload = {"name": harness + SUFFIX, "scope": "global"}
-            status, res = client.request("POST", "/api/v1/harness-configs", body=payload)
-            hc_id = res["id"]
+            if harness + SUFFIX in configs:
+                hc_id = configs[harness + SUFFIX]["id"]
+            else:
+                status, res = client.request("POST", "/api/v1/harness-configs", body=payload)
+                hc_id = res["id"]
             
             upload_payload = {"files": [{"path": p, "size": len(c)} for p, c in files.items()]}
             status, up_res = client.request("POST", f"/api/v1/harness-configs/{hc_id}/upload", body=upload_payload)
