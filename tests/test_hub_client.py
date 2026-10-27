@@ -1,4 +1,5 @@
 import json
+import re
 import socket
 import threading
 from http.server import HTTPServer, BaseHTTPRequestHandler
@@ -35,6 +36,29 @@ class FakeHubHandler(BaseHTTPRequestHandler):
         })
 
         
+        import re
+        m_gcp_sa = re.match(r"/api/v1/projects/([^/]+)/gcp-service-accounts", self.path)
+        if m_gcp_sa:
+            self._send_json(200, {"serviceAccounts": [{"email": "ignore@example.com"}]})
+            return
+            
+        m_schedules = re.match(r"/api/v1/projects/([^/]+)/schedules", self.path)
+        if m_schedules:
+            pid = m_schedules.group(1)
+            self._send_json(200, getattr(self.server, "schedules", {}).get(pid, []))
+            return
+            
+        m_agent = re.match(r"/api/v1/projects/([^/]+)/agents/([^/]+)$", self.path)
+        if m_agent and m_agent.group(1) != "proj-1":
+            pid = m_agent.group(1)
+            slug = m_agent.group(2)
+            for a in self.server.agents:
+                if a.get("slug") == slug: # Ideally match pid too but it's mock
+                    self._send_json(200, a)
+                    return
+            self._send_json(404, {"error": "not found"})
+            return
+
         if "/agents" in self.path:
             agents = getattr(self.server, "agents", [])
             if not self.path.endswith("/agents"):
@@ -50,7 +74,7 @@ class FakeHubHandler(BaseHTTPRequestHandler):
 
         
         if "/schedules" in self.path:
-            self._send_json(200, [])
+            self._send_json(200, {"serviceAccounts": [{"email": "ignore@example.com"}]})
             return
 
         if self.path == "/health":
@@ -82,20 +106,31 @@ class FakeHubHandler(BaseHTTPRequestHandler):
             return
 
         if self.path == "/api/v1/projects":
-            self._send_json(200, {"projects": [{"slug": "proj-1"}]})
+            self._send_json(200, {"projects": [{"slug": "proj-1"}] + list(getattr(self.server, "projects_by_slug", {}).values())})
             return
             
-        if self.path.startswith("/api/v1/projects/proj-1/shared-dirs/"):
+        
+        if "/api/v1/templates" in self.path:
+            self._send_json(200, {"items": []})
+            return
+
+        m_proj = re.match(r"/api/v1/projects/([^/]+)/settings", self.path)
+        if m_proj:
+            pid = m_proj.group(1)
+            self._send_json(200, getattr(self.server, "project_settings", {}).get(pid, {}))
+            return
+
+        if "/shared-dirs/" in self.path:
             parts = self.path.split("/")
             if len(parts) >= 7 and parts[7:] and parts[7] != "files":
                 # GET file content
                 dirname = parts[6]
                 rel_path = urllib.parse.unquote("/".join(parts[8:]))
-                files_dict = self.server.shared_dir_files.get(("proj-1", dirname), {})
+                files_dict = self.server.shared_dir_files.get((parts[4], dirname), {})
                 self._send_json(200, {"content": files_dict.get(rel_path, "")})
                 return
             dirname = parts[6]
-            files_dict = self.server.shared_dir_files.get(("proj-1", dirname), {})
+            files_dict = self.server.shared_dir_files.get((parts[4], dirname), {})
             # Return list of files
             # The structure returned by the actual API: items -> list of dicts with name, content if it's small, etc.
             # But the test sync_shared_dir fetches each file or uses list to see what exists.
@@ -125,14 +160,28 @@ class FakeHubHandler(BaseHTTPRequestHandler):
             "body": body,
         })
         
-        if self.path.startswith("/api/v1/projects/proj-1/shared-dirs/"):
+        
+        if "/api/v1/templates" in self.path:
+            self._send_json(200, {"items": []})
+            return
+
+        m_proj = re.match(r"/api/v1/projects/([^/]+)/settings", self.path)
+        if m_proj:
+            pid = m_proj.group(1)
+            b = json.loads(body.decode("utf-8")) if body else {}
+            if hasattr(self.server, "project_settings"):
+                self.server.project_settings.setdefault(pid, {}).update(b)
+            self._send_json(200, {"id": "tpl-1"})
+            return
+
+        if "/shared-dirs/" in self.path:
             parts = self.path.split("/")
             dirname = parts[6]
             rel_path = urllib.parse.unquote("/".join(parts[8:]))
-            files_dict = self.server.shared_dir_files.setdefault(("proj-1", dirname), {})
+            files_dict = self.server.shared_dir_files.setdefault((parts[4], dirname), {})
             data = json.loads(body.decode("utf-8"))
             files_dict[rel_path] = data.get("content", "")
-            self._send_json(200, {"status": "ok"})
+            self._send_json(200, {"id": "tpl-1"})
             return
 
         self._send_json(200, {"status": "ok"})
@@ -159,15 +208,85 @@ class FakeHubHandler(BaseHTTPRequestHandler):
         if "/agents/" in self.path and self.path.endswith("/start"):
             parts = self.path.split("/")
             pid, slug = parts[4], parts[6]
-            self.server.set_agent_phase(pid, slug, "running"); print(f"FAKE HUB SET {slug} to running! {self.server.agents}")
+            self.server.set_agent_phase(pid, slug, "running")
             self._send_json(200, {})
             return
 
+        import json
+        m_proj = re.match(r"/api/v1/projects$", self.path)
+        if m_proj:
+            b = json.loads(body.decode("utf-8")) if body else {}
+            slug = b.get("slug", "proj") if isinstance(b, dict) else str(b)
+            pid = f"pid-{slug}"
+            if hasattr(self.server, "projects_by_slug"):
+                self.server.projects_by_slug[slug] = {"id": pid, "slug": slug}
+                self.server.project_settings[pid] = {}
+                self.server.agents_by_project[pid] = []
+                self.server.schedules[pid] = []
+            self._send_json(200, {"id": pid, "slug": slug})
+            return
+            
+        if "/api/v1/templates" in self.path:
+            self._send_json(200, {"id": "tpl-1"})
+            return
+
+        m_service = re.match(r"/api/v1/projects/([^/]+)/gcp-service-accounts", self.path)
+        if m_service:
+            b = json.loads(body.decode("utf-8")) if body else {}
+            self._send_json(200, {"id": b.get("email")})
+            return
+
+        m_schedule = re.match(r"/api/v1/projects/([^/]+)/schedules", self.path)
+        if m_schedule:
+            pid = m_schedule.group(1)
+            b = json.loads(body.decode("utf-8")) if body else {}
+            if hasattr(self.server, "schedules"):
+                self.server.schedules.setdefault(pid, []).append(b)
+            self._send_json(200, b)
+            return
+
+        m_shared = re.match(r"/api/v1/projects/([^/]+)/shared-dirs", self.path)
+        if m_shared:
+            self._send_json(200, {"id": "tpl-1"})
+            return
+
+        m_agent_msg = re.match(r"/api/v1/projects/([^/]+)/agents/([^/]+)/message", self.path)
+        if m_agent_msg:
+            self._send_json(200, {"id": "tpl-1"})
+            return
+
+        m_agent_start = re.match(r"/api/v1/projects/([^/]+)/agents/([^/]+)/start", self.path)
+        if m_agent_start:
+            pid = m_agent_start.group(1)
+            slug = m_agent_start.group(2)
+            self.server.set_agent_phase(pid, slug, "running")
+            self._send_json(200, {})
+            return
+
+        m_agents = re.match(r"/api/v1/projects/([^/]+)/agents$", self.path)
+        if m_agents and m_agents.group(1) != "proj-1":
+            pid = m_agents.group(1)
+            b = json.loads(body.decode("utf-8")) if body else {}
+            slug = b.get("name")
+            if hasattr(self.server, "agents_by_project"):
+                self.server.agents_by_project.setdefault(pid, []).append(slug)
+                self.server.seed_agent(pid, slug=slug, phase="provisioning")
+                self.server.set_agent_phase(pid, slug, "running")
+            self._send_json(200, {"phase": "provisioning"})
+            return
+
         if self.path == "/api/v1/projects/proj-1/agents":
+            import json
+            b = json.loads(body.decode("utf-8")) if body else {}
+            slug = b.get("name")
+            
+            if not any(a.get("slug") == slug for a in self.server.agents):
+                self.server.seed_agent("proj-1", slug=slug, phase="provisioning")
+                
             self.server.agent_created = True
             if getattr(self.server, "cold_start_503_once", False):
                 self.server.cold_start_503_once = False
-                self.server.agent_phase = "running" # simulates background provisioning succeeding
+                self.server.set_agent_phase("proj-1", slug, "running")
                 self.send_response(503)
                 self.end_headers()
                 return
@@ -182,14 +301,28 @@ class FakeHubHandler(BaseHTTPRequestHandler):
             "path": self.path,
             "headers": dict(self.headers),
         })
-        if self.path.startswith("/api/v1/projects/proj-1/shared-dirs/"):
+        
+        if "/api/v1/templates" in self.path:
+            self._send_json(200, {"items": []})
+            return
+
+        m_proj = re.match(r"/api/v1/projects/([^/]+)/settings", self.path)
+        if m_proj:
+            pid = m_proj.group(1)
+            b = json.loads(body.decode("utf-8")) if body else {}
+            if hasattr(self.server, "project_settings"):
+                self.server.project_settings.setdefault(pid, {}).update(b)
+            self._send_json(200, {"id": "tpl-1"})
+            return
+
+        if "/shared-dirs/" in self.path:
             parts = self.path.split("/")
             dirname = parts[6]
             rel_path = urllib.parse.unquote("/".join(parts[8:]))
-            files_dict = self.server.shared_dir_files.get(("proj-1", dirname), {})
+            files_dict = self.server.shared_dir_files.get((parts[4], dirname), {})
             if rel_path in files_dict:
                 del files_dict[rel_path]
-            self._send_json(200, {"status": "ok"})
+            self._send_json(200, {"id": "tpl-1"})
             return
         self._send_json(200, {"status": "ok"})
 
@@ -214,6 +347,10 @@ def fake_hub():
     port = get_free_port()
     server = HTTPServer(("127.0.0.1", port), FakeHubHandler)
     server.agents = []
+    server.projects_by_slug = {}
+    server.project_settings = {}
+    server.schedules = {}
+    server.agents_by_project = {}
     server.exec_outputs = {}
     server.exec_commands = {}
     server.started_agents = []

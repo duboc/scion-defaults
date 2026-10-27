@@ -298,6 +298,19 @@
           "items": {
             "type": "string"
           }
+        },
+        "runtime": {
+          "type": "string",
+          "enum": [
+            "kubernetes",
+            "docker"
+          ]
+        },
+        "runtime_profile": {
+          "type": "string"
+        },
+        "worker_sa_name": {
+          "type": "string"
         }
       },
       "if": {
