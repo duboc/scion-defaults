@@ -61,3 +61,22 @@ def test_readme_includes_copy_paste_starting_prompts():
     ):
         assert needle in readme, f"missing {needle!r} in README starting prompts"
 
+
+def test_docs_cover_github_workflow_scope_and_lesson_l31():
+    readme = (ROOT / "README.md").read_text()
+    runbook = (ROOT / "docs/setup-runbook.md").read_text()
+    lessons = (ROOT / "docs/lessons-learned.md").read_text()
+
+    assert "workflow" in readme and ".github/workflows" in readme
+    assert "workflow" in runbook and ".github/workflows" in runbook
+    assert "## L31." in lessons
+    for needle in (
+        "eval-sweep",
+        "pytest.importorskip",
+        "migration-specialist",
+        "/scion-volumes/scratchpad/pending-",
+        "status:po-decision",
+    ):
+        assert needle in lessons, f"missing {needle!r} in docs/lessons-learned.md"
+
+

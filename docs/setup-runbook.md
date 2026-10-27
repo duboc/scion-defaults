@@ -121,7 +121,10 @@ gh api -X POST repos/$GITHUB_REPO/rulesets \
 EOF
 ```
 
-Store the PAT in the Hub as secret `GITHUB_TOKEN`. Note: Hub secrets default to injection mode `as_needed`, which skips injecting them into container environments unless explicitly declared. To ensure agents receive the token, set injection mode to **Always** (C2):
+Store the PAT in the Hub as secret `GITHUB_TOKEN`. Grant `repo` + `workflow` on a classic PAT (or `Contents`, `Issues`,
+`Pull requests`, and `Workflows` read/write on a fine-grained PAT) when issues modify `.github/workflows/*`; omitting
+`workflow` scope causes GitHub to reject `.github/workflows/*` pushes, in which case agents save a reviewed patch under
+`/scion-volumes/scratchpad/pending-<N>/` and open a `status:po-decision` issue while continuing other work (L31). Note: Hub secrets default to injection mode `as_needed`, which skips injecting them into container environments unless explicitly declared. To ensure agents receive the token, set injection mode to **Always** (C2):
 - In Web UI: Project → Settings → Secrets → New Secret (`GITHUB_TOKEN`, Injection mode: **Always**).
 - Or via CLI:
   ```bash
