@@ -129,7 +129,7 @@ class HubClient:
                     headers={"Metadata-Flavor": "Google"}
                 )
                 with urllib.request.urlopen(req, timeout=2.0) as resp:
-                    transport_token = resp.read().decode("utf-8").strip()
+                    transport_token = resp.read().decode("utf-8", errors="replace").strip()
             except Exception:
                 # fallback to gcloud
                 try:
@@ -184,12 +184,12 @@ class HubClient:
                 resp_body = resp.read()
                 if resp_body:
                     try:
-                        return resp.status, json.loads(resp_body.decode("utf-8"))
+                        return resp.status, json.loads(resp_body.decode("utf-8", errors="replace"))
                     except Exception:
-                        return resp.status, resp_body.decode("utf-8")
+                        return resp.status, resp_body.decode("utf-8", errors="replace")
                 return resp.status, {}
         except urllib.error.HTTPError as e:
-            err_body = e.read().decode("utf-8")
+            err_body = e.read().decode("utf-8", errors="replace")
             raise HubAPIError(e.code, method, url, err_body)
 
     def health(self) -> dict | None:

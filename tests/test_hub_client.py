@@ -48,6 +48,20 @@ class FakeHubHandler(BaseHTTPRequestHandler):
                 self._send_json(200, {"status": "healthy", "scionVersion": "0.9.0"})
             return
             
+        if self.path == "/non-utf8":
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html")
+            self.end_headers()
+            self.wfile.write(b"hello \xff world")
+            return
+            
+        if self.path == "/error-non-utf8":
+            self.send_response(500)
+            self.send_header("Content-Type", "text/html")
+            self.end_headers()
+            self.wfile.write(b"error \xff page")
+            return
+
         if self.path == "/api/v1/projects":
             self._send_json(200, {"projects": []})
             return
@@ -257,3 +271,14 @@ def test_sync_shared_dir_uploads_changed_and_deletes_stale_files(fake_hub, tmp_p
         "index.md": "# Index\n",
         "adrs/ADR-001.md": "# ADR 1\n",
     }
+
+def test_non_utf8_response_and_error(fake_hub):
+    client = hub_client.HubClient(base_url=fake_hub.url, token="tok-123")
+    status, data = client.request("GET", "/non-utf8")
+    assert status == 200
+    assert "hello \ufffd world" in data
+
+    with pytest.raises(hub_client.HubAPIError) as exc_info:
+        client.request("GET", "/error-non-utf8")
+    assert exc_info.value.status == 500
+    assert "error \ufffd page" in exc_info.value.body
