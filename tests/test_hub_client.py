@@ -34,6 +34,16 @@ class FakeHubHandler(BaseHTTPRequestHandler):
             "headers": dict(self.headers),
         })
 
+        
+        if "/agents" in self.path:
+            self._send_json(200, {"agents": getattr(self.server, "agents", [])})
+            return
+
+        
+        if "/schedules" in self.path:
+            self._send_json(200, [])
+            return
+
         if self.path == "/health":
             if getattr(self.server, "fail_health_404", False):
                 self._send_json(404, {"error": "not found"})
@@ -63,7 +73,7 @@ class FakeHubHandler(BaseHTTPRequestHandler):
             return
 
         if self.path == "/api/v1/projects":
-            self._send_json(200, {"projects": []})
+            self._send_json(200, {"projects": [{"slug": "proj-1"}]})
             return
             
         if self.path.startswith("/api/v1/projects/proj-1/shared-dirs/"):
@@ -128,6 +138,19 @@ class FakeHubHandler(BaseHTTPRequestHandler):
             "body": body,
         })
         
+
+        if self.path.endswith("/exec"):
+            parts = self.path.split("/")
+            pid, slug = parts[4], parts[6]
+            import json
+            b = json.loads(body.decode("utf-8")) if body else {}
+            self.server.exec_commands.setdefault((pid, slug), []).append(b.get("command", []))
+            self._send_json(200, {"output": self.server.exec_outputs.get((pid, slug), "")})
+            return
+        if "/agents/" in self.path and self.path.endswith("/start"):
+            self._send_json(200, {})
+            return
+
         if self.path == "/api/v1/projects/proj-1/agents":
             self.server.agent_created = True
             if getattr(self.server, "cold_start_503_once", False):
@@ -178,6 +201,18 @@ class CrossOriginHandler(BaseHTTPRequestHandler):
 def fake_hub():
     port = get_free_port()
     server = HTTPServer(("127.0.0.1", port), FakeHubHandler)
+    server.agents = []
+    server.exec_outputs = {}
+    server.exec_commands = {}
+    server.started_agents = []
+    def seed_agent(pid, **kwargs):
+        server.agents.append({"id": "ag-1", "slug": kwargs.get("slug"), "phase": kwargs.get("phase"), "activity": kwargs.get("activity"), "harnessConfig": kwargs.get("harness"), "taskSummary": kwargs.get("task_summary"), "runtime": kwargs.get("runtime"), "pod_name": kwargs.get("pod_name")})
+    server.seed_agent = seed_agent
+    def set_agent_phase(pid, slug, phase):
+        for a in server.agents:
+            if a.get("slug") == slug:
+                a["phase"] = phase
+    server.set_agent_phase = set_agent_phase
     server.url = f"http://127.0.0.1:{port}"
     server.requests = []
     server.shared_dir_files = {}
