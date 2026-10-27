@@ -711,3 +711,13 @@ fix now lives. Dates are UTC. "Encoded in" points to the script, template rule o
   [`scripts/hub-preflight.py`](../scripts/hub-preflight.py), [`README.md`](../README.md),
   [`docs/setup-runbook.md`](setup-runbook.md).
 
+
+## L32. GKE Workload Identity & Cloud Run API Variations
+
+**The Failure:** Hardcoding authentication and probe paths failed when migrating Scion hubs between Cloud Run and GKE Autopilot. We encountered cold Autopilot `503` responses crashing client initialization, broken Workload Identity mounts due to default GCP identity misconfigurations, and state-loss bugs when K8s CronJobs tried to maintain cursor positions locally.
+
+**The Fix:**
+- GKE uses `block` default identity and explicit Workload Identity KSA mapping (for `scion-worker` and `scion-deployer`).
+- Cloud Run health checks must use `/health` (not `/healthz` which works on k8s).
+- Our Scion Hub client handles cold Autopilot `503` idempotency by polling during `ensure_agent_started`.
+- We maintain stateless K8s CronJob states (like watchdogs) remotely in Firestore to survive pod rotation.

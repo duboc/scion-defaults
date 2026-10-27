@@ -6,6 +6,9 @@ VM at run time, and the GitHub token is only ever piped through stdin.
 
 | Script | Runs on | Changes things? | What it does |
 |---|---|---|---|
+| [`setup-gke-hub.sh`](setup-gke-hub.sh) | your machine | GCP & GKE | Setup script for a Full GKE HA Scion Hub or Hybrid VM+GKE architecture. |
+| [`install-k8s-control-plane.py`](install-k8s-control-plane.py) | your machine | K8s Cluster | Installs `scion-factory-sync` and `scion-factory-watchdog` CronJobs into the Kubernetes cluster. |
+| [`hub_client.py`](hub_client.py) | your machine | no | stdlib-only transport-agnostic Scion Hub REST client supporting IAP and GKE Autopilot `/health` cold starts. |
 | [`scion-factory`](scion_factory.py) | your machine, called by a coding agent | writes `--out` | Deterministic tool behind the [`scion-factory-bootstrap`](../skills/scion-factory-bootstrap/SKILL.md) skill: `inspect` detects repository facts, `grill --json` writes a draft `factory.yaml` and emits the interview questions (never blocks on stdin), `check` runs the readiness gate, `compile` writes the factory kit (knowledge plane included), and `enable-git` switches a factory that started without Git to Git mode. Knowledge plane logic lives in [`knowledge_plane.py`](knowledge_plane.py). |
 | [`run-on-hub.sh`](run-on-hub.sh) | your machine | no (transport) | Streams a local script to the Hub VM over SSH stdin into a temporary file and runs it as the Hub OS user (`.py` with python3, anything else with bash), forwarding factory variables. Avoids nested quoting and argument length limits (L1, M7). |
 | [`factory-status.sh`](factory-status.sh) | Hub VM | no | One-screen health check: agents with phase/activity/idle minutes, schedules, recent messages, the PO inbox, failed dispatches, workspace git state, containers, optional terminal tails (`--panes N`). |
