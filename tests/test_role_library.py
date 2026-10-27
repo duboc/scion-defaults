@@ -123,6 +123,7 @@ def test_lead_protocol_covers_coupled_co_commits_and_pending_patch_escalation():
     assert proto is not None
     assert "co-commit" in proto.lower()
     assert "/scion-volumes/scratchpad/pending-" in proto
-    assert "status:po-decision" in proto
+    assert "decision rights" in proto.lower()
+    assert "status:po-decision" not in proto  # VCS-agnostic: non-Git kits escalate via message, Git kits via PO inbox
 
 

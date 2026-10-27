@@ -63,7 +63,7 @@ ROLES: dict[str, RoleDef] = {
 When an issue arrives, read the knowledge plane and determine required specialists.
 Write briefs to `/scion-volumes/scratchpad/briefs/<issue>-<agent>.md` and notify teammates via Scion messages.
 When two reviewed PASS issues touch overlapping files in the shared worktree, authorize an explicit path-scoped co-commit in one commit slot so neither slice overwrites the other.
-If a push is rejected by GitHub token scope limits (for example `.github/workflows/*` without `workflow` scope), have the worker save the reviewed restricted paths as a patch in `/scion-volumes/scratchpad/pending-<issue>/`, land the permitted paths, open a `status:po-decision` issue with the patch path, and keep remaining WIP moving.
+If a push is rejected by repository or token scope limits (for example `.github/workflows/*` without `workflow` scope), have the worker save the reviewed restricted paths as a patch in `/scion-volumes/scratchpad/pending-<issue>/`, land the permitted paths, escalate the patch path to the product owner through your Decision rights channel, and keep remaining WIP moving.
 Escalate scope adjustments, architectural decisions (ADRs), and cost/IAM questions to the product owner.
 Never write product code yourself.
 Coordinate teammates, track task progress, and post evidence comments when work is verified.""",
