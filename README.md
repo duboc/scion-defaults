@@ -36,7 +36,7 @@ The workflow separates judgment tasks from repeatable automation. Your coding ag
 |---|---|---|
 | [`skills/scion-factory-bootstrap/SKILL.md`](skills/scion-factory-bootstrap/SKILL.md) | Guides your coding agent to inspect your repository, ask one topic at a time, and challenge vague answers using lessons L1–L32. | Agentic skill |
 | [`scripts/scion-factory`](scripts/scion_factory.py) | Detects repository facts, writes a draft `factory.yaml`, checks readiness, adds specialist roles (`add-role`), compiles the kit, enables Git (`enable-git`), and runs `provision`. It makes zero LLM calls and never blocks on interactive input. | Deterministic CLI |
-| [`scripts/provision_factory.py`](scripts/provision_factory.py) and [`scripts/hub_client.py`](scripts/hub_client.py) | Provision projects, Workload Identity bindings, shared directories, templates, schedules, and lead agents over the Scion Hub HTTPS API (with IAP OIDC support and local SQLite fallback). | Transport-agnostic control |
+| [`scripts/provision_factory.py`](scripts/provision_factory.py) and [`scripts/hub_client.py`](scripts/hub_client.py) | Provision projects, Workload Identity, shared directories, templates, schedules, and leads over the Hub HTTPS API. Supports IAP OIDC and local SQLite fallback. | Transport-agnostic control |
 | [`scripts/setup-gke-hub.sh`](scripts/setup-gke-hub.sh) and [`scripts/install-k8s-control-plane.py`](scripts/install-k8s-control-plane.py) | Bootstrap a GKE-backed Scion Hub and install Kubernetes `CronJob` loops for Firestore sync and self-healing watchdog checks. | Infrastructure automation |
 | Generated factory kit | A multi-agent build and evaluation system that runs on GKE pods or Docker containers. | Multi-agent system |
 
@@ -72,7 +72,7 @@ The bootstrap tools separate repository facts from human intent:
 
 ## Starting prompts
 
-Open your coding agent inside a clone of this repository and paste one of the prompts below. Replace uppercase placeholders (`OWNER/REPO`, `PROJECT_ID`, `HUB_URL`, `HUB_VM`, `HUB_ZONE`, `ADMIN_EMAIL`) with your values.
+Open your coding agent inside a clone of this repository and paste one of the prompts below. Replace uppercase placeholders such as `OWNER/REPO`, `PROJECT_ID`, `HUB_URL`, `HUB_VM`, `HUB_ZONE`, `ORGANIZATION_ID`, `BILLING_ACCOUNT_ID`, `ADMIN_EMAIL`, `TARGET_REPO_PATH`, `PATH_1`, and `PATH_2` with your values.
 
 ### Add a factory to an existing Scion Hub (Existing GKE Scion Hub or Single-VM Hub)
 
@@ -107,7 +107,7 @@ Bootstrap a Scion software factory for TARGET_REPO_PATH using the scion-factory-
 
 ### Split a monorepo into multiple factories
 
-Use this prompt when one repository contains multiple packages or services. Each factory scopes work by `repo_subdir`, `AGENT_PREFIX`, and `factory:<slug>` issue labels:
+Use this prompt when one repository contains multiple packages or services. Each factory scopes work by `monorepo.subdir` (`FACTORY_SUBDIR`), `AGENT_PREFIX`, and `factory:<slug>` issue labels:
 
 ```none
 Use the scion-factory-bootstrap skill to set up Scion factories for the monorepo at https://github.com/OWNER/REPO on my existing Scion Hub (project: PROJECT_ID, GKE Hub URL: HUB_URL or VM: HUB_VM in zone HUB_ZONE, PO admin: ADMIN_EMAIL):
@@ -118,12 +118,12 @@ Inspect each subfolder, interview me, compile one kit per factory, and deploy th
 
 ## Provision a compiled kit automatically
 
-After you validate `factory.yaml`, compile a kit, and populate `config/<slug>.env`, run the nine-phase provisioner in dry-run mode first:
+After you validate `factory.yaml`, compile a kit, and populate `config/FACTORY_SLUG.env`, run the nine-phase provisioner in dry-run mode first:
 
 ```bash
 ./scripts/scion-factory provision factory.yaml \
   --kit OUTPUT_DIR \
-  --env config/<slug>.env \
+  --env config/FACTORY_SLUG.env \
   --seed-repo TARGET_REPO_PATH
 ```
 
@@ -132,7 +132,7 @@ Review the planned actions across preflight, sandbox IAM, repository seeding, Hu
 ```bash
 ./scripts/scion-factory provision factory.yaml \
   --kit OUTPUT_DIR \
-  --env config/<slug>.env \
+  --env config/FACTORY_SLUG.env \
   --seed-repo TARGET_REPO_PATH \
   --apply \
   --go
@@ -284,13 +284,13 @@ Skip Steps 1 and 2 when a Scion Hub already runs in `HUB_PROJECT_ID`. Your new f
    ```
 
 2. Confirm the static facts detected from your repository (languages, build/test commands, ports, cloud SDKs, ADRs, and GitHub remote).
-3. Complete the structured interview one topic at a time. The agent rejects untestable answers until `check` passes.
-4. Compile and verify the generated factory kit:
+3. Complete the structured interview one topic at a time (see [Review the interview topics](#review-the-interview-topics)). The agent rejects untestable answers until `check` passes.
+4. Set `OUTPUT_DIR`, compile the generated factory kit, and verify it:
 
    ```bash
-   ./scripts/scion-factory compile factory.yaml --out OUTPUT_DIR
-   OUTPUT_DIR/scripts/verify-factory.sh
    export OUTPUT_DIR="$PWD/../my-factory-kit"
+   ./scripts/scion-factory compile factory.yaml --out "$OUTPUT_DIR"
+   "$OUTPUT_DIR/scripts/verify-factory.sh"
    ```
 
    Compilation prints `Compiled 56 boilerplate files into OUTPUT_DIR` (count varies with specialist roles). After configuring `FACTORY_ENV` in Step 4, you can automate Steps 5 through 8 with [`./scripts/scion-factory provision`](#provision-a-compiled-kit-automatically) or run each step manually below.
@@ -312,12 +312,12 @@ Skip Steps 1 and 2 when a Scion Hub already runs in `HUB_PROJECT_ID`. Your new f
    | `HUB_IAP_AUDIENCE` | OAuth client ID when IAP protects `HUB_URL` | Leave empty |
    | `HUB_PROJECT` | `HUB_PROJECT_ID` | `HUB_PROJECT_ID` |
    | `HUB_K8S_NAMESPACE` | Agent pod namespace (for example, `prod`) | Leave empty |
-   | `IMAGE_REGISTRY` | `<region>-docker.pkg.dev/<project>/<repo>` | Leave empty |
+   | `IMAGE_REGISTRY` | `REGION-docker.pkg.dev/PROJECT_ID/REPO_NAME` | Leave empty |
    | `HUB_ZONE` / `HUB_VM` / `HUB_OS_USER` | Leave empty | VM zone, `scion-hub-factory` (or existing VM), `scion` |
-   | `SANDBOX_PROJECT`, `FIRESTORE_PROJECT` | Sandbox GCP project ID | Sandbox GCP project ID (or `HUB_PROJECT_ID`) |
+   | `SANDBOX_PROJECT`, `FIRESTORE_PROJECT` | `SANDBOX_PROJECT` | `SANDBOX_PROJECT` (or `HUB_PROJECT_ID`) |
    | `WORKER_SA_NAME` | `agent-worker` (Workload Identity GSA) | Leave empty |
    | `PO_EMAIL` | `ADMIN_EMAIL` | `ADMIN_EMAIL` |
-   | `DATA_BUCKET` | `<sandbox-project>-factory-data` | `<sandbox-project>-factory-data` |
+   | `DATA_BUCKET` | `SANDBOX_PROJECT-factory-data` | `SANDBOX_PROJECT-factory-data` |
 
    On a shared Hub, verify that `BUILD_PROJECT` and `EVAL_PROJECT` slugs do not collide with existing projects.
 
@@ -375,7 +375,7 @@ Skip Steps 1 and 2 when a Scion Hub already runs in `HUB_PROJECT_ID`. Your new f
    cd -
    ```
 
-4. Create project labels and seed Wave 1 GitHub issues (review dry-run output first, then apply with `DRY_RUN=0`):
+4. Create project labels and seed backlog wave issues in GitHub (review dry-run output first, then apply with `DRY_RUN=0`):
 
    ```bash
    gh label create "$BUILD_PROJECT" -R "$GITHUB_REPO" --force
@@ -417,6 +417,8 @@ Skip Steps 1 and 2 when a Scion Hub already runs in `HUB_PROJECT_ID`. Your new f
    for proj in "$BUILD_PROJECT" "$EVAL_PROJECT"; do
      python3 scripts/scion-admin.py service-accounts --project "$proj" add \
        --email "${WORKER_SA_NAME:-agent-worker}@${SANDBOX_PROJECT}.iam.gserviceaccount.com" --gcp-project "$SANDBOX_PROJECT"
+     [ -n "${DEPLOYER_SA_NAME:-}" ] && python3 scripts/scion-admin.py service-accounts --project "$proj" add \
+       --email "${DEPLOYER_SA_NAME}@${SANDBOX_PROJECT}.iam.gserviceaccount.com" --gcp-project "$SANDBOX_PROJECT"
      python3 scripts/scion-admin.py project-settings --project "$proj" \
        ${RUNTIME_PROFILE:+--profile "$RUNTIME_PROFILE"} --gcp-identity assign \
        --service-account "${WORKER_SA_NAME:-agent-worker}@${SANDBOX_PROJECT}.iam.gserviceaccount.com"
@@ -440,22 +442,24 @@ scripts/push-templates.py --project "$EVAL_PROJECT" --templates "$OUTPUT_DIR/tem
   --roles "$(echo "$EVAL_AGENTS" | tr ' ' ',')" --apply
 ```
 
-Each run verifies storage isolation (L16) and ends with `other templates unchanged: yes`. For monorepo factories (`REPO_SUBDIR` set), publish `<harness>-factory` global configs first. Run `python3 scripts/make-factory-harness-configs.py --via-api --apply` on GKE, or wrap it with `scripts/run-on-hub.sh` on a VM.
+Each run verifies storage isolation (L16) and ends with `other templates unchanged: yes`. For monorepo factories (`FACTORY_SUBDIR` set), publish `<harness>-factory` global configs first. Run `python3 scripts/make-factory-harness-configs.py --via-api --apply` on GKE, or `python3 scripts/make-factory-harness-configs.py --via-hub --apply` for a VM Hub.
 
 ### Step 8: Start the factory
 
-1. Install the 1-minute Firestore agent sync and the 5-minute self-healing watchdog across `FACTORY_PROJECTS`:
+1. Install the 1-minute Firestore agent sync and the 5-minute self-healing watchdog across `FACTORY_PROJECTS` (export `SCION_HUB_TOKEN` first on GKE):
 
    ```bash
    # GKE runtime (stateless Kubernetes CronJobs backed by Firestore factory_control_state):
-   python3 scripts/install-k8s-control-plane.py --namespace "$HUB_K8S_NAMESPACE" --apply
+   export SCION_HUB_TOKEN=HUB_ADMIN_TOKEN
+   python3 scripts/install-k8s-control-plane.py --namespace "$HUB_K8S_NAMESPACE" \
+     --gsa-email "${WORKER_SA_NAME:-agent-worker}@${SANDBOX_PROJECT}.iam.gserviceaccount.com" --apply
 
    # Single-VM Docker runtime:
    scripts/run-on-hub.sh scripts/factory-watchdog.py --install-cron --apply
    scripts/install-sync-cron.sh
    ```
 
-2. Start only the two lead agents (`lead` and `eval-lead`). Each lead spawns its own teammates on first wake-up so every teammate registers as the lead's child in Scion. On GKE (`HUB_URL` set), run `scion start` directly instead of `scripts/run-on-hub.sh scripts/scion-admin.py scion start`:
+2. Start only the two lead agents (`lead` and `eval-lead`). Each lead spawns its own teammates on first wake-up. That hierarchy registers teammates under the lead and routes teammate notifications to the lead. On GKE (`HUB_URL` set), run `scion start` directly instead of `scripts/run-on-hub.sh scripts/scion-admin.py scion start`:
 
    ```bash
    scripts/run-on-hub.sh scripts/scion-admin.py scion start "${AGENT_PREFIX:+$AGENT_PREFIX-}lead" -t lead --project="$BUILD_PROJECT" \
@@ -504,7 +508,7 @@ scripts/run-on-hub.sh scripts/scion-admin.py scion hub projects delete "$BUILD_P
 scripts/run-on-hub.sh scripts/scion-admin.py scion hub projects delete "$EVAL_PROJECT" --yes --force
 ```
 
-GitHub retains the knowledge plane, evaluation branch, and wave issues. On a Single-VM Hub, remove `~/.scion/hub-workspaces/<slug>` before reusing a deleted project slug. To remove sandbox IAM and Firestore resources created by `setup-sandbox.sh`, follow the teardown checklist in [lesson L29](docs/lessons-learned.md#l29-a-real-monorepo-kubernetes-as-three-factories-and-leads-that-start-their-own-teams).
+GitHub retains the knowledge plane, evaluation branch, and wave issues. On a Single-VM Hub, remove `~/.scion/hub-workspaces/PROJECT_SLUG` before reusing a deleted project slug. To remove sandbox IAM and Firestore resources created by `setup-sandbox.sh`, follow the teardown checklist in [lesson L29](docs/lessons-learned.md#l29-a-real-monorepo-kubernetes-as-three-factories-and-leads-that-start-their-own-teams).
 
 ## Review the interview topics
 
@@ -515,7 +519,7 @@ Your coding agent asks about seven areas, one topic at a time, and rejects vague
 | Mission and boundaries | Product mission, at least two explicit non-goals, Git mode, repository URL, and build/evaluation branch names. | Missing non-goals cause scope creep or repeated PO escalations (L4, L25). |
 | Deploy target and runtime | Cloud Run `service` vs. `deploy: none` (library, CLI, package), plus `infrastructure.runtime` (`kubernetes` on GKE or `docker` on VM), `runtime_profile`, and `worker_sa_name`. | `deploy: none` skips deployer accounts and grades code and contracts directly; GKE pods default to `block` identity unless Workload Identity is mapped (L29, L32). |
 | Build, data, and IAM | Exact build, test, and lint commands, serverless data stores, and required IAM roles for deployer and runtime service accounts. | A missing IAM role blocked Wave 1 mid-sprint in production (L5). |
-| Team and specialists | Build and evaluation rosters, default specialists (`researcher`, `doc-writer`, `investigator`), discovered domain specialists, dropped defaults with reasons, `autonomy` level (`standard`, `supervised`, `autonomous`), harness/model per role, heartbeat mode, WIP limit, and budget. | Explicit specialist roles and autonomy boundaries prevent bottlenecks, while cheap idle heartbeats protect token budgets (L6, L9, L22, L29). |
+| Team and specialists | Build and evaluation rosters, default specialists (`researcher`, `doc-writer`, `investigator`), discovered domain specialists, and dropped defaults with reasons. Also sets `autonomy` (`standard`, `supervised`, `autonomous`), harness/model per role, heartbeat mode, WIP limit, and budget. | Explicit specialist roles and autonomy boundaries prevent bottlenecks, while cheap idle heartbeats protect token budgets (L6, L9, L22, L29). |
 | Evaluation pyramid | Health endpoint, L2 API contract invariants, numeric L3 domain quality metric and threshold, safety invariants, and p50/p95/p99 latency targets. | Without a numeric oracle, evaluation agents cannot grade waves or file regressions (L15, L25). |
 | Backlog waves | Wave 1 and Wave 2 issues with an owner role, testable acceptance criteria, and linked `REQ-` IDs. | The lead dispatches work strictly from ready, testable backlog items (L1, L2, L18). |
 | Knowledge plane | Existing repository docs to link in place, plus missing requirements, invariants, and architecture decisions. | Missing ADR paths caused a reviewer to guess and deadlock a factory for 60 hours (L4). |
@@ -540,7 +544,7 @@ Running `./scripts/scion-factory compile` generates the following directory layo
 | `eval-workspace/golden/` | Golden dataset workspace for the independent evaluation team (never copied into the build branch). |
 | `waves/issues.json` | Structured Wave 1 and Wave 2 issue definitions. |
 | `backlog/issues.json` | Live file-backed backlog used only when Git mode is disabled (`lead` is the sole writer). |
-| `scripts/seed-github-waves.sh` | Idempotent GitHub label and wave issue seeder (dry-run by default; pass `DRY_RUN=0` to apply). |
+| `scripts/seed-github-waves.sh` | Generated when Git mode is enabled: idempotent GitHub label and wave issue seeder (`DRY_RUN=0` applies). |
 | `scripts/enable-git.sh` | Live migration script that upgrades a non-Git factory to Git and GitHub. See [Add Git later](#add-git-later). |
 | `scripts/verify-factory.sh` | Deterministic checker for kit artifacts and optional live L1 and L3 HTTP probes. |
 
@@ -572,7 +576,7 @@ Golden evaluation datasets stay exclusively in `eval-workspace/golden/` on the o
 
 ## Choose whether to use Git
 
-| Capability | With Git (`git.enabled: true`) | Without Git (`git.enabled: false`) |
+| Capability | With Git (`vcs.enabled: true`) | Without Git (`vcs.enabled: false`) |
 |---|---|---|
 | Backlog tracking | GitHub issues with `status:*` state labels | `backlog/issues.json` written exclusively by `lead` |
 | Change integration | Serialized commit slot and branch pushes | Serialized edit slot in the shared workspace |
@@ -584,7 +588,7 @@ Golden evaluation datasets stay exclusively in `eval-workspace/golden/` on the o
 If you start a factory without Git, you can migrate it to Git and GitHub in place without rebuilding the factory:
 
 1. Create an empty GitHub repository and verify push credentials for your Hub environment.
-2. Run `enable-git.sh` in dry-run mode first (replace `OWNER/NAME` with your repository):
+2. On the Hub VM (or with `BUILD_WORKSPACE` and `EVAL_WORKSPACE` set), run `enable-git.sh` in dry-run mode first. Replace `OWNER/NAME` with your repository:
 
    ```bash
    GITHUB_REPO=OWNER/NAME OUTPUT_DIR/scripts/enable-git.sh
@@ -609,7 +613,7 @@ If you start a factory without Git, you can migrate it to Git and GitHub in plac
 
 ## Run several factories in one monorepo
 
-When a single repository hosts multiple products (`src/project1`, `src/project2`), deploy one factory per subfolder on the same Scion Hub. Each factory prefixes agent names (`project1-lead`), launches harnesses inside its `repo_subdir` via `factory-cd.sh` while retaining full-repo visibility, and isolates issues with `factory:<slug>` labels. Follow [Several factories in one monorepo](docs/setup-runbook.md#several-factories-in-one-monorepo) in [`docs/setup-runbook.md`](docs/setup-runbook.md).
+When a single repository hosts multiple products (`src/project1`, `src/project2`), deploy one factory per subfolder on the same Scion Hub. Each factory prefixes agent names (`project1-lead`), launches harnesses inside its `monorepo.subdir` (`FACTORY_SUBDIR`) via `factory-cd.sh` while retaining full-repo visibility, and isolates issues with `factory:<slug>` labels. Follow [Several factories in one monorepo](docs/setup-runbook.md#several-factories-in-one-monorepo) in [`docs/setup-runbook.md`](docs/setup-runbook.md).
 
 ## Reference architecture
 

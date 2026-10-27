@@ -111,10 +111,19 @@ def _strip_fenced_code_blocks(markdown: str) -> str:
 
 
 def _github_heading_slug(heading_text: str) -> str:
-    cleaned = re.sub(r"`([^`]*)`", r"\1", heading_text.strip().lower())
+    cleaned = re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", heading_text.strip())
+    cleaned = re.sub(r"`([^`]*)`", r"\1", cleaned).lower()
     cleaned = re.sub(r"[^\w\s-]", "", cleaned)
-    cleaned = re.sub(r"\s+", "-", cleaned)
+    cleaned = re.sub(r" ", "-", cleaned)
     return cleaned
+
+
+def _markdown_headings(markdown: str) -> set[str]:
+    stripped = _strip_fenced_code_blocks(markdown)
+    return {
+        _github_heading_slug(m.group(1))
+        for m in re.finditer(r"^#{1,6}\s+(.+)$", stripped, flags=re.MULTILINE)
+    }
 
 
 def test_readme_follows_google_dev_style_and_ste100_without_content_loss():
@@ -125,15 +134,16 @@ def test_readme_follows_google_dev_style_and_ste100_without_content_loss():
     assert not re.search(r"\b(we|our|ourselves)\b", prose, flags=re.IGNORECASE), (
         "README prose must use second-person ('you'), not first-person plural"
     )
+    normalized_apostrophes = prose.replace("’", "'")
     contractions = re.findall(
-        r"\b(?:don't|doesn't|isn't|aren't|can't|won't|wouldn't|shouldn't|couldn't|didn't|wasn't|weren't|haven't|hasn't|it's|that's|what's|there's|you're|they're|we're)\b",
-        prose,
-        flags=re.IGNORECASE,
+        r"\b(?:\w+'(?:t|re|ve|ll|d|m)|(?:it|that|what|there|here|who|let)'s)\b",
+        normalized_apostrophes,
+        flags=NG_FLAGS if (NG_FLAGS := re.IGNORECASE) else 0,
     )
     assert not contractions, f"ASD-STE100 forbids contractions in prose; found: {sorted(set(contractions))}"
 
-    # 2. ASD-STE100 sentence length: descriptive/procedural prose sentences stay <= 25 words
-    # (joining wrapped paragraph lines and treating inline `code` spans and [label](url) links as single tokens)
+    # 2. ASD-STE100 sentence length: descriptive/procedural prose & callout sentences stay <= 25 words
+    # (unwrapping [label](url) so visible link text words are counted, while inline `code` counts as a single token)
     paragraphs = []
     buf = []
     for raw_line in prose.splitlines():
@@ -161,15 +171,15 @@ def test_readme_follows_google_dev_style_and_ste100_without_content_loss():
 
     overlong = []
     for para in paragraphs:
-        normalized = re.sub(r"`[^`]+`", "CODE_TOKEN", para)
-        normalized = re.sub(r"\[([^\]]+)\]\([^)]+\)", "LINK_TOKEN", normalized)
+        normalized = re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", para)
+        normalized = re.sub(r"`[^`]+`", "CODE_TOKEN", normalized)
         for sent in re.split(r"(?<=[.!?])\s+", normalized):
             words = re.findall(r"[A-Za-z0-9_'-]+", sent)
             if len(words) > 25:
                 overlong.append((len(words), sent))
     assert not overlong, f"ASD-STE100 sentence length (>25 words) exceeded: {overlong[:5]}"
 
-    # 3. Zero content loss: all core capabilities, topologies, presets, artifacts, and runbooks remain documented
+    # 3. Zero content loss + schema/CLI accuracy
     required_items = (
         "docs/gke-setup-runbook.md",
         "docs/setup-runbook.md",
@@ -190,6 +200,9 @@ def test_readme_follows_google_dev_style_and_ste100_without_content_loss():
         "kp-check.py",
         "state/LIVE.md",
         "backlog/issues.json",
+        "vcs.enabled",
+        "FACTORY_SUBDIR",
+        "--via-hub",
         "enable-git",
         "add-role",
         "L32",
@@ -198,18 +211,23 @@ def test_readme_follows_google_dev_style_and_ste100_without_content_loss():
     for item in required_items:
         assert item in readme, f"README lost or omitted required reference: {item!r}"
 
-    # 4. Link and anchor integrity: every local path and #anchor in README resolves
-    headings = {
-        _github_heading_slug(m.group(1))
-        for m in re.finditer(r"^#{1,6}\s+(.+)$", prose, flags=re.MULTILINE)
-    }
+    # 4. Link and anchor integrity: every local path and #anchor (internal and cross-doc) resolves
+    readme_headings = _markdown_headings(readme)
     for target in re.findall(r"\[[^\]]+\]\(([^)]+)\)", prose):
         if target.startswith(("http://", "https://", "mailto:")):
             continue
         if target.startswith("#"):
             anchor = target[1:]
-            assert anchor in headings, f"Broken internal anchor #{anchor} in README.md (available: {sorted(headings)})"
+            assert anchor in readme_headings, (
+                f"Broken internal anchor #{anchor} in README.md (available: {sorted(readme_headings)})"
+            )
         else:
-            rel_path = target.split("#", 1)[0]
-            assert (ROOT / rel_path).exists(), f"Broken relative path {rel_path!r} in README.md"
+            rel_path, _, anchor = target.partition("#")
+            target_file = ROOT / rel_path
+            assert target_file.exists(), f"Broken relative path {rel_path!r} in README.md"
+            if anchor and target_file.suffix.lower() == ".md":
+                doc_headings = _markdown_headings(target_file.read_text())
+                assert anchor in doc_headings, (
+                    f"Broken cross-doc anchor {target!r} in README.md (available in {rel_path}: {sorted(doc_headings)})"
+                )
 
