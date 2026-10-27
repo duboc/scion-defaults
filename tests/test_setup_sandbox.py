@@ -120,6 +120,9 @@ def _sandbox_with_kubectl(tmp_path, env_text, dry_run):
     fake_kubectl = r"""#!/usr/bin/env bash
 state="$FAKE_STATE"
 echo "$*" >> "$state/calls"
+if [[ "$1" == "get" && "$2" == "serviceaccount" ]]; then
+  exit 1
+fi
 exit 0
 """
     (bindir / "kubectl").write_text(fake_kubectl)
@@ -150,3 +153,7 @@ def test_setup_sandbox_kubernetes_mode_creates_worker_sa_and_keeps_docker_deploy
     assert "iam service-accounts create agent-worker" in calls
     assert "serviceAccount:hub-proj.svc.id.goog[scion-prod/scion-worker]" in calls
     assert "serviceAccount:hub-proj.svc.id.goog[scion-prod/scion-deployer]" in calls
+    assert "create serviceaccount -n scion-prod scion-worker" in calls or "create serviceaccount scion-worker -n scion-prod" in calls
+    assert "annotate serviceaccount -n scion-prod scion-worker iam.gke.io/gcp-service-account=agent-worker@sandbox.iam.gserviceaccount.com" in calls
+    assert "create serviceaccount -n scion-prod scion-deployer" in calls or "create serviceaccount scion-deployer -n scion-prod" in calls
+    assert "annotate serviceaccount -n scion-prod scion-deployer iam.gke.io/gcp-service-account=agent-deployer@sandbox.iam.gserviceaccount.com" in calls

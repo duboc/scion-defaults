@@ -24,7 +24,7 @@ def test_setup_gke_hub_dry_run_plans_cloud_build_and_terraform_without_mutating(
         "PO_EMAIL": "admin@example.com",
     }
     res = subprocess.run(
-        ["bash", str(ROOT / "scripts/setup-gke-hub.sh"), "--tier", "terraform-ha",
+        ["bash", str(ROOT / "scripts/setup-gke-hub.sh"), "--tier", "terraform-ha", "--hub-mode", "gke",
          "--scion-repo", str(scion_repo), "--harnesses", "claude,antigravity"],
         cwd=ROOT, env=env, capture_output=True, text=True,
     )
@@ -32,6 +32,8 @@ def test_setup_gke_hub_dry_run_plans_cloud_build_and_terraform_without_mutating(
     assert res.returncode == 0, out
     assert "build-images.sh --builder cloud-build" in out
     assert "configurations/shared-infra" in out
-    assert "configurations/hub" in out
+    assert "configurations/hub-gke" in out
     assert "GOOGLE_CLOUD_PROJECT=demo-hub-proj" in out
+    assert "-var-file=" in out
+    assert "kubectl get namespace" in out
     assert "terraform apply" not in out  # never applies without --approve-apply

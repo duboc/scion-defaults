@@ -325,13 +325,21 @@ if [[ "$IS_GKE_MODE" == 1 ]]; then
         --member="serviceAccount:${HUB_PROJECT}.svc.id.goog[${HUB_K8S_NAMESPACE}/scion-deployer]" --quiet
     fi
     if command -v kubectl >/dev/null 2>&1 || [[ "$DRY_RUN" == "1" ]]; then
+      ensure_ksa() {
+        local ksa="$1" gsa="$2"
+        if [[ "$DRY_RUN" == "1" ]]; then
+          run kubectl create serviceaccount "$ksa" -n "$HUB_K8S_NAMESPACE"
+          run kubectl annotate serviceaccount -n "$HUB_K8S_NAMESPACE" "$ksa" "iam.gke.io/gcp-service-account=${gsa}" --overwrite
+        else
+          kubectl get serviceaccount -n "$HUB_K8S_NAMESPACE" "$ksa" >/dev/null 2>&1 || run kubectl create serviceaccount -n "$HUB_K8S_NAMESPACE" "$ksa"
+          run kubectl annotate serviceaccount -n "$HUB_K8S_NAMESPACE" "$ksa" "iam.gke.io/gcp-service-account=${gsa}" --overwrite
+        fi
+      }
       for ksa in scion-worker scion-factory-control; do
-        run kubectl create serviceaccount "$ksa" --namespace="$HUB_K8S_NAMESPACE" --dry-run=client -o json 2>/dev/null || true
-        run kubectl annotate serviceaccount -n "$HUB_K8S_NAMESPACE" "$ksa" "iam.gke.io/gcp-service-account=${WORKER_SA}" --overwrite
+        ensure_ksa "$ksa" "$WORKER_SA"
       done
       if [[ "$deploys" == 1 ]]; then
-        run kubectl create serviceaccount scion-deployer --namespace="$HUB_K8S_NAMESPACE" --dry-run=client -o json 2>/dev/null || true
-        run kubectl annotate serviceaccount -n "$HUB_K8S_NAMESPACE" scion-deployer "iam.gke.io/gcp-service-account=${DEPLOYER_SA}" --overwrite
+        ensure_ksa scion-deployer "$DEPLOYER_SA"
       fi
     fi
   fi

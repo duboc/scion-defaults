@@ -115,16 +115,17 @@ image_registry = "${IMAGE_REGISTRY}"
 image_tag      = "${IMAGE_TAG}"
 EOF
 
+  ABS_WORK_DIR="$(cd "$WORK_DIR" && pwd)"
   run terraform -chdir="${SCION_REPO}/deploy/terraform/configurations/shared-infra" init
-  run terraform -chdir="${SCION_REPO}/deploy/terraform/configurations/shared-infra" plan
+  run terraform -chdir="${SCION_REPO}/deploy/terraform/configurations/shared-infra" plan -var-file="${ABS_WORK_DIR}/shared-infra.auto.tfvars"
   if [[ "$APPROVE_APPLY" == 1 && "$DRY_RUN" == 0 ]]; then
-    run terraform -chdir="${SCION_REPO}/deploy/terraform/configurations/shared-infra" apply -auto-approve
+    run terraform -chdir="${SCION_REPO}/deploy/terraform/configurations/shared-infra" apply -auto-approve -var-file="${ABS_WORK_DIR}/shared-infra.auto.tfvars"
   fi
 
   run terraform -chdir="${SCION_REPO}/deploy/terraform/configurations/${HUB_TF_DIR}" init
-  run terraform -chdir="${SCION_REPO}/deploy/terraform/configurations/${HUB_TF_DIR}" plan
+  run terraform -chdir="${SCION_REPO}/deploy/terraform/configurations/${HUB_TF_DIR}" plan -var-file="${ABS_WORK_DIR}/hub.auto.tfvars"
   if [[ "$APPROVE_APPLY" == 1 && "$DRY_RUN" == 0 ]]; then
-    run terraform -chdir="${SCION_REPO}/deploy/terraform/configurations/${HUB_TF_DIR}" apply -auto-approve
+    run terraform -chdir="${SCION_REPO}/deploy/terraform/configurations/${HUB_TF_DIR}" apply -auto-approve -var-file="${ABS_WORK_DIR}/hub.auto.tfvars"
   fi
 
   # Post-apply
@@ -134,9 +135,11 @@ EOF
     run gcloud run services update "scion-hub-${HUB_NAME}" --project="$HUB_PROJECT" --region="$HUB_REGION" \
       --update-env-vars="GOOGLE_CLOUD_PROJECT=$TARGET_PROJECT,GOOGLE_CLOUD_REGION=$TARGET_REGION"
   else
+    run gcloud container clusters get-credentials "scion-hub-${HUB_NAME}" --project="$HUB_PROJECT" --region="$HUB_REGION"
+    run kubectl get nodes
+    run kubectl get namespace "$HUB_K8S_NAMESPACE"
     run kubectl set env deployment/scion-hub -n "$HUB_K8S_NAMESPACE" "GOOGLE_CLOUD_PROJECT=$TARGET_PROJECT" "GOOGLE_CLOUD_REGION=$TARGET_REGION"
   fi
-  run gcloud container clusters get-credentials "scion-hub-${HUB_NAME}" --project="$HUB_PROJECT" --region="$HUB_REGION"
 
 elif [[ "$TIER" == "hybrid-gke" ]]; then
   echo "== 3. Hybrid GKE provisioning"
