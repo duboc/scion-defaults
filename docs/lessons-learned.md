@@ -31,6 +31,11 @@ fix now lives. Dates are UTC. "Encoded in" points to the script, template rule o
 | [L24](#l24-unannounced-hub-restarts-overwrite-managed-harness-files-update_policy-notify) | Unannounced Hub restarts overwrite managed harness files | Hub |
 | [L25](#l25-initialize-eval_branch-as-an-orphan-branch-git-switch---orphan-so-it-can-never-be-merged-into-main) | Initialize `EVAL_BRANCH` as an orphan branch | git |
 | [L26](#l26-multi-harness-upgrade-to-gemini-4-argon-antigravity-opencode-hermes) | Multi-harness upgrade to Gemini 4 Argon (Antigravity, OpenCode, Hermes) | harness |
+| [L27](#l27-cross-process-trace-state-tracestatego-and-stacked-parent-child-conversation-traces-in-cloud-trace) | Cross-process trace state (`tracestate.go`) and stacked Cloud Trace waterfalls | observability |
+| [L28](#l28-several-factories-in-one-monorepo-names-start-folders-and-what-the-e2e-showed) | Several factories in one monorepo: names, start folders, and shared dirs | Scion |
+| [L29](#l29-a-real-monorepo-kubernetes-as-three-factories-and-leads-that-start-their-own-teams) | A real monorepo (Kubernetes) as three factories, and leads that start their own teams | protocol |
+| [L30](#l30-multi-app-repositories-the-13-agent-specialist-fabric-deploy-none-and-autonomous-self-healing) | Multi-app repositories, the 13-agent specialist fabric (`deploy: none`), and self-healing | fabric |
+| [L31](#l31-20-hour-autonomous-30-issue-sweep-shared-worktree-commit-slots-token-scope-graceful-degradation-iac-specialists-and-eval-sweep-guarding) | 20-hour autonomous 30-issue sweep: shared-worktree commit slots, token-scope graceful degradation, IaC specialists, and `eval-sweep` guarding | autonomy |
 
 ---
 
@@ -648,3 +653,61 @@ fix now lives. Dates are UTC. "Encoded in" points to the script, template rule o
 - **Encoded in:** [`scripts/scion_factory.py`](../scripts/scion_factory.py),
   [`scripts/discovery.py`](../scripts/discovery.py), [`scripts/role_library.py`](../scripts/role_library.py),
   [`scripts/factory-watchdog.py`](../scripts/factory-watchdog.py), [`README.md`](../README.md).
+
+## L31. 20-hour autonomous 30-issue sweep: shared-worktree commit slots, token-scope graceful degradation, IaC specialists, and `eval-sweep` guarding
+
+- **When:** 2026-10-26 to 2026-10-27, running the 13-agent specialist fabric unattended for 20 hours across the full
+  30-issue backlog (`#112`–`#331`, plus `eval-finding` `#328`) of `duboc/bananacast` on `factory/main` / `factory/eval`
+  (`main` untouched).
+- **Outcome (evidence):**
+  - **29 of 30 issues verified (`L1–L5 PASS`) and closed** across **31 commits** and **511 Scion messages**, expanding
+    the backend test suite from ~250 tests to **476 passed (+ 328 subtests)**, adding a frontend `vitest` suite, and
+    reducing `pip-audit` advisories from `59` to `0` (`ruff` 0 errors, `tsc --noEmit` 0 errors).
+  - Only `#234` (`.github/workflows/{ci,deploy}.yml`) stayed open (`status:blocked`) paired with PO inbox decision
+    `#332` (`status:po-decision`) because GitHub rejected pushing workflow files without `workflow` PAT scope; `lead`
+    saved `/scion-volumes/scratchpad/pending-234/234-workflows.patch`, landed the permitted Terraform WIF + TypeScript
+    changes (`af6e8a6`), and completed `#235`, `#262`, `#268`, `#270`, `#297`, `#298`, and `#299` without stalling WIP.
+- **Six operational gaps uncovered and codified:**
+  1. **Watchdog schedule guard missed `eval-lead`'s `eval-sweep-*` schedule (`factory-watchdog.py` Check 2):**
+     `check_heartbeat_schedules` queried `WHERE s.name LIKE '%-lead-heartbeat'` without filtering `FACTORY_PROJECTS`, so
+     `watchdog.log` reported `1 heartbeat schedules active` while leaving `eval-sweep-factory-main` unguarded (and
+     touching schedules outside `FACTORY_PROJECTS` on shared Hubs). `Check 2` now scopes to `FACTORY_PROJECTS`, ignores
+     `deleted` rows, and guards both `%heartbeat%` and `eval-sweep%` schedules. `load_runtime_env` also loads
+     `watchdog.env` before `sync.env`, `watchdog_env_content` + `run-on-hub.sh` persist
+     `WATCHDOG_SUBPROCESS_TIMEOUT_SEC`, and `Check 5` uses `rsync -ai --delete` to report `up to date` when unchanged.
+  2. **`git stash push -u` and unconditional `git pull --rebase` in shared worktrees (`templates/_shared/agents.md`,
+     `scion_factory.py`):**
+     Under `WIP=2` in a shared `/workspace` checkout, untracked `.scion/` and `.agents/` harness directories sit next to
+     concurrent workers' active edits. Running `git stash push -u` sweeps up harness metadata and teammates' files, and
+     hardcoding `build_branch` in shared `agents.md` misdirected `eval` agents. Commit-slot rules now check
+     `git fetch origin <branch> && git rev-list --count HEAD..origin/<branch>` first (skipping `rebase`/`stash` when
+     `0`), require explicit `git add -- <files>` verified with `git diff --cached --name-only`, forbid `git stash -u`
+     and staging `.scion/` / `.agents/`, and allow lead-authorized co-commits when two reviewed `PASS` issues touch the
+     same file (`#302+#303`, `#145+#308`, `#126+#142`, `#217+#218`, `#220+#221`, `#297+#298+#299`).
+  3. **Graceful partial delivery on GitHub token-scope push rejections (`#234` / `#332`):**
+     When GitHub rejects a push because a path requires elevated token permissions (such as `.github/workflows/*`
+     without `workflow` scope), workers now reset the rejected commit, save the reviewed restricted files as a patch
+     under `/scion-volumes/scratchpad/pending-<issue>/`, push the permitted files, and escalate the patch path to the PO
+     (`status:po-decision` with Git) while keeping remaining backlog WIP moving.
+  4. **`migration-specialist` needed Terraform/IaC and CI workflow guardrails (`role_library.py`):**
+     `discovery.py` proposes `migration-specialist` whenever `.tf` files exist, and overnight it delivered 7 major
+     Terraform/GCS/Secret Manager/Monitoring/WIF/Cloud Armor slices, yet its library protocol previously mentioned only
+     SQL DDL. Its responsibility and protocol now cover `terraform fmt -check`,
+     `terraform init -backend=false && terraform validate`, opt-in feature flags (`default = false`) when live deploy is
+     disabled, Secret Manager over plaintext `tfstate`, pinned CI action SHAs, and never running `terraform apply`
+     without authorization.
+  5. **Optional-dependency guards in multi-app Python test suites (`pytest.importorskip`):**
+     On `#270`, placing a test under `src/backend/tests/` that imported `fastapi` (installed in
+     `src/frontend/proxy_requirements.txt`, not `src/backend/requirements.txt`) broke `pytest -q` collection in minimal
+     backend environments until `pytest.importorskip("fastapi")` was added (`22f2660`). `backend`, `test-engineer`, and
+     `reviewer` protocols now require guarding cross-app or optional-dependency test imports.
+  6. **Hub token preflight check & PAT `workflow` scope documentation (`hub-preflight.py`, `README.md`,
+     `setup-runbook.md`):**
+     `hub-preflight.py` now checks `~/.factory-github-token` existence/non-zero size without reading secret bytes and
+     warns when missing, and Step 6 / Step 5 document when to include vs intentionally omit `workflow` scope.
+- **Encoded in:** [`scripts/factory-watchdog.py`](../scripts/factory-watchdog.py),
+  [`scripts/run-on-hub.sh`](../scripts/run-on-hub.sh), [`templates/_shared/agents.md`](../templates/_shared/agents.md),
+  [`scripts/scion_factory.py`](../scripts/scion_factory.py), [`scripts/role_library.py`](../scripts/role_library.py),
+  [`scripts/hub-preflight.py`](../scripts/hub-preflight.py), [`README.md`](../README.md),
+  [`docs/setup-runbook.md`](setup-runbook.md).
+

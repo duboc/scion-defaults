@@ -375,8 +375,11 @@ to whatever runs there; nothing that exists is changed.
 
 ### Step 6: Create the Hub projects
 
-1. Put your GitHub token on the VM for the Hub's OS user. The token travels over SSH stdin, so it never appears on
-   a command line:
+1. Put your GitHub token on the VM for the Hub's OS user. Grant `repo` + `workflow` on a classic PAT (or `Contents`,
+   `Issues`, `Pull requests`, and `Workflows` read/write on a fine-grained PAT) if backlog issues edit
+   `.github/workflows/*`; omitting `workflow` intentionally gates CI/CD workflow changes behind reviewed patches in
+   `/scion-volumes/scratchpad/pending-<N>/` paired with a `status:po-decision` issue (L31). The token travels over SSH
+   stdin, so it never appears on a command line:
 
    ```bash
    read -rs GITHUB_PAT; printf '%s' "$GITHUB_PAT" | gcloud compute ssh "$HUB_VM" --project="$HUB_PROJECT" \

@@ -1015,11 +1015,11 @@ def _render_shared_agents_md_base(spec: dict[str, Any]) -> str:
             "an ERROR alert (watchdog), so nothing else goes by message. Everyone else escalates to their lead."
         )
         integrate = f"""## 4. Pre-Commit Verification & Commit Slot (Lesson L18)
-Before committing or pushing to `{vcs['build_branch']}`, ask the lead for the commit slot, then:
-1. Pull the latest branch state: `git pull --rebase origin {vcs['build_branch']}`.
-2. Run build verification: `{stack['build_command']}`.
-3. Run test verification: `{stack['test_command']}`.
-4. Run lint verification: `{lint}`.
+Before committing or pushing to your team's trunk (`{vcs['build_branch']}` in `{proj['slug']}`, `{vcs['eval_branch']}` in `{proj['eval_slug']}`), ask your lead for the commit slot, then:
+1. Run build, test, and lint verification: `{stack['build_command']}`, `{stack['test_command']}`, and `{lint}`.
+2. Check whether your remote trunk moved (`git fetch origin <branch> && git rev-list --count HEAD..origin/<branch>`). When `0`, commit and push directly without `git pull --rebase` or `git stash`. When `> 0`, stash **only** your own paths (`git stash push -m "pre-rebase" -- <files>`, never `git stash -u`), rebase onto `origin/<branch>`, pop, and re-verify (or ask your lead if shared files conflict).
+3. Stage **only** explicit paths (`git add -- <files>`) and verify `git diff --cached --name-only` contains only your assigned paths (or coupled paths your lead explicitly authorized for a co-commit). Never run `git add -A`, `git add .`, `git add -u`, or `git stash -u`, and never stage or stash `.scion/` or `.agents/`.
+4. If `git push` is rejected by GitHub token scope limits (for example `.github/workflows/*` without `workflow` scope), save the reviewed restricted files as a patch under `/scion-volumes/scratchpad/pending-<issue>/`, commit and push the permitted files, and report the patch path so your lead opens a `status:po-decision` issue while keeping other backlog items moving.
 5. Never commit secrets, tokens, `.env` files, or agent state files.
 """
         deploy = """## 5. Clean Deployment Packaging & Traffic Unpinning (Lesson L23)

@@ -57,8 +57,9 @@ HUB_LOCAL_URL = os.environ.get("HUB_LOCAL_URL", "http://localhost:8080").rstrip(
 _TOKEN = None
 
 
-def load_env_file(path):
-    if not os.path.exists(path):
+def load_env_file(path, environ=None):
+    target = os.environ if environ is None else environ
+    if not path or not os.path.exists(path):
         return
     with open(path, "r", encoding="utf-8") as f:
         for line in f:
@@ -68,13 +69,19 @@ def load_env_file(path):
             k, v = line.split("=", 1)
             k = k.strip()
             v = v.strip().strip("\"'")
-            if k not in os.environ:
-                os.environ[k] = v
+            if k not in target:
+                target[k] = v
+
+
+def load_runtime_env(watchdog_env=WATCHDOG_ENV, sync_env=SYNC_ENV, environ=None):
+    """Load watchdog.env first, then sync.env as fallback, without overriding explicit caller env vars."""
+    target = os.environ if environ is None else environ
+    load_env_file(watchdog_env, target)
+    load_env_file(sync_env, target)
 
 
 # Load environment files
-load_env_file(SYNC_ENV)
-load_env_file(WATCHDOG_ENV)
+load_runtime_env()
 
 ADMIN_EMAIL = os.environ.get("ADMIN_EMAIL") or os.environ.get("PO_EMAIL", "")
 HUB_PROJECT_ID = os.environ.get("HUB_PROJECT_ID") or os.environ.get("HUB_PROJECT", "")
@@ -393,14 +400,23 @@ def check_antigravity_drift(apply):
 # Check 2: Heartbeat schedule guard
 # ---------------------------------------------------------------------------
 def check_heartbeat_schedules(conn, apply):
+    if not FACTORY_PROJECTS:
+        print("Check 2 (Heartbeat guard): OK (0 factory projects configured)")
+        return True
     cursor = conn.cursor()
-    cursor.execute("""
+    placeholders = ",".join("?" for _ in FACTORY_PROJECTS)
+    cursor.execute(
+        f"""
         SELECT s.id, s.project_id, p.slug as project_slug, s.name, s.cron_expr, s.status, s.last_run_at, s.last_run_status, s.run_count, s.error_count
         FROM schedules s
         JOIN projects p ON s.project_id = p.id
-        WHERE s.name LIKE '%-lead-heartbeat'
+        WHERE p.slug IN ({placeholders})
+          AND s.status <> 'deleted'
+          AND (s.name LIKE '%heartbeat%' OR s.name LIKE 'eval-sweep%')
         ORDER BY p.slug, s.name
-    """)
+        """,
+        FACTORY_PROJECTS,
+    )
     rows = cursor.fetchall()
     all_ok = True
     for s in rows:
@@ -801,9 +817,24 @@ def check_shared_knowledge_plane(conn, apply=False):
             continue
         if apply:
             os.makedirs(dst_dir, exist_ok=True)
-            subprocess.run(["rsync", "-a", "--delete", src_dir + "/", dst_dir + "/"], check=False)
-        print(f"Check 5 (Shared Knowledge Plane): {slug}: {'synced' if apply else 'would sync'} from {src_dir}")
-
+            res = subprocess.run(
+                ["rsync", "-ai", "--delete", src_dir + "/", dst_dir + "/"],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            changed = [ln for ln in (res.stdout or "").splitlines() if ln.strip()]
+            if res.returncode != 0:
+                print(
+                    f"Check 5 (Shared Knowledge Plane): {slug}: ERROR rsync exited {res.returncode}: {(res.stderr or '').strip()}",
+                    file=sys.stderr,
+                )
+            elif changed:
+                print(f"Check 5 (Shared Knowledge Plane): {slug}: synced ({len(changed)} changes) from {src_dir}")
+            else:
+                print(f"Check 5 (Shared Knowledge Plane): {slug}: up to date with {src_dir}")
+        else:
+            print(f"Check 5 (Shared Knowledge Plane): {slug}: would sync from {src_dir}")
 
 
 # ---------------------------------------------------------------------------
@@ -816,7 +847,12 @@ def watchdog_env_content(path):
              f"HUB_PROJECT_ID={HUB_PROJECT_ID}",
              f"FACTORY_PROJECTS={','.join(FACTORY_PROJECTS)}",
              f"MAX_RESTARTS_PER_HOUR={MAX_RESTARTS_PER_HOUR}"]
-    for key in ("KNOWLEDGE_PLANE_SOURCES", "KNOWLEDGE_PLANE_SOURCE_PROJECT", "WATCHDOG_WAKE_ROLES"):
+    for key in (
+        "KNOWLEDGE_PLANE_SOURCES",
+        "KNOWLEDGE_PLANE_SOURCE_PROJECT",
+        "WATCHDOG_WAKE_ROLES",
+        "WATCHDOG_SUBPROCESS_TIMEOUT_SEC",
+    ):
         if os.environ.get(key):
             lines.append(f"{key}={os.environ[key]}")
     lines.append(f"PATH={path}")

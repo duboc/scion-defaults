@@ -58,7 +58,15 @@ def _split(value):
     return [p.strip() for p in (value or "").split(",") if p.strip()]
 
 
-def build_report(scion_home, health, images, sync_env, po_email, new_projects):
+def _has_github_token(path):
+    """True when the Hub token file exists and is non-empty, without reading secret bytes."""
+    try:
+        return os.path.isfile(path) and os.path.getsize(path) > 0
+    except OSError:
+        return False
+
+
+def build_report(scion_home, health, images, sync_env, po_email, new_projects, github_token_present=True):
     errors, warnings = [], []
     if not health or health.get("status") != "healthy":
         errors.append(f"the Hub is not healthy (GET /healthz: {health or 'no answer'})")
@@ -80,6 +88,11 @@ def build_report(scion_home, health, images, sync_env, po_email, new_projects):
     if images is not None:
         for h in missing_images(images):
             warnings.append(f"no scion-{h} image: agents on the {h} harness can't start until you build it")
+    if not github_token_present:
+        warnings.append(
+            "~/.factory-github-token is missing or empty: Git-backed project-create needs a PAT "
+            "(include 'workflow' scope if agents edit .github/workflows/*)"
+        )
 
     hc_dir = os.path.join(scion_home, "harness-configs")
     harness_configs = sorted(os.listdir(hc_dir)) if os.path.isdir(hc_dir) else []
@@ -90,6 +103,7 @@ def build_report(scion_home, health, images, sync_env, po_email, new_projects):
     merged = merge_projects(merge_projects(watchdog, sync), new_projects)
     return {"ok": not errors, "errors": errors, "warnings": warnings,
             "scion_version": (health or {}).get("scionVersion"), "po_user": po_email if user else None,
+            "github_token_present": bool(github_token_present),
             "existing_projects": existing, "harness_configs": harness_configs,
             "watchdog_projects": watchdog, "sync_projects": sync, "factory_projects": ",".join(merged)}
 
@@ -122,13 +136,15 @@ def main(argv=None):
     new = _split(os.environ.get("FACTORY_PROJECTS")) or [p for p in (os.environ.get("BUILD_PROJECT"),
                                                                      os.environ.get("EVAL_PROJECT")) if p]
     sync_path = os.path.expanduser("~/factory-sync/sync.env")
+    token_path = os.path.expanduser(os.environ.get("GITHUB_TOKEN_FILE", "~/.factory-github-token"))
     report = build_report(
         scion_home=args.scion_home,
         health={"status": "healthy", "scionVersion": "skipped"} if args.skip_health
         else _health(os.environ.get("HUB_LOCAL_URL", "http://localhost:8080")),
         images=None if args.skip_docker else _images(),
         sync_env=open(sync_path).read() if os.path.exists(sync_path) else "",
-        po_email=os.environ.get("PO_EMAIL", ""), new_projects=new)
+        po_email=os.environ.get("PO_EMAIL", ""), new_projects=new,
+        github_token_present=_has_github_token(token_path))
 
     if args.json:
         print(json.dumps(report, indent=2))

@@ -14,3 +14,7 @@ __pycache__/
 *.key.json
 *-credentials.json
 *.bak*
+
+# Local worktrees and plan execution scratch
+.worktrees/
+.superpowers/

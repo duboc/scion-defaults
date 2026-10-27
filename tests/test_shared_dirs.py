@@ -243,15 +243,38 @@ def test_sync_reports_a_missing_source(watchdog, tmp_path, monkeypatch, capsys):
     assert "source missing" in capsys.readouterr().out
 
 
+@pytest.mark.skipif(not any(os.access(os.path.join(p, "rsync"), os.X_OK)
+                            for p in os.environ["PATH"].split(os.pathsep)), reason="rsync not installed")
+def test_sync_reports_up_to_date_when_rsync_makes_no_changes(watchdog, tmp_path, monkeypatch, capsys):
+    home = tmp_path / ".scion"
+    conn = _hub(home.mkdir() or home, [("11111111-aaaa", "project1")])
+    kp = home / "projects" / "project1" / "knowledge-plane"
+    kp.mkdir(parents=True)
+    (kp / "INDEX.md").write_text("KP\n")
+    (home / "project-configs" / "project1__11111111" / "shared-dirs").mkdir(parents=True)
+    monkeypatch.setattr(watchdog, "SCION_HOME", str(home))
+    monkeypatch.setattr(watchdog, "FACTORY_PROJECTS", ["project1"])
+
+    watchdog.check_shared_knowledge_plane(conn, apply=True)
+    first_out = capsys.readouterr().out
+    assert "synced" in first_out
+
+    watchdog.check_shared_knowledge_plane(conn, apply=True)
+    second_out = capsys.readouterr().out
+    assert "up to date" in second_out
+
+
 def test_watchdog_env_keeps_the_knowledge_plane_settings_for_cron(watchdog, monkeypatch):
     """install_cron writes watchdog.env for the cron runs; settings it leaves out silently fall back to defaults."""
     monkeypatch.setenv("KNOWLEDGE_PLANE_SOURCES", "project1=src/project1/knowledge-plane")
     monkeypatch.setenv("KNOWLEDGE_PLANE_SOURCE_PROJECT", "project1")
     monkeypatch.setenv("WATCHDOG_WAKE_ROLES", "lead,eval-lead,backend")
+    monkeypatch.setenv("WATCHDOG_SUBPROCESS_TIMEOUT_SEC", "420")
     content = watchdog.watchdog_env_content("/usr/bin:/bin")
     assert "KNOWLEDGE_PLANE_SOURCES=project1=src/project1/knowledge-plane\n" in content
     assert "KNOWLEDGE_PLANE_SOURCE_PROJECT=project1\n" in content
     assert "WATCHDOG_WAKE_ROLES=lead,eval-lead,backend\n" in content
+    assert "WATCHDOG_SUBPROCESS_TIMEOUT_SEC=420\n" in content
     assert "PATH=/usr/bin:/bin\n" in content
 
 
@@ -259,6 +282,7 @@ def test_run_on_hub_forwards_the_knowledge_plane_settings():
     text = (ROOT / "scripts" / "run-on-hub.sh").read_text()
     assert "KNOWLEDGE_PLANE_SOURCES" in text and "KNOWLEDGE_PLANE_SOURCE_PROJECT" in text
     assert "WATCHDOG_WAKE_ROLES" in text
+    assert "WATCHDOG_SUBPROCESS_TIMEOUT_SEC" in text
 
 
 def test_watchdog_projects_default_to_the_factory_env(watchdog):
@@ -307,6 +331,22 @@ def test_rendered_prompts_and_configs_have_no_placeholders_left(tmp_path):
     leftovers = {f"{p}: {m}" for p, t in files.items() if p.endswith((".md", ".yaml"))
                  for m in re.findall(r"\$\{[A-Z][A-Z0-9_]*\}", t)}
     assert leftovers == set()
+
+
+def test_shared_agents_template_forbids_stash_untracked_and_scopes_staging(tmp_path):
+    files = _render(tmp_path)
+    agents = files["lead/agents.md"]
+    assert "git stash push -u" not in agents
+    assert "git stash -u" in agents  # explicitly listed as forbidden
+    for needle in (
+        "git add --",
+        "git diff --cached --name-only",
+        ".scion/",
+        ".agents/",
+        "rev-list --count",
+        "/scion-volumes/scratchpad/pending-",
+    ):
+        assert needle in agents, f"missing {needle!r} in rendered lead/agents.md"
 
 
 def test_project_create_waits_long_enough_for_a_large_clone(monkeypatch, tmp_path):

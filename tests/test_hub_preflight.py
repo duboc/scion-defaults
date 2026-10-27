@@ -97,6 +97,24 @@ def test_report_warns_when_a_factory_slug_is_taken(tmp_path):
     assert any("shop" in w and "exists" in w for w in report["warnings"])
 
 
+def test_report_warns_when_github_token_file_is_missing(tmp_path):
+    missing = tmp_path / "missing-token"
+    empty = tmp_path / "empty-token"
+    empty.write_text("")
+    populated = tmp_path / "token"
+    populated.write_text("fake-token-bytes-not-a-pat\n")
+
+    assert pre._has_github_token(str(missing)) is False
+    assert pre._has_github_token(str(empty)) is False
+    assert pre._has_github_token(str(populated)) is True
+
+    report = _report(_fake_scion_home(tmp_path), github_token_present=False)
+    assert report["ok"] is True
+    assert report["github_token_present"] is False
+    assert any(".factory-github-token" in w and "workflow" in w for w in report["warnings"])
+    assert "fake-token-bytes-not-a-pat" not in json.dumps(report)
+
+
 def test_cli_prints_json_and_never_writes(tmp_path):
     home = _fake_scion_home(tmp_path)
     before = sorted(p.as_posix() for p in home.rglob("*"))

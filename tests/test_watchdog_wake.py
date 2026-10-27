@@ -164,3 +164,50 @@ def test_check_agent_liveness_reaps_hung_subprocess_and_notifies_worker_and_lead
     assert "/api/v1/projects/p1/agents/investigator/message" in paths
     assert "/api/v1/projects/p1/agents/lead/message" in paths
 
+
+def test_load_runtime_env_prefers_cli_then_watchdog_then_sync(watchdog, tmp_path):
+    w_env = tmp_path / "watchdog.env"
+    s_env = tmp_path / "sync.env"
+    w_env.write_text("FACTORY_PROJECTS=from-watchdog\nHUB_PROJECT_ID=watchdog-proj\n")
+    s_env.write_text("FACTORY_PROJECTS=from-sync\nHUB_PROJECT_ID=sync-proj\nADMIN_EMAIL=po@example.com\n")
+
+    env = {"FACTORY_PROJECTS": "from-cli"}
+    watchdog.load_runtime_env(str(w_env), str(s_env), env)
+
+    assert env["FACTORY_PROJECTS"] == "from-cli"
+    assert env["HUB_PROJECT_ID"] == "watchdog-proj"
+    assert env["ADMIN_EMAIL"] == "po@example.com"
+
+
+def test_check_heartbeat_schedules_guards_lead_and_eval_sweep_in_factory_projects_only(watchdog, monkeypatch, capsys):
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    conn.execute("CREATE TABLE projects (id TEXT, slug TEXT)")
+    conn.execute(
+        "CREATE TABLE schedules (id TEXT, project_id TEXT, name TEXT, cron_expr TEXT, status TEXT, "
+        "last_run_at TEXT, last_run_status TEXT, run_count INTEGER, error_count INTEGER)"
+    )
+    conn.execute("INSERT INTO projects VALUES ('p1', 'proj1')")
+    conn.execute("INSERT INTO projects VALUES ('p2', 'proj1-eval')")
+    conn.execute("INSERT INTO projects VALUES ('p3', 'other-proj')")
+    conn.execute("INSERT INTO schedules VALUES ('s1', 'p1', 'proj1-lead-heartbeat', '*/15 * * * *', 'active', NULL, NULL, 4, 0)")
+    conn.execute("INSERT INTO schedules VALUES ('s2', 'p2', 'eval-sweep-factory-main', '*/5 * * * *', 'paused', NULL, NULL, 2, 0)")
+    conn.execute("INSERT INTO schedules VALUES ('s3', 'p2', 'old-heartbeat', '*/15 * * * *', 'deleted', NULL, NULL, 1, 0)")
+    conn.execute("INSERT INTO schedules VALUES ('s4', 'p3', 'other-lead-heartbeat', '*/15 * * * *', 'paused', NULL, NULL, 1, 0)")
+    conn.commit()
+
+    monkeypatch.setattr(watchdog, "FACTORY_PROJECTS", ["proj1", "proj1-eval"])
+    resumed = []
+    monkeypatch.setattr(watchdog, "api", lambda method, path, body=None: (resumed.append((method, path)) or (200, {})))
+    monkeypatch.setattr(watchdog, "log_alert", lambda *a, **kw: None)
+
+    ok = watchdog.check_heartbeat_schedules(conn, apply=True)
+    out = capsys.readouterr().out
+
+    assert ok is False
+    assert resumed == [("POST", "/api/v1/projects/p2/schedules/s2/resume")]
+    assert "eval-sweep-factory-main" in out
+    assert "other-lead-heartbeat" not in out
+    assert "old-heartbeat" not in out
+
+

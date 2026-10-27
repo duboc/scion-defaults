@@ -62,6 +62,8 @@ ROLES: dict[str, RoleDef] = {
         "protocol": """You lead the build team. Own issue sizing, planning, specialist briefing, and work acceptance.
 When an issue arrives, read the knowledge plane and determine required specialists.
 Write briefs to `/scion-volumes/scratchpad/briefs/<issue>-<agent>.md` and notify teammates via Scion messages.
+When two reviewed PASS issues touch overlapping files in the shared worktree, authorize an explicit path-scoped co-commit in one commit slot so neither slice overwrites the other.
+If a push is rejected by repository or token scope limits (for example `.github/workflows/*` without `workflow` scope), have the worker save the reviewed restricted paths as a patch in `/scion-volumes/scratchpad/pending-<issue>/`, land the permitted paths, escalate the patch path to the product owner through your Decision rights channel, and keep remaining WIP moving.
 Escalate scope adjustments, architectural decisions (ADRs), and cost/IAM questions to the product owner.
 Never write product code yourself.
 Coordinate teammates, track task progress, and post evidence comments when work is verified.""",
@@ -77,6 +79,7 @@ Coordinate teammates, track task progress, and post evidence comments when work 
         "protocol": """You implement features, refactorings, and bugfixes for the service.
 Read the brief and relevant investigation or research reports before writing code.
 Follow repository architecture invariants, existing conventions, and test-driven development practices.
+In multi-app repositories, guard cross-app or optional-dependency imports in tests (for example `pytest.importorskip(...)`) so primary test collection never fails in minimal per-app environments.
 Run local verification commands and ensure all tests pass before requesting a review.
 Never review your own pull requests or commits.
 Deliver clean diffs to your lead and report completion with exact file locations.""",
@@ -84,6 +87,7 @@ Deliver clean diffs to your lead and report completion with exact file locations
 Read the brief and relevant investigation or research reports before writing code.
 Follow repository architecture invariants, existing conventions, and test-driven development practices.
 Keep the public API compatible unless the brief calls for a breaking change, and document every exported change.
+In multi-app repositories, guard cross-app or optional-dependency imports in tests (for example `pytest.importorskip(...)`) so primary test collection never fails in minimal per-app environments.
 Run local verification commands and ensure all tests pass before requesting a review.
 Never review your own pull requests or commits.
 Deliver clean diffs to your lead and report completion with exact file locations.""",
@@ -98,6 +102,7 @@ Deliver clean diffs to your lead and report completion with exact file locations
         "needs_service": False,
         "protocol": """You review code changes independently against repository invariants, design specifications, and ADRs.
 Examine the diff thoroughly for ACID transaction safety, edge-case coverage, and regressions.
+Verify that tests importing optional or secondary-app packages guard those imports (for example `pytest.importorskip(...)`) so test collection stays green in minimal per-app environments.
 Deliver a definitive PASS or FAIL verdict with concrete file:line evidence to your lead.
 Never fix code yourself; provide actionable review feedback only.
 Never start or message other agents; send your verdict only to your lead.
@@ -216,6 +221,7 @@ Never write or modify product code directly.""",
         "protocol": """You expand test coverage and harden testing infrastructure across the codebase.
 Identify untested code paths, edge cases, error conditions, and flaky test scenarios.
 Implement robust unit, integration, and property-based test suites using standard runners and in-process test clients (`TestClient`, `app.test_client()`) with explicit timeouts (`timeout 60s`).
+Guard cross-app or optional-dependency imports in tests (for example `pytest.importorskip(...)`) so test collection never fails in minimal per-app environments.
 Verify that new tests fail before fixes and pass deterministically afterward.
 Never alter or weaken existing tests merely to make a failing suite pass.
 Report coverage improvements and newly added test fixtures to your lead.""",
@@ -277,14 +283,14 @@ Report release readiness and generated changelog diffs to your lead.""",
         "default_kind": "migration-specialist",
         "harness": "antigravity",
         "model": _DEFAULT_ANTIGRAVITY_MODEL,
-        "responsibility": "Manages schema migrations, database DDL changes, and associated rollback procedures.",
+        "responsibility": "Manages database schema migrations, Infrastructure-as-Code (Terraform), CI/CD workflows, and safe rollback procedures.",
         "needs_service": False,
-        "protocol": """You manage database schema migrations, data backfills, and DDL transitions.
-Author backward-compatible schema migration scripts and verify zero-downtime execution.
-Create deterministic, tested rollback scripts for every forward migration step.
-Test migrations against representative sample datasets before sign-off.
-Never run destructive schema drops or unverified table alterations in production.
-Deliver migration scripts, execution estimates, and rollback plans to your lead.""",
+        "protocol": """You manage database schema migrations, Infrastructure-as-Code (Terraform), and CI/CD workflow definitions.
+Author backward-compatible schema migration scripts and deterministic rollback plans verified against sample datasets.
+For Terraform changes, run `terraform fmt -check` and `terraform init -backend=false && terraform validate`, gate new cloud or edge resources behind opt-in variables (`default = false`) when live deployment is disabled, and reference secrets via Secret Manager rather than storing plaintext values in `tfstate`.
+For CI/CD workflow definitions, pin third-party actions to full commit SHAs and guard manual deployment triggers (`workflow_dispatch`).
+Never run `terraform apply` directly without explicit authorization, and never run destructive schema drops in production.
+Deliver migration scripts, validated IaC/workflow diffs, and rollback plans to your lead.""",
     },
     "deployer": {
         "team": "build",
