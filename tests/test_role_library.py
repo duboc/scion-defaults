@@ -92,3 +92,37 @@ def test_investigator_and_auditor_protocols_forbid_untimed_server_daemons():
         proto = role_library.role_protocol(r, deploy="none").lower()
         assert "timeout" in proto or "testclient" in proto or "test_client" in proto, f"{r} protocol missing timeout/TestClient guardrail"
 
+
+def test_migration_specialist_covers_database_and_terraform_iac_and_ci_workflows():
+    resp = role_library.ROLES["migration-specialist"]["responsibility"].lower()
+    assert "migration" in resp and ("terraform" in resp or "infrastructure" in resp or "iac" in resp)
+    proto = role_library.role_protocol("migration-specialist")
+    assert proto is not None
+    low = proto.lower()
+    assert "terraform fmt" in low
+    assert "terraform validate" in low
+    assert "tfstate" in low
+    assert "default = false" in low or "opt-in" in low
+    assert "sha" in low and "workflow" in low
+    assert "never run `terraform apply`" in low or "never run terraform apply" in low
+
+
+def test_python_and_multi_app_test_protocols_guard_optional_cross_app_imports():
+    for proto in (
+        role_library.role_protocol("backend"),
+        role_library.role_protocol("backend", deploy="none"),
+        role_library.role_protocol("test-engineer"),
+        role_library.role_protocol("reviewer"),
+    ):
+        assert proto is not None
+        assert "importorskip" in proto, f"missing pytest.importorskip guidance in: {proto[:80]}"
+
+
+def test_lead_protocol_covers_coupled_co_commits_and_pending_patch_escalation():
+    proto = role_library.role_protocol("lead")
+    assert proto is not None
+    assert "co-commit" in proto.lower()
+    assert "/scion-volumes/scratchpad/pending-" in proto
+    assert "status:po-decision" in proto
+
+
