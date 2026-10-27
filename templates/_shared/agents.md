@@ -57,13 +57,12 @@ All agents of a project share one checkout at `/workspace` (branch `${BUILD_BRAN
   - `/scion-volumes/knowledge-plane` (read-only): a copy of your factory's knowledge plane (`${KNOWLEDGE_PLANE}` in
     the build checkout), refreshed every 5 minutes. The eval team reads it here; change the original, never the copy.
 - **Independent orphan trunks:** `${BUILD_BRANCH}` and `${EVAL_BRANCH}` are two permanent, independent orphan trunks (`--orphan`) with unrelated Git histories. **Never** merge, rebase, cherry-pick, or open a pull request between `${EVAL_BRANCH}` and `${BUILD_BRANCH}`. Each factory operates strictly within its own trunk.
-- Commit only when your lead gives you the commit slot. Then stage and commit only your own files:
-  `git add <files> && git commit -m "<type>(<scope>): <summary> (#N)" && git push origin <branch>`.
-  If `git push` is rejected (non-fast-forward), run:
-  `git stash push -u -m "pre-rebase" && git pull --rebase origin <branch> && git push origin <branch> && git stash pop`
-  (or ask the lead for help) instead of running an unguarded `git pull --rebase` on a dirty shared worktree. Send the lead the pushed commit SHA.
-- Never run `git add -A`, `git reset --hard`, `git checkout -- .`, `git clean` or a force push: other agents'
-  uncommitted work lives in the same folder.
+- Commit only when your lead gives you the commit slot. Other teammates may hold active uncommitted edits in `/workspace`, and harness metadata lives in `.scion/` and `.agents/`:
+  1. Check whether the remote trunk moved first (`git fetch origin <branch> && git rev-list --count HEAD..origin/<branch>`). When the count is `0`, do **not** run `git pull --rebase` or `git stash`. When the remote is ahead, stash **only** your own paths (`git stash push -m "pre-rebase" -- <files>`, never `git stash -u`), rebase onto `origin/<branch>`, pop, and re-verify (or ask your lead if shared files conflict).
+  2. Stage **only** the explicit paths assigned in your brief (`git add -- <files>`) and verify `git diff --cached --name-only` lists only those paths (plus any coupled issue paths your lead explicitly authorized for a co-commit). Never stage or stash `.scion/` or `.agents/`.
+  3. Commit and push (`git commit -m "<type>(<scope>): <summary> (#N)" && git push origin <branch>`), then send your lead the pushed commit SHA.
+  4. If `git push` is rejected due to token scope limits (for example `.github/workflows/*` without `workflow` scope), reset that commit (`git reset --soft HEAD~1`), unstage the restricted paths, save them as a patch in `/scion-volumes/scratchpad/pending-<N>/`, commit and push the permitted paths, and report the patch path so your lead opens a `status:po-decision` issue while keeping other backlog items moving.
+- Never run `git add -A`, `git add .`, `git add -u`, `git stash -u`, `git reset --hard`, `git checkout -- .`, `git clean` or a force push: other agents' uncommitted work and `.scion/` / `.agents/` harness files live in the same folder.
 - Never commit secrets, `.env` files or build output.
 
 ## Cloud

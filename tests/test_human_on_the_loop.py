@@ -247,3 +247,24 @@ def test_no_git_kit_keeps_message_escalation(tmp_path):
     shared = (out / "templates" / "_shared" / "agents.md").read_text()
     assert "status:po-decision" not in shared
     assert not (out / "scripts" / "seed-github-waves.sh").exists()
+
+
+def test_compiled_shared_agents_md_is_branch_neutral_and_documents_pending_patch_fallback(kit):
+    vcs = _spec()["vcs"]
+    shared = (kit / "templates" / "_shared" / "agents.md").read_text()
+    commit_sec = _section(shared, "4. Pre-Commit Verification & Commit Slot (Lesson L18)")
+    assert vcs["build_branch"] in commit_sec
+    assert vcs["eval_branch"] in commit_sec
+    assert f"git pull --rebase origin {vcs['build_branch']}" not in commit_sec
+    assert "git stash push -u" not in commit_sec
+    for needle in (
+        "git add --",
+        "git diff --cached --name-only",
+        ".scion/",
+        ".agents/",
+        "rev-list --count",
+        "/scion-volumes/scratchpad/pending-",
+        "status:po-decision",
+    ):
+        assert needle in commit_sec, f"missing {needle!r} in compiled Section 4"
+

@@ -333,6 +333,22 @@ def test_rendered_prompts_and_configs_have_no_placeholders_left(tmp_path):
     assert leftovers == set()
 
 
+def test_shared_agents_template_forbids_stash_untracked_and_scopes_staging(tmp_path):
+    files = _render(tmp_path)
+    agents = files["lead/agents.md"]
+    assert "git stash push -u" not in agents
+    assert "git stash -u" in agents  # explicitly listed as forbidden
+    for needle in (
+        "git add --",
+        "git diff --cached --name-only",
+        ".scion/",
+        ".agents/",
+        "rev-list --count",
+        "/scion-volumes/scratchpad/pending-",
+    ):
+        assert needle in agents, f"missing {needle!r} in rendered lead/agents.md"
+
+
 def test_project_create_waits_long_enough_for_a_large_clone(monkeypatch, tmp_path):
     """A shared project is cloned inside the create request; cloning a large monorepo (kubernetes: ~1.3 GB) takes
     minutes, so the API call must not give up after the default 60 seconds."""
