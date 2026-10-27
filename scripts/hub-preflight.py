@@ -49,9 +49,16 @@ def merge_projects(current, new):
 
 
 def missing_images(present, harnesses=HARNESSES):
-    """Harnesses whose scion-<harness> image is neither tagged locally nor under localhost/scion/."""
-    return [h for h in harnesses
-            if f"scion-{h}:latest" not in present and f"localhost/scion/scion-{h}:latest" not in present]
+    missing = []
+    for h in harnesses:
+        found = False
+        for p in present:
+            if p == f"scion-{h}:latest" or p == f"localhost/scion/scion-{h}:latest" or (f"/scion-{h}:" in p) or p.startswith(f"scion-{h}:"):
+                found = True
+                break
+        if not found:
+            missing.append(h)
+    return missing
 
 
 def _split(value):
@@ -108,6 +115,64 @@ def build_report(scion_home, health, images, sync_env, po_email, new_projects, g
             "watchdog_projects": watchdog, "sync_projects": sync, "factory_projects": ",".join(merged)}
 
 
+
+def build_api_report(client, po_email, new_projects, images, watchdog_projects, sync_projects, github_token_present=True, runtime="docker", k8s_ready=None):
+    errors, warnings = [], []
+    try:
+        health = client.health()
+    except Exception:
+        health = None
+    if not health or health.get("status") != "healthy":
+        errors.append(f"the Hub is not healthy (GET /healthz: {health or 'no answer'})")
+        
+    user = None
+    if po_email:
+        try:
+            if hasattr(client, "find_user"):
+                user = client.find_user(po_email)
+            else:
+                user = client.current_user()
+        except Exception:
+            pass
+            
+    if not po_email:
+        errors.append("PO_EMAIL is not set in factory.env")
+    elif not user:
+        errors.append(f"{po_email} is not a Hub user yet: sign in to the Hub web UI once with that account")
+        
+    try:
+        existing = [p["slug"] for p in client.list_projects()]
+    except Exception:
+        existing = []
+        
+    for slug in new_projects:
+        if slug in existing:
+            warnings.append(f"project {slug} exists already: project-create skips it (its workspace mode is fixed)")
+    if images is not None:
+        for h in missing_images(images):
+            warnings.append(f"no scion-{h} image: agents on the {h} harness can't start until you build it")
+    if not github_token_present:
+        warnings.append(
+            "~/.factory-github-token is missing or empty: Git-backed project-create needs a PAT "
+            "(include 'workflow' scope if agents edit .github/workflows/*)"
+        )
+        
+    if runtime == "kubernetes" and not k8s_ready:
+        warnings.append("kubernetes is not ready or kubectl missing")
+        
+    try:
+        status, data = client.request("GET", "/api/v1/harness-configs?scope=global")
+        harness_configs = sorted([c["name"] for c in data.get("items", [])]) if status == 200 else []
+    except Exception:
+        harness_configs = []
+        
+    merged = merge_projects(merge_projects(watchdog_projects, sync_projects), new_projects)
+    return {"ok": not errors, "errors": errors, "warnings": warnings,
+            "scion_version": (health or {}).get("scionVersion"), "po_user": po_email if user else None,
+            "github_token_present": bool(github_token_present),
+            "existing_projects": existing, "harness_configs": harness_configs,
+            "watchdog_projects": watchdog_projects, "sync_projects": sync_projects, "factory_projects": ",".join(merged)}
+
 def _health(url):
     try:
         with urllib.request.urlopen(url.rstrip("/") + "/healthz", timeout=10) as resp:
@@ -131,25 +196,90 @@ def main(argv=None):
     parser.add_argument("--json", action="store_true", help="print the report as JSON")
     parser.add_argument("--skip-health", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--skip-docker", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--runtime", choices=["docker", "kubernetes"], default="docker")
     args = parser.parse_args(argv)
 
-    new = _split(os.environ.get("FACTORY_PROJECTS")) or [p for p in (os.environ.get("BUILD_PROJECT"),
-                                                                     os.environ.get("EVAL_PROJECT")) if p]
-    sync_path = os.path.expanduser("~/factory-sync/sync.env")
+    new = _split(os.environ.get("FACTORY_PROJECTS")) or [p for p in (os.environ.get("BUILD_PROJECT"), os.environ.get("EVAL_PROJECT")) if p]
     token_path = os.path.expanduser(os.environ.get("GITHUB_TOKEN_FILE", "~/.factory-github-token"))
-    report = build_report(
-        scion_home=args.scion_home,
-        health={"status": "healthy", "scionVersion": "skipped"} if args.skip_health
-        else _health(os.environ.get("HUB_LOCAL_URL", "http://localhost:8080")),
-        images=None if args.skip_docker else _images(),
-        sync_env=open(sync_path).read() if os.path.exists(sync_path) else "",
-        po_email=os.environ.get("PO_EMAIL", ""), new_projects=new,
-        github_token_present=_has_github_token(token_path))
+    
+    if os.environ.get("HUB_URL"):
+        import sys
+        sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+        from hub_client import HubClient
+        client = HubClient.from_env()
+        
+        images = None
+        if not args.skip_docker:
+            reg = os.environ.get("IMAGE_REGISTRY", "")
+            if reg:
+                try:
+                    out = subprocess.run(["gcloud", "artifacts", "docker", "images", "list", reg, "--format=value(package,tags)"], capture_output=True, text=True, timeout=30)
+                    if out.returncode == 0:
+                        images = set()
+                        for line in out.stdout.splitlines():
+                            parts = line.split()
+                            if len(parts) >= 2:
+                                pkg = parts[0]
+                                for t in parts[1].split(","):
+                                    images.add(f"{pkg}:{t}")
+                except Exception:
+                    pass
+            elif args.runtime == "docker":
+                images = _images()
+                
+        watchdog = []
+        sync = []
+        k8s_ready = False
+        if args.runtime == "kubernetes":
+            try:
+                ns = os.environ.get("HUB_K8S_NAMESPACE", "scion")
+                out = subprocess.run(["kubectl", "get", "cronjob", "-n", ns, "-o", "json"], capture_output=True, text=True, timeout=10)
+                if out.returncode == 0:
+                    k8s_ready = True
+                    try:
+                        data = json.loads(out.stdout)
+                        for item in data.get("items", []):
+                            name = item.get("metadata", {}).get("name", "")
+                            containers = item.get("spec", {}).get("jobTemplate", {}).get("spec", {}).get("template", {}).get("spec", {}).get("containers", [])
+                            if not containers:
+                                continue
+                            c = containers[0]
+                            env = {e["name"]: e.get("value", "") for e in c.get("env", []) if "name" in e}
+                            if "watchdog" in name:
+                                watchdog = _split(env.get("FACTORY_PROJECTS"))
+                            elif "sync" in name:
+                                sync = _split(env.get("FACTORY_PROJECTS"))
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+                
+        report = build_api_report(
+            client=client,
+            po_email=os.environ.get("PO_EMAIL", ""),
+            new_projects=new,
+            images=images,
+            watchdog_projects=watchdog,
+            sync_projects=sync,
+            github_token_present=_has_github_token(token_path),
+            runtime=args.runtime,
+            k8s_ready=k8s_ready
+        )
+    else:
+        sync_path = os.path.expanduser("~/factory-sync/sync.env")
+        report = build_report(
+            scion_home=args.scion_home,
+            health={"status": "healthy", "scionVersion": "skipped"} if args.skip_health else _health(os.environ.get("HUB_LOCAL_URL", "http://localhost:8080")),
+            images=None if args.skip_docker else _images(),
+            sync_env=open(sync_path).read() if os.path.exists(sync_path) else "",
+            po_email=os.environ.get("PO_EMAIL", ""), new_projects=new,
+            github_token_present=_has_github_token(token_path)
+        )
 
     if args.json:
         print(json.dumps(report, indent=2))
     else:
-        print(f"Scion {report['scion_version']}  PO admin: {report['po_user'] or 'MISSING'}")
+        print(f"Scion {report.get('scion_version', 'UNKNOWN')}  PO admin: {report.get('po_user') or 'MISSING'}")
         print(f"existing projects: {', '.join(report['existing_projects']) or '(none)'}")
         print(f"harness-configs:   {', '.join(report['harness_configs']) or '(none)'}")
         print(f"watchdog covers:   {', '.join(report['watchdog_projects']) or '(not installed)'}")
@@ -160,6 +290,7 @@ def main(argv=None):
             print(f"WARN  {w}")
         print(f"\nInstall the watchdog and the sync with:\n  FACTORY_PROJECTS={report['factory_projects']}")
     return 0 if report["ok"] else 1
+
 
 
 if __name__ == "__main__":

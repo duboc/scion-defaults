@@ -31,6 +31,10 @@ import subprocess
 import sys
 import tarfile
 import tempfile
+import hashlib
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from hub_client import HubClient
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 
@@ -243,6 +247,95 @@ main()
 '''
 
 
+
+def push_templates_via_api(client, project_slug: str, roles: list[str], rendered_dir: str, apply: bool = False, default_dir: str = "") -> dict:
+    pid = client.project_id(project_slug)
+    status, data = client.request("GET", f"/api/v1/templates?scope=project&projectId={pid}")
+    templates = data.get("items", []) if status == 200 else []
+    before = {t["id"]: t.get("contentHash") for t in templates}
+    touched = set()
+    
+    for role in roles:
+        role_dir = os.path.join(rendered_dir, role)
+        files = {}
+        for root, _, fs in os.walk(role_dir):
+            for f in fs:
+                if f in ("agents.md", "system-prompt.md", "scion-agent.yaml"):
+                    path = os.path.relpath(os.path.join(root, f), role_dir)
+                    with open(os.path.join(root, f), "rb") as fd:
+                        files[path] = fd.read()
+        
+        harness = "claude"
+        if "scion-agent.yaml" in files:
+            yaml = files["scion-agent.yaml"].decode("utf-8")
+            m = re.search(r"harness:\s*(\S+)", yaml)
+            if m:
+                harness = harness_type(m.group(1))
+        
+        existing = [t for t in templates if t["slug"] == role or t["name"] == role]
+        row = existing[0] if existing else None
+        
+        if row:
+            touched.add(row["id"])
+            shared = [t for t in templates if t["id"] != row["id"] and (t.get("storagePath") == row.get("storagePath") or t.get("storageUri") == row.get("storageUri")) and (row.get("storagePath") or row.get("storageUri"))]
+            if shared:
+                legacy = role + "-legacy"
+                print(f"{role}: row {row['id']} uses storage it doesn't own ({row.get('storagePath')}): rename it to {legacy} and create a fresh {role} with {len(files)} files")
+                if apply:
+                    client.request("PATCH", f"/api/v1/templates/{row['id']}", body={"name": legacy, "slug": legacy})
+                    
+                    st, r = client.request("POST", f"/api/v1/templates", body={"name": role, "slug": role, "harness": harness, "scope": "project", "scopeId": pid})
+                    tid = r["id"]
+                    touched.add(tid)
+                    payload = {"files": [{"path": path, "size": len(raw)} for path, raw in files.items()]}
+                    st, up_r = client.request("POST", f"/api/v1/templates/{tid}/upload", body=payload)
+                    urls = up_r.get("urls") or up_r.get("uploadUrls") or up_r.get("files") or []
+                    for entry in urls:
+                        raw = files[entry["path"]]
+                        client.request(entry.get("method", "PUT"), entry["url"], raw=raw, headers=entry.get("headers") or {"Content-Type": "application/octet-stream"})
+                    manifest = {"version": "1.0", "harness": harness, "files": [{"path": p, "size": len(r), "hash": "sha256:" + hashlib.sha256(r).hexdigest(), "mode": 0o644} for p, r in files.items()]}
+                    st, res = client.request("POST", f"/api/v1/templates/{tid}/finalize", body={"manifest": manifest})
+                    print(f"{role}: created {tid}, status={res.get('status')} hash={res.get('contentHash')}")
+            else:
+                print(f"{role}: update in place {row['id']}")
+                if apply:
+                    payload = {"files": [{"path": path, "size": len(raw)} for path, raw in files.items()]}
+                    st, r = client.request("POST", f"/api/v1/templates/{row['id']}/upload", body=payload)
+                    urls = r.get("urls") or r.get("uploadUrls") or r.get("files") or []
+                    for entry in urls:
+                        raw = files[entry["path"]]
+                        client.request(entry.get("method", "PUT"), entry["url"], raw=raw, headers=entry.get("headers") or {"Content-Type": "application/octet-stream"})
+                    manifest = {"version": "1.0", "harness": harness, "files": [{"path": p, "size": len(r), "hash": "sha256:" + hashlib.sha256(r).hexdigest(), "mode": 0o644} for p, r in files.items()]}
+                    st, res = client.request("POST", f"/api/v1/templates/{row['id']}/finalize", body={"manifest": manifest})
+                    print(f"{role}: updated, status={res.get('status')} hash={res.get('contentHash')}")
+                    
+        if not row:
+            print(f"{role}: create with {len(files)} files")
+            if apply:
+                st, r = client.request("POST", f"/api/v1/templates", body={"name": role, "slug": role, "harness": harness, "scope": "project", "scopeId": pid})
+                tid = r["id"]
+                touched.add(tid)
+                payload = {"files": [{"path": path, "size": len(raw)} for path, raw in files.items()]}
+                st, up_r = client.request("POST", f"/api/v1/templates/{tid}/upload", body=payload)
+                urls = up_r.get("urls") or up_r.get("uploadUrls") or up_r.get("files") or []
+                for entry in urls:
+                    raw = files[entry["path"]]
+                    client.request(entry.get("method", "PUT"), entry["url"], raw=raw, headers=entry.get("headers") or {"Content-Type": "application/octet-stream"})
+                manifest = {"version": "1.0", "harness": harness, "files": [{"path": p, "size": len(r), "hash": "sha256:" + hashlib.sha256(r).hexdigest(), "mode": 0o644} for p, r in files.items()]}
+                st, res = client.request("POST", f"/api/v1/templates/{tid}/finalize", body={"manifest": manifest})
+                print(f"{role}: created {tid}, status={res.get('status')} hash={res.get('contentHash')}")
+
+    print("\nverification:")
+    status, data = client.request("GET", f"/api/v1/templates?scope=project&projectId={pid}")
+    after_templates = data.get("items", []) if status == 200 else []
+    after = {t["id"]: t.get("contentHash") for t in after_templates}
+    others = [tid for tid, h in before.items() if tid not in touched and after.get(tid) != h]
+    if others:
+        sys.exit(f"WARNING: templates outside the requested roles changed: {others}")
+    print("other templates unchanged: yes")
+    return {"status": "ok"}
+
+
 def render_command(out, roles, templates=""):
     """render-templates.py for the given roles, from this repository's templates/ or a compiled kit's templates/."""
     cmd = [sys.executable, os.path.join(HERE, "render-templates.py"), "--out", out, "--roles", ",".join(roles)]
@@ -259,6 +352,8 @@ def main():
                         help="templates directory to push (default: ../templates; e.g. <kit>/templates from "
                              "`scion-factory compile`)")
     parser.add_argument("--apply", action="store_true", help="make the changes (default: dry run)")
+
+    parser.add_argument("--direct", action="store_true", help="use Hub API directly")
     args = parser.parse_args()
     roles = [r for r in args.roles.split(",") if r]
 
@@ -270,6 +365,12 @@ def main():
         out = os.path.join(tmp, "templates")
         subprocess.run(render_command(out, roles, os.path.abspath(args.templates) if args.templates else ""),
                        check=True, stdout=subprocess.DEVNULL)
+        
+        if args.direct or os.environ.get("HUB_URL", "").strip():
+            client = HubClient.from_env()
+            push_templates_via_api(client, args.project, roles, out, args.apply)
+            return 0
+
         buf = io.BytesIO()
         with tarfile.open(fileobj=buf, mode="w:gz") as tar:
             for role in roles:

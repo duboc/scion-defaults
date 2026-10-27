@@ -42,7 +42,7 @@ import urllib.request
 SCION_HOME = os.path.expanduser(os.environ.get("SCION_HOME", "~/.scion"))
 HUB_DB = os.path.join(SCION_HOME, "hub.db")
 HUB_ENV = os.path.join(SCION_HOME, "hub.env")
-HUB_URL = os.environ.get("HUB_LOCAL_URL", "http://localhost:8080").rstrip("/")
+HUB_URL = os.environ.get("HUB_URL") or os.environ.get("HUB_LOCAL_URL", "http://127.0.0.1:8080").rstrip("/")
 
 
 def _db():
@@ -52,10 +52,10 @@ def _db():
 
 
 def project_id(slug):
-    row = _db().execute("SELECT id FROM projects WHERE slug = ?", (slug,)).fetchone()
-    if not row:
+    try:
+        return _hub_client().project_id(slug)
+    except Exception:
         sys.exit(f"unknown project slug: {slug}")
-    return row["id"]
 
 
 def _token():
@@ -91,6 +91,20 @@ def _token():
 _TOKEN = None
 
 
+
+def _hub_client():
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    from hub_client import HubClient, load_credentials_token
+    token = os.environ.get("SCION_HUB_TOKEN")
+    if not token:
+        try:
+            token = load_credentials_token(SCION_HOME, HUB_URL)
+        except Exception:
+            pass
+    if not token:
+        token = _token()
+    return HubClient(base_url=HUB_URL, token=token)
+
 def api(method, path, body=None, timeout=60):
     global _TOKEN
     if _TOKEN is None:
@@ -107,8 +121,8 @@ def api(method, path, body=None, timeout=60):
 
 
 def cmd_projects(_args):
-    for row in _db().execute("SELECT slug, id FROM projects ORDER BY slug"):
-        print(f"{row['slug']}\t{row['id']}")
+    for row in _hub_client().list_projects():
+        print(f"{row['slug']:<25} {row['id']}")
 
 
 def cmd_message(args):
@@ -360,6 +374,52 @@ def cmd_experiments(args):
     print(f"HTTP {status} {name} enabled={enabled} (users see it after reloading the page)")
 
 
+
+def cmd_service_accounts(args):
+    client = _hub_client()
+    pid = client.project_id(args.project)
+    if args.subcmd == "list":
+        status, data = client.request("GET", f"/api/v1/projects/{pid}/service-accounts")
+        for sa in data.get("items", []):
+            print(f"{sa['id']} {sa['email']} (project: {sa['gcpProject']})")
+    elif args.subcmd == "add":
+        status, data = client.request("POST", f"/api/v1/projects/{pid}/service-accounts", body={
+            "email": args.email,
+            "gcpProject": args.gcp_project,
+            "displayName": args.name or args.email.split("@")[0]
+        })
+        print(f"Registered {data['id']}")
+
+def cmd_project_settings(args):
+    client = _hub_client()
+    pid = client.project_id(args.project)
+    status, settings = client.request("GET", f"/api/v1/projects/{pid}/settings")
+    if status != 200:
+        settings = {}
+        
+    if args.profile:
+        settings["activeProfile"] = args.profile
+    if args.gcp_identity:
+        settings["defaultGCPIdentityMode"] = args.gcp_identity
+        
+    if args.service_account:
+        sa_id = args.service_account
+        if "@" in sa_id:
+            status, data = client.request("GET", f"/api/v1/projects/{pid}/service-accounts")
+            for sa in data.get("items", []):
+                if sa["email"] == sa_id:
+                    sa_id = sa["id"]
+                    break
+            else:
+                sys.exit(f"Service account {sa_id} not registered in project {args.project}")
+        settings["defaultGCPIdentityServiceAccountID"] = sa_id
+        prof = args.profile or settings.get("activeProfile")
+        if prof:
+            settings.setdefault("defaultGCPIdentityServiceAccountIDByProfile", {})[prof] = sa_id
+
+    status, new_settings = client.request("PUT", f"/api/v1/projects/{pid}/settings", body=settings)
+    print(json.dumps(new_settings, indent=2))
+
 def cmd_metrics(args):
     base_path = "/api/v1/metrics/dashboard"
     if args.project:
@@ -432,6 +492,24 @@ def main():
                                        "--project=<slug> \"<task>\"")
     cli.add_argument("args", nargs=argparse.REMAINDER, help="arguments for the scion CLI")
     cli.set_defaults(func=cmd_scion)
+
+
+    sa = sub.add_parser("service-accounts", help="manage project service accounts")
+    sa.add_argument("--project", required=True)
+    sa_sub = sa.add_subparsers(dest="subcmd", required=True)
+    sa_sub.add_parser("list")
+    sa_add = sa_sub.add_parser("add")
+    sa_add.add_argument("--email", required=True)
+    sa_add.add_argument("--gcp-project", required=True)
+    sa_add.add_argument("--name")
+    sa.set_defaults(func=cmd_service_accounts)
+
+    pset = sub.add_parser("project-settings", help="manage project settings")
+    pset.add_argument("--project", required=True)
+    pset.add_argument("--profile")
+    pset.add_argument("--gcp-identity", choices=["block", "passthrough", "assign"])
+    pset.add_argument("--service-account")
+    pset.set_defaults(func=cmd_project_settings)
 
     exp = sub.add_parser("experiments", help="show or override hub experiments (feature flags)")
     exp.add_argument("--set", metavar="NAME=true|false|default")
