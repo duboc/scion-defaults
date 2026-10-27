@@ -268,7 +268,11 @@ class HubClient:
         
     def list_project_service_accounts(self, project_id: str) -> list[dict]:
         res = self.request("GET", f"/api/v1/projects/{project_id}/gcp-service-accounts")[1]
-        return res.get("items") or res.get("serviceAccounts") or res
+        if "items" in res and isinstance(res["items"], list):
+            return res["items"]
+        if "serviceAccounts" in res and isinstance(res["serviceAccounts"], list):
+            return res["serviceAccounts"]
+        return res if isinstance(res, list) else []
         
     def register_project_service_account(self, project_id: str, email: str, gcp_project: str, name: str = "") -> dict:
         for sa in self.list_project_service_accounts(project_id):

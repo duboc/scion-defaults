@@ -37,6 +37,7 @@ def provision_factory(spec: dict, kit_dir, env_file, seed_repo = None, apply: bo
         env_file = Path(env_file)
         if seed_repo: seed_repo = Path(seed_repo)
         eff_env = _load_env(env_file)
+        eff_env["CLOUDSDK_CORE_DISABLE_PROMPTS"] = "1"
         hub_url = eff_env.get("HUB_URL") or "http://127.0.0.1:8000"
         token = eff_env.get("HUB_TOKEN", "")
         client = HubClient(hub_url, token) if token else HubClient.from_env(eff_env)
@@ -64,7 +65,7 @@ def provision_factory(spec: dict, kit_dir, env_file, seed_repo = None, apply: bo
             phases.append({"phase": "preflight", "ok": True, "local": True})
 
         # 2. sandbox
-        r_sb = subprocess.run(["bash", "scripts/setup-sandbox.sh"], cwd=ROOT_DIR, env={**os.environ, "FACTORY_ENV": str(env_file), "DRY_RUN": "0" if apply else "1"}, capture_output=True, text=True)
+        r_sb = subprocess.run(["bash", "scripts/setup-sandbox.sh"], cwd=ROOT_DIR, env={**os.environ, "FACTORY_ENV": str(env_file), "DRY_RUN": "0" if apply else "1", "CLOUDSDK_CORE_DISABLE_PROMPTS": "1"}, capture_output=True, text=True)
         if r_sb.returncode == 0:
             phases.append({"phase": "sandbox", "ok": True})
         else:
@@ -73,7 +74,7 @@ def provision_factory(spec: dict, kit_dir, env_file, seed_repo = None, apply: bo
 
         # 3. seed_repo
         if seed_repo:
-            r_seed = subprocess.run(["bash", str(ROOT_DIR / "scripts" / "seed-github-waves.sh")], cwd=seed_repo, env={**os.environ, "DRY_RUN": "0" if apply else "1"}, capture_output=True, text=True)
+            r_seed = subprocess.run(["bash", str(ROOT_DIR / "scripts" / "seed-github-waves.sh")], cwd=seed_repo, env={**os.environ, "DRY_RUN": "0" if apply else "1", "CLOUDSDK_CORE_DISABLE_PROMPTS": "1"}, capture_output=True, text=True)
             if r_seed.returncode == 0:
                 phases.append({"phase": "seed_repo", "ok": True})
             else:
@@ -97,7 +98,6 @@ def provision_factory(spec: dict, kit_dir, env_file, seed_repo = None, apply: bo
         worker_sa_name = eff_env.get("WORKER_SA_NAME", spec.get("infrastructure", {}).get("worker_sa_name", ""))
         deployer_sa_name = eff_env.get("DEPLOYER_SA_NAME", "")
         runtime_profile = eff_env.get("RUNTIME_PROFILE") or spec.get("infrastructure", {}).get("runtime_profile", "")
-        print("DEBUG:", eff_env.get("RUNTIME_PROFILE"), spec.get("infrastructure", {}).get("runtime_profile", ""), file=sys.stderr)
 
         worker_sa_email = f"{worker_sa_name}@{sandbox_project}.iam.gserviceaccount.com"
         deployer_sa_email = f"{deployer_sa_name}@{sandbox_project}.iam.gserviceaccount.com"
@@ -124,11 +124,11 @@ def provision_factory(spec: dict, kit_dir, env_file, seed_repo = None, apply: bo
             for pid in (build_pid_id, eval_pid_id):
                 try:
                     client.request("PUT", f"/api/v1/projects/{pid}/shared-dirs/scratchpad", body={})
-                except:
+                except Exception:
                     client.request("POST", f"/api/v1/projects/{pid}/shared-dirs", body={"name": "scratchpad"})
                 try:
                     client.request("PUT", f"/api/v1/projects/{pid}/shared-dirs/knowledge-plane", body={"readOnly": True})
-                except:
+                except Exception:
                     client.request("POST", f"/api/v1/projects/{pid}/shared-dirs", body={"name": "knowledge-plane", "readOnly": True})
             
             kp_src_dir = (seed_repo / spec.get("monorepo", {}).get("subdir", "") / "knowledge-plane") if seed_repo and spec.get("monorepo", {}).get("subdir") else (kit_dir / "knowledge-plane")
@@ -145,7 +145,7 @@ def provision_factory(spec: dict, kit_dir, env_file, seed_repo = None, apply: bo
                 cmd_harness.append("--via-api")
             if apply:
                 cmd_harness.append("--apply")
-            harness_env = {**os.environ, "FACTORY_ENV": str(env_file)}
+            harness_env = {**os.environ, "FACTORY_ENV": str(env_file), "CLOUDSDK_CORE_DISABLE_PROMPTS": "1"}
             subprocess.run(cmd_harness, cwd=ROOT_DIR, env=harness_env, check=True, stdout=sys.stderr)
 
         b_roles = ",".join([r.get("role", "") for r in spec.get("team", {}).get("build_roles", [])])
@@ -161,7 +161,7 @@ def provision_factory(spec: dict, kit_dir, env_file, seed_repo = None, apply: bo
             if apply:
                 cmd_push.append("--apply")
             # pass HUB_URL in env so push-templates can find it since we don't pass --env
-            push_env = {**os.environ, "HUB_URL": eff_env.get("HUB_URL", ""), "HUB_TOKEN": eff_env.get("HUB_TOKEN", ""), "FACTORY_ENV": str(env_file)}
+            push_env = {**os.environ, "HUB_URL": eff_env.get("HUB_URL", ""), "HUB_TOKEN": eff_env.get("HUB_TOKEN", ""), "FACTORY_ENV": str(env_file), "CLOUDSDK_CORE_DISABLE_PROMPTS": "1"}
             subprocess.run(cmd_push, cwd=ROOT_DIR, env=push_env, check=True, stdout=sys.stderr)
         phases.append({"phase": "harness_and_templates", "ok": True})
 
@@ -174,7 +174,7 @@ def provision_factory(spec: dict, kit_dir, env_file, seed_repo = None, apply: bo
                 cmd_cp.append("--dry-run")
             if eff_env.get("HUB_K8S_NAMESPACE"):
                 cmd_cp.extend(["--gsa-email", worker_sa_email])
-            r_cp = subprocess.run(cmd_cp, cwd=ROOT_DIR, env={**os.environ, "FACTORY_PROJECTS": eff_env.get("FACTORY_PROJECTS", f"{build_pid},{eval_pid}")}, capture_output=True, text=True)
+            r_cp = subprocess.run(cmd_cp, cwd=ROOT_DIR, env={**os.environ, "FACTORY_PROJECTS": eff_env.get("FACTORY_PROJECTS", f"{build_pid},{eval_pid}"), "CLOUDSDK_CORE_DISABLE_PROMPTS": "1"}, capture_output=True, text=True)
             if r_cp.returncode == 0:
                 phases.append({"phase": "control_plane", "ok": True})
             else:

@@ -39,7 +39,7 @@ class FakeHubHandler(BaseHTTPRequestHandler):
         import re
         m_gcp_sa = re.match(r"/api/v1/projects/([^/]+)/gcp-service-accounts", self.path)
         if m_gcp_sa:
-            self._send_json(200, {"serviceAccounts": [{"email": "ignore@example.com"}]})
+            self._send_json(200, {"serviceAccounts": []})
             return
             
         m_schedules = re.match(r"/api/v1/projects/([^/]+)/schedules", self.path)
@@ -74,7 +74,7 @@ class FakeHubHandler(BaseHTTPRequestHandler):
 
         
         if "/schedules" in self.path:
-            self._send_json(200, {"serviceAccounts": [{"email": "ignore@example.com"}]})
+            self._send_json(200, [])
             return
 
         if self.path == "/health":

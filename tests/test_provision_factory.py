@@ -93,7 +93,6 @@ def test_scion_factory_provision_dry_run_and_apply_against_gke_fake_hub(fake_hub
     assert out["apply"] is True
     assert {"starter-service", "starter-service-eval"} <= set(fake_hub.projects_by_slug)
     build_pid = fake_hub.projects_by_slug["starter-service"]["id"]
-    print("DEBUG PROJECT SETTINGS:", fake_hub.project_settings)
     assert fake_hub.project_settings[build_pid]["activeProfile"] == "gke"
     assert fake_hub.project_settings[build_pid]["defaultGCPIdentityMode"] == "assign"
     assert "INDEX.md" in fake_hub.shared_dir_files[(build_pid, "knowledge-plane")]
