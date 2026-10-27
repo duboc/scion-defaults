@@ -90,3 +90,57 @@ def test_install_k8s_control_plane_renders_cronjobs_and_workload_identity_ksa():
     assert ("CronJob", "scion-factory-watchdog") in kinds
     sa = next(m for m in manifests if m["kind"] == "ServiceAccount")
     assert sa["metadata"]["annotations"]["iam.gke.io/gcp-service-account"] == "agent-worker@my-sandbox.iam.gserviceaccount.com"
+
+def test_watchdog_main_uses_api_when_hub_url_set(fake_hub, monkeypatch, tmp_path):
+    monkeypatch.setenv("HUB_URL", fake_hub.url)
+    monkeypatch.setenv("SCION_HUB_TOKEN", "tok-admin")
+    monkeypatch.setenv("WATCHDOG_STATE_BACKEND", "firestore")
+    monkeypatch.setenv("SCION_HOME", "/nonexistent-scion-home")
+
+    store = FakeFirestore()
+    import factory_store
+    monkeypatch.setattr(factory_store, "store_from_env", lambda dry_run=False, project=None, database=None: store)
+
+    fake_hub.seed_agent("proj-1", slug="backend", phase="error", runtime="kubernetes", pod_name="scion-backend")
+
+    # Set up arguments for main
+    monkeypatch.setattr(sys, "argv", ["factory-watchdog.py", "--apply"])
+    
+    watchdog_mod.main()
+
+    # The mock will attempt to restart the errored agent via /start
+    assert any(cmd["path"] == "/api/v1/projects/proj-1/agents/backend/start" for cmd in fake_hub.requests)
+
+
+def test_install_k8s_control_plane_apply_secret_via_stdin_without_ps_args(monkeypatch, tmp_path):
+    fake_kubectl = tmp_path / "kubectl"
+    fake_kubectl.write_text(
+        "#!/bin/bash\n"
+        "echo \"$@\" >> fake_kubectl.log\n"
+        "cat - >> fake_kubectl_stdin.log\n"
+    )
+    fake_kubectl.chmod(0o755)
+
+    monkeypatch.setenv("PATH", f"{tmp_path}:{os.environ.get('PATH')}")
+    monkeypatch.setenv("SCION_HUB_TOKEN", "super-secret-token")
+
+    monkeypatch.setattr(sys, "argv", ["install-k8s-control-plane.py", "--apply"])
+    
+    old_cwd = os.getcwd()
+    os.chdir(str(tmp_path))
+    try:
+        install_k8s.main()
+    finally:
+        os.chdir(old_cwd)
+
+    logs = (tmp_path / "fake_kubectl.log").read_text()
+    assert "super-secret-token" not in logs
+    
+    assert "apply -f -" in logs
+
+    stdin_logs = (tmp_path / "fake_kubectl_stdin.log").read_text()
+    import base64
+    encoded = base64.b64encode(b"super-secret-token").decode("ascii")
+    assert encoded in stdin_logs
+    assert "scion-factory-hub-auth" in stdin_logs
+

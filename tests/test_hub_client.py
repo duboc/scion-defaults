@@ -36,7 +36,16 @@ class FakeHubHandler(BaseHTTPRequestHandler):
 
         
         if "/agents" in self.path:
-            self._send_json(200, {"agents": getattr(self.server, "agents", [])})
+            agents = getattr(self.server, "agents", [])
+            if not self.path.endswith("/agents"):
+                slug = self.path.split("/")[-1]
+                for a in agents:
+                    if a.get("slug") == slug:
+                        self._send_json(200, a)
+                        return
+                self._send_json(404, {"error": "not found"})
+                return
+            self._send_json(200, {"agents": agents})
             return
 
         
@@ -148,6 +157,9 @@ class FakeHubHandler(BaseHTTPRequestHandler):
             self._send_json(200, {"output": self.server.exec_outputs.get((pid, slug), "")})
             return
         if "/agents/" in self.path and self.path.endswith("/start"):
+            parts = self.path.split("/")
+            pid, slug = parts[4], parts[6]
+            self.server.set_agent_phase(pid, slug, "running"); print(f"FAKE HUB SET {slug} to running! {self.server.agents}")
             self._send_json(200, {})
             return
 

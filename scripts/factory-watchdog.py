@@ -1002,14 +1002,49 @@ def main():
     parser.add_argument("--json", action="store_true", help="Output status in JSON format")
     args = parser.parse_args()
 
+
     if args.install_cron:
         install_cron()
         if not args.apply:
             return
 
+    hub_url = os.environ.get("HUB_URL", "").strip()
+    if hub_url:
+        import hub_client
+        import factory_store
+        
+        client = hub_client.HubClient.from_env()
+        backend = os.environ.get("WATCHDOG_STATE_BACKEND", "")
+        if not backend and os.environ.get("FIRESTORE_PROJECT") and not os.environ.get("WATCHDOG_STATE"):
+            backend = "firestore"
+            
+        store = None
+        state_id = "watchdog__default"
+        if backend == "firestore":
+            store = factory_store.store_from_env(dry_run=not args.apply)
+            state = factory_store.load_control_state(store, state_id)
+        else:
+            state_file = os.environ.get("WATCHDOG_STATE", "/tmp/watchdog.json")
+            if os.path.exists(state_file):
+                import json
+                with open(state_file, "r") as f:
+                    state = json.load(f)
+            else:
+                state = {"restarts": {}, "alerted": [], "last_user_msg_ts": ""}
+                
+        run_api_watchdog(client, state, apply=args.apply, runtime=os.environ.get("AGENT_RUNTIME", "kubernetes"))
+        
+        if args.apply:
+            if backend == "firestore":
+                factory_store.save_control_state(store, state_id, state)
+            else:
+                import json
+                with open(state_file, "w") as f:
+                    json.dump(state, f)
+        return 0
+
     if not os.path.exists(HUB_DB):
         sys.exit(f"hub.db not found at {HUB_DB}")
-
     conn = sqlite3.connect(f"file:{HUB_DB}?mode=ro", uri=True)
     conn.row_factory = sqlite3.Row
 

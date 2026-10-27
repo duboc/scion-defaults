@@ -161,13 +161,20 @@ def main():
         # Apply token secret first
         token = os.environ.get("SCION_HUB_TOKEN")
         if token:
-            secret_cmd = [
-                "kubectl", "create", "secret", "generic", "scion-factory-hub-auth",
-                "--namespace", args.namespace,
-                f"--from-literal=token={token}",
-                "--dry-run=client", "-o", "json"
-            ]
-            secret_json = subprocess.check_output(secret_cmd, text=True)
+            import base64
+            secret = {
+                "apiVersion": "v1",
+                "kind": "Secret",
+                "metadata": {
+                    "name": "scion-factory-hub-auth",
+                    "namespace": args.namespace
+                },
+                "type": "Opaque",
+                "data": {
+                    "token": base64.b64encode(token.encode("utf-8")).decode("ascii")
+                }
+            }
+            secret_json = json.dumps(secret)
             subprocess.run(["kubectl", "apply", "-f", "-"], input=secret_json, text=True, check=True)
             
         # Apply manifests
