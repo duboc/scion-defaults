@@ -106,3 +106,54 @@ def test_setup_sandbox_with_nothing_to_deploy(tmp_path):
 def test_setup_sandbox_rejects_half_a_deploy_config(tmp_path):
     res, _ = _sandbox(tmp_path, NONE_ENV + "DEPLOYER_SA_NAME=deployer-sa\n", "1")
     assert res.returncode != 0 and "RUNTIME_SA_NAME" in res.stderr
+
+
+def _sandbox_with_kubectl(tmp_path, env_text, dry_run):
+    bindir = tmp_path / "bin"
+    bindir.mkdir(exist_ok=True)
+    (bindir / "gcloud").write_text(FAKE_GCLOUD)
+    (bindir / "gcloud").chmod(0o755)
+    (bindir / "sleep").write_text("#!/bin/sh\nexit 0\n")
+    (bindir / "sleep").chmod(0o755)
+    
+    # Fake kubectl
+    fake_kubectl = r"""#!/usr/bin/env bash
+state="$FAKE_STATE"
+echo "$*" >> "$state/calls"
+if [[ "$1" == "get" && "$2" == "serviceaccount" ]]; then
+  exit 1
+fi
+exit 0
+"""
+    (bindir / "kubectl").write_text(fake_kubectl)
+    (bindir / "kubectl").chmod(0o755)
+
+    state = tmp_path / f"state-{dry_run}"
+    state.mkdir()
+    env_file = tmp_path / "factory.env"
+    env_file.write_text(env_text)
+    env = {**os.environ, "PATH": f"{bindir}:{os.environ['PATH']}", "FACTORY_ENV": str(env_file),
+           "FAKE_STATE": str(state), "DRY_RUN": dry_run}
+    for name in ("GITHUB_TOKEN", "DEPLOYER_SA_NAME", "RUNTIME_SA_NAME"):
+        env.pop(name, None)
+    res = subprocess.run(["bash", str(SCRIPT)], env=env, capture_output=True, text=True)
+    calls = (state / "calls").read_text() if (state / "calls").exists() else ""
+    return res, calls
+
+
+def test_setup_sandbox_kubernetes_mode_creates_worker_sa_and_keeps_docker_deploy_none_clean(tmp_path):
+    k8s_env = (
+        "AGENT_RUNTIME=kubernetes\nSANDBOX_PROJECT=sandbox\nSANDBOX_REGION=us-central1\n"
+        "HUB_PROJECT=hub-proj\nHUB_K8S_NAMESPACE=scion-prod\nDATA_BUCKET=sandbox-data\n"
+        "DEPLOYER_SA_NAME=agent-deployer\nRUNTIME_SA_NAME=app-serving\n"
+    )
+    res, calls = _sandbox_with_kubectl(tmp_path, k8s_env, "0")
+    assert res.returncode == 0, res.stdout + res.stderr
+    assert "compute instances describe" not in calls
+    assert "iam service-accounts create agent-worker" in calls
+    assert "serviceAccount:hub-proj.svc.id.goog[scion-prod/scion-worker]" in calls
+    assert "serviceAccount:hub-proj.svc.id.goog[scion-prod/scion-deployer]" in calls
+    assert "create serviceaccount -n scion-prod scion-worker" in calls or "create serviceaccount scion-worker -n scion-prod" in calls
+    assert "annotate serviceaccount -n scion-prod scion-worker iam.gke.io/gcp-service-account=agent-worker@sandbox.iam.gserviceaccount.com" in calls
+    assert "create serviceaccount -n scion-prod scion-deployer" in calls or "create serviceaccount scion-deployer -n scion-prod" in calls
+    assert "annotate serviceaccount -n scion-prod scion-deployer iam.gke.io/gcp-service-account=agent-deployer@sandbox.iam.gserviceaccount.com" in calls

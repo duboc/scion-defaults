@@ -101,17 +101,39 @@ iam() {
 }
 bind_project() { iam gcloud projects add-iam-policy-binding "$P" --member="$1" --role="$2" --condition=None --quiet; }
 
-HUB_VM_SA="${HUB_VM_SA:-$(gcloud compute instances describe "$HUB_VM" --project="$HUB_PROJECT" --zone="$HUB_ZONE" \
-  --format='value(serviceAccounts[0].email)' 2>/dev/null || true)}"
-if [[ -z "$HUB_VM_SA" ]]; then
-  [[ "$DRY_RUN" == "1" ]] || { echo "cannot read the Hub VM's service account; set HUB_VM_SA" >&2; exit 1; }
-  HUB_VM_SA="<hub-vm-service-account>"
+AGENT_RUNTIME="${AGENT_RUNTIME:-}"
+HUB_K8S_NAMESPACE="${HUB_K8S_NAMESPACE:-}"
+IS_GKE_MODE=0
+if [[ "$AGENT_RUNTIME" == "kubernetes" || -n "$HUB_K8S_NAMESPACE" ]]; then
+  IS_GKE_MODE=1
 fi
+
+HUB_VM="${HUB_VM:-}"
+HUB_SA="${HUB_SA:-}"
+
+if [[ "$IS_GKE_MODE" == 1 ]]; then
+  if [[ -n "$HUB_VM" && -z "$HUB_SA" ]]; then
+    HUB_SA="$(gcloud compute instances describe "$HUB_VM" --project="$HUB_PROJECT" --zone="$HUB_ZONE" \
+      --format='value(serviceAccounts[0].email)' 2>/dev/null || true)"
+  fi
+  HUB_VM_SA="$HUB_SA"
+else
+  HUB_VM_SA="${HUB_VM_SA:-$HUB_SA}"
+  if [[ -z "$HUB_VM_SA" ]]; then
+    HUB_VM_SA="$(gcloud compute instances describe "$HUB_VM" --project="$HUB_PROJECT" --zone="$HUB_ZONE" \
+      --format='value(serviceAccounts[0].email)' 2>/dev/null || true)"
+  fi
+  if [[ -z "$HUB_VM_SA" ]]; then
+    [[ "$DRY_RUN" == "1" ]] || { echo "cannot read the Hub VM's service account; set HUB_VM_SA" >&2; exit 1; }
+    HUB_VM_SA="<hub-vm-service-account>"
+  fi
+fi
+
 PROJECT_NUMBER="$(gcloud projects describe "$P" --format='value(projectNumber)' 2>/dev/null || echo '<project-number>')"
 COMPUTE_SA="$PROJECT_NUMBER-compute@developer.gserviceaccount.com"
 DASHBOARD_RUNTIME_SA="${DASHBOARD_RUNTIME_SA:-$COMPUTE_SA}"
 FS_DATABASE="${FIRESTORE_DATABASE:-(default)}"
-echo "sandbox=$P region=$R deployer=$DEPLOYER_SA runtime=$RUNTIME_SA hub_vm_sa=$HUB_VM_SA dry_run=$DRY_RUN"
+echo "sandbox=$P region=$R deployer=$DEPLOYER_SA runtime=$RUNTIME_SA hub_vm_sa=$HUB_VM_SA dry_run=$DRY_RUN gke=$IS_GKE_MODE"
 
 step "1. APIs"
 apis=(run.googleapis.com cloudbuild.googleapis.com artifactregistry.googleapis.com aiplatform.googleapis.com
@@ -151,19 +173,23 @@ if [[ "$deploys" == 1 ]]; then
 fi
 
 step "4. Hub VM service account"
-if [[ "$deploys" == 1 ]]; then
-  for role in roles/iam.serviceAccountTokenCreator roles/iam.serviceAccountUser; do
-    iam gcloud iam service-accounts add-iam-policy-binding "$DEPLOYER_SA" --project="$P" \
-      --member="serviceAccount:$HUB_VM_SA" --role="$role" --quiet
+if [[ -n "$HUB_VM_SA" ]]; then
+  if [[ "$deploys" == 1 ]]; then
+    for role in roles/iam.serviceAccountTokenCreator roles/iam.serviceAccountUser; do
+      iam gcloud iam service-accounts add-iam-policy-binding "$DEPLOYER_SA" --project="$P" \
+        --member="serviceAccount:$HUB_VM_SA" --role="$role" --quiet
+    done
+  fi
+  for role in roles/serviceusage.serviceUsageConsumer roles/datastore.user; do
+    bind_project "serviceAccount:$HUB_VM_SA" "$role"
   done
-fi
-for role in roles/serviceusage.serviceUsageConsumer roles/datastore.user; do
-  bind_project "serviceAccount:$HUB_VM_SA" "$role"
-done
-if [[ "$deploys" == 1 ]]; then
-  echo "VM SA: token creator + user on the deployer SA; serviceUsageConsumer + datastore.user on $P"
+  if [[ "$deploys" == 1 ]]; then
+    echo "VM SA: token creator + user on the deployer SA; serviceUsageConsumer + datastore.user on $P"
+  else
+    echo "VM SA: serviceUsageConsumer + datastore.user on $P"
+  fi
 else
-  echo "VM SA: serviceUsageConsumer + datastore.user on $P"
+  echo "VM SA: skipped (GKE Mode without HUB_SA)"
 fi
 
 if [[ "$deploys" == 1 ]]; then
@@ -240,9 +266,11 @@ else
   run gcloud storage buckets create "gs://$DATA_BUCKET" --project="$P" --location="$R" \
     --uniform-bucket-level-access --public-access-prevention
 fi
-iam gcloud storage buckets add-iam-policy-binding "gs://$DATA_BUCKET" --member="serviceAccount:$HUB_VM_SA" \
-  --role=roles/storage.objectAdmin --quiet
-echo "VM SA: storage.objectAdmin on gs://$DATA_BUCKET"
+if [[ -n "$HUB_VM_SA" ]]; then
+  iam gcloud storage buckets add-iam-policy-binding "gs://$DATA_BUCKET" --member="serviceAccount:$HUB_VM_SA" \
+    --role=roles/storage.objectAdmin --quiet
+  echo "VM SA: storage.objectAdmin on gs://$DATA_BUCKET"
+fi
 
 step "9. GitHub token secret"
 if [[ -z "$GITHUB_TOKEN" ]]; then
@@ -266,6 +294,55 @@ else
   iam gcloud secrets add-iam-policy-binding github-token --project="$P" \
     --member="serviceAccount:$DASHBOARD_RUNTIME_SA" --role=roles/secretmanager.secretAccessor --quiet
   echo "secretAccessor on github-token: $DASHBOARD_RUNTIME_SA"
+fi
+
+if [[ "$IS_GKE_MODE" == 1 ]]; then
+  step "10. GKE Workload Identity"
+  WORKER_SA_NAME="${WORKER_SA_NAME:-agent-worker}"
+  WORKER_SA="${WORKER_SA_NAME}@${P}.iam.gserviceaccount.com"
+  if exists gcloud iam service-accounts describe "$WORKER_SA" --project="$P"; then
+    echo "service-account $WORKER_SA_NAME: exists"
+  else
+    run gcloud iam service-accounts create "$WORKER_SA_NAME" --project="$P" \
+      --description="Identity for Scion agents running in GKE" --display-name="Agent Worker"
+  fi
+  for role in roles/aiplatform.user roles/datastore.user roles/serviceusage.serviceUsageConsumer; do
+    bind_project "serviceAccount:$WORKER_SA" "$role"
+  done
+  if [[ -n "${DATA_BUCKET:-}" ]]; then
+    iam gcloud storage buckets add-iam-policy-binding "gs://$DATA_BUCKET" --member="serviceAccount:$WORKER_SA" \
+      --role=roles/storage.objectAdmin --quiet
+  fi
+  if [[ -n "${HUB_PROJECT:-}" && -n "${HUB_K8S_NAMESPACE:-}" ]]; then
+    for ksa in scion-worker scion-factory-control; do
+      iam gcloud iam service-accounts add-iam-policy-binding "$WORKER_SA" --project="$P" \
+        --role=roles/iam.workloadIdentityUser \
+        --member="serviceAccount:${HUB_PROJECT}.svc.id.goog[${HUB_K8S_NAMESPACE}/${ksa}]" --quiet
+    done
+    if [[ "$deploys" == 1 ]]; then
+      iam gcloud iam service-accounts add-iam-policy-binding "$DEPLOYER_SA" --project="$P" \
+        --role=roles/iam.workloadIdentityUser \
+        --member="serviceAccount:${HUB_PROJECT}.svc.id.goog[${HUB_K8S_NAMESPACE}/scion-deployer]" --quiet
+    fi
+    if command -v kubectl >/dev/null 2>&1 || [[ "$DRY_RUN" == "1" ]]; then
+      ensure_ksa() {
+        local ksa="$1" gsa="$2"
+        if [[ "$DRY_RUN" == "1" ]]; then
+          run kubectl create serviceaccount "$ksa" -n "$HUB_K8S_NAMESPACE"
+          run kubectl annotate serviceaccount -n "$HUB_K8S_NAMESPACE" "$ksa" "iam.gke.io/gcp-service-account=${gsa}" --overwrite
+        else
+          kubectl get serviceaccount -n "$HUB_K8S_NAMESPACE" "$ksa" >/dev/null 2>&1 || run kubectl create serviceaccount -n "$HUB_K8S_NAMESPACE" "$ksa"
+          run kubectl annotate serviceaccount -n "$HUB_K8S_NAMESPACE" "$ksa" "iam.gke.io/gcp-service-account=${gsa}" --overwrite
+        fi
+      }
+      for ksa in scion-worker scion-factory-control; do
+        ensure_ksa "$ksa" "$WORKER_SA"
+      done
+      if [[ "$deploys" == 1 ]]; then
+        ensure_ksa scion-deployer "$DEPLOYER_SA"
+      fi
+    fi
+  fi
 fi
 
 printf '\ndone%s\n' "$([[ "$DRY_RUN" == "1" ]] && echo ' (dry run: nothing was changed)')"

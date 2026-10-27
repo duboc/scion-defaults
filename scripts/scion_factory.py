@@ -610,6 +610,13 @@ def deploy_mode(spec: dict[str, Any]) -> str:
     value = infra["deploy"]
     return value if isinstance(value, str) else str(value)
 
+def runtime_mode(spec: dict) -> str:
+    rt = (spec.get("infrastructure") or {}).get("runtime", "")
+    if not rt:
+        return "docker"
+    return rt
+
+
 
 def autonomy(spec: dict[str, Any]) -> str:
     """`team.autonomy`, defaulting to `standard` (spec §7.4)."""
@@ -877,6 +884,10 @@ def evaluate_spec_readiness(spec: dict[str, Any]) -> dict[str, Any]:
         if not _SLUG_RE.match(prefix):
             missing.append("monorepo.agent_prefix must be a slug (lowercase letters, digits, single dashes), "
                            "normally the build project slug")
+
+    rt = spec.get("infrastructure", {}).get("runtime", "")
+    if rt not in ("", "kubernetes", "docker"):
+        missing.append(f"infrastructure.runtime is {rt!r} (must be kubernetes or docker)")
 
     missing.extend(kp.validate_knowledge_plane(spec))
     team_errors, warnings = _team_readiness(spec)
@@ -1714,6 +1725,16 @@ to the dashboard's runtime service account.
 
 
 def _render_factory_env_example(spec: dict[str, Any]) -> str:
+    SCRIPT_VARS = [
+        "HUB_PROJECT", "HUB_ZONE", "HUB_VM", "HUB_OS_USER", "HUB_URL", "HUB_LOCAL_URL",
+        "SANDBOX_PROJECT", "SANDBOX_REGION", "FIRESTORE_PROJECT", "FIRESTORE_DATABASE",
+        "DEPLOYER_SA_NAME", "RUNTIME_SA_NAME", "GITHUB_REPO", "BUILD_PROJECT", "EVAL_PROJECT",
+        "BUILD_BRANCH", "EVAL_BRANCH", "PO_EMAIL", "FACTORY_PROJECTS", "SERVING_SERVICE",
+        "DASHBOARD_SERVICE", "DATA_BUCKET", "BQ_DATASET", "AGENT_RUNTIME", "RUNTIME_PROFILE",
+        "HUB_K8S_NAMESPACE", "HUB_GKE_CLUSTER", "HUB_GKE_LOCATION", "IMAGE_REGISTRY",
+        "WORKER_SA_NAME", "HUB_SA",
+    ]
+
     proj = spec["project"]
     infra = spec["infrastructure"]
     team = spec["team"]
@@ -1751,6 +1772,7 @@ HUB_PROJECT=your-hub-gcp-project
 HUB_ZONE=us-central1-c
 HUB_VM=scion-hub
 HUB_OS_USER=scion
+HUB_URL=
 HUB_LOCAL_URL=http://localhost:8080
 
 # --- GCP sandbox the agents build and deploy into ---
@@ -1761,6 +1783,16 @@ FIRESTORE_DATABASE='(default)'
 DATA_BUCKET=your-sandbox-gcp-project-factory-data   # factory data bucket (scripts/setup-sandbox.sh creates it)
 BQ_DATASET={proj['slug'].replace('-', '_')}_dataset          # only with scripts/setup-sandbox.sh --with-bigquery
 {service_vars}
+# --- Agent Runtime (kubernetes or docker) ---
+AGENT_RUNTIME={runtime_mode(spec)}
+RUNTIME_PROFILE={infra.get('runtime_profile', '')}
+HUB_K8S_NAMESPACE=
+HUB_GKE_CLUSTER=
+HUB_GKE_LOCATION=
+IMAGE_REGISTRY=
+WORKER_SA_NAME={infra.get('worker_sa_name', 'agent-worker')}
+HUB_SA=
+
 # --- Factory ---
 VCS_ENABLED={'true' if vcs.get('enabled') else 'false'}
 GITHUB_REPO={vcs.get('repo', '')}
@@ -2519,6 +2551,15 @@ def main(argv: list[str] | None = None) -> int:
     p_git.add_argument("--build-branch", default="main")
     p_git.add_argument("--eval-branch", default="eval-dashboard")
 
+    p_prov = sub.add_parser("provision", help="Deterministically provision projects, infra, and templates")
+    p_prov.add_argument("spec_path", type=str)
+    p_prov.add_argument("--kit", type=str, required=True)
+    p_prov.add_argument("--env", type=str, required=True)
+    p_prov.add_argument("--seed-repo", type=str)
+    p_prov.add_argument("--apply", action="store_true")
+    p_prov.add_argument("--go", action="store_true")
+    p_prov.add_argument("--json", action="store_true")
+
     p_role = sub.add_parser("add-role", help="Add a library specialist (for example one discovery proposed) to a FactorySpec")
     p_role.add_argument("spec_path", help="Path to factory.yaml")
     p_role.add_argument("--role", required=True, help="Library role, e.g. security-auditor")
@@ -2589,6 +2630,25 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Enabled Git for {args.spec_path}: {args.repo} ({args.build_branch} / {args.eval_branch}); ready={report['ready']}")
         print("Next: run scripts/enable-git.sh from the current kit (dry run first), then recompile the kit and push templates.")
         return 0 if report["ready"] else 1
+
+    if args.cmd == "provision":
+        spec = load_spec(args.spec_path)
+        import provision_factory
+        from pathlib import Path
+        report = provision_factory.provision_factory(
+            spec,
+            Path(args.kit),
+            Path(args.env),
+            seed_repo=Path(args.seed_repo) if args.seed_repo else None,
+            apply=args.apply,
+            send_go=args.go,
+        )
+        if args.json:
+            print(json.dumps(report, indent=2))
+        else:
+            for p in report["phases"]:
+                print(f"Phase {p['phase']}: {'OK' if p.get('ok') else 'SKIP'}")
+        return 0 if report["ok"] else 1
 
     if args.cmd == "add-role":
         before = load_spec(args.spec_path)

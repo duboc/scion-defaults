@@ -900,6 +900,108 @@ def install_cron():
 # ---------------------------------------------------------------------------
 # Main entrypoint
 # ---------------------------------------------------------------------------
+
+def run_api_watchdog(client, state: dict, apply: bool, runtime: str = "kubernetes") -> None:
+    alerted = state.get("alerted")
+    if isinstance(alerted, list):
+        alerted = {k: 0 for k in alerted}
+    elif not isinstance(alerted, dict):
+        alerted = {}
+    state["alerted"] = alerted
+
+    projects = client.list_projects()
+    factory_projects = os.environ.get("FACTORY_PROJECTS")
+    if factory_projects:
+        factory_projects = [p.strip() for p in factory_projects.split(",") if p.strip()]
+        projects = [p for p in projects if p["slug"] in factory_projects]
+
+    # Check 2: Schedule Guard
+    for p in projects:
+        pid = p["slug"]
+        try:
+            schedules = client.request("GET", f"/api/v1/projects/{pid}/schedules")[1]
+            for s in schedules:
+                if s.get("status") in ("paused", "error"):
+                    if apply:
+                        if s.get("status") == "paused":
+                            client.request("POST", f"/api/v1/projects/{pid}/schedules/{s['id']}/resume")
+                        else:
+                            client.request("PATCH", f"/api/v1/projects/{pid}/schedules/{s['id']}", json={"status": "active"})
+        except Exception:
+            pass
+
+    # Check 3: Agent health + hung subprocess reaping
+    for p in projects:
+        pid = p["slug"]
+        agents = client.list_agents(pid)
+        for a in agents:
+            slug = a.get("slug") or a.get("name")
+            if not slug: continue
+            
+            phase = a.get("phase") or a.get("status")
+            if phase == "running":
+                try:
+                    res = client.exec_agent(pid, slug, ["ps", "-eo", "pid,etimes,comm,args"], timeout=10)
+                    if res:
+                        lines_exec = res[1].splitlines()
+                        for line_exec in lines_exec[1:]:
+                            parts = line_exec.split(None, 3)
+                            if len(parts) < 4: continue
+                            pid_num_str, etimes_str, comm, args = parts
+                            try:
+                                pid_num = int(pid_num_str)
+                                etimes = int(etimes_str)
+                            except ValueError:
+                                continue
+                                
+                            if pid_num == 1: continue
+                            if comm in ("sciontool", "node", "claude", "opencode"): continue
+                            if "harness" in args: continue
+                            
+                            hung_max = int(os.environ.get("HUNG_PROC_MAX_SEC", "600"))
+                            if etimes > hung_max:
+                                if apply:
+                                    client.exec_agent(pid, slug, ["kill", "-9", str(pid_num)], timeout=5)
+                except Exception:
+                    pass
+            elif phase in ("error", "stopped"):
+                if phase == "stopped" and slug not in ("lead", "eval-lead"):
+                    continue
+                    
+                key = f"{pid}/{slug}"
+                restarts = state["restarts"].get(key, [])
+                now = time.time()
+                restarts = [ts for ts in restarts if now - ts < 3600]; print(f'RESTARTS FOR {key}: {len(restarts)}')
+                
+                max_restarts = int(os.environ.get("MAX_RESTARTS_PER_HOUR", "3"))
+                if len(restarts) < max_restarts:
+                    if apply:
+                        restarts.append(now)
+                        state["restarts"][key] = restarts
+                        print(f'STARTING {pid} {slug} WITH {len(restarts)} RESTARTS'); client.ensure_agent_started(pid, slug, force_resume=True)
+                else:
+                    if apply and key not in state["alerted"]:
+                        state["alerted"][key] = time.time()
+                        
+    # Check 4: PO Inbox escalations
+    try:
+        msgs = client.request("GET", "/api/v1/messages?limit=100")[1]
+        last_ts = state.get("last_user_msg_ts", "")
+        new_msgs = [m for m in msgs if m.get("type") != "state-change" and m.get("created", "") > last_ts]
+        if new_msgs:
+            state["last_user_msg_ts"] = max(m.get("created", "") for m in new_msgs)
+    except Exception:
+        pass
+        
+    # Check 5: Shared knowledge-plane sync
+    kp_dir = os.environ.get("KNOWLEDGE_PLANE_LOCAL_DIR")
+    if kp_dir and os.path.isdir(kp_dir):
+        for p in projects:
+            try:
+                client.sync_shared_dir(p["slug"], "knowledge-plane", kp_dir, apply=apply)
+            except Exception:
+                pass
+
 def main():
     parser = argparse.ArgumentParser(description="Scion Factory Watchdog")
     parser.add_argument("--apply", action="store_true", help="Execute recovery actions and advance bookmarks")
@@ -907,14 +1009,49 @@ def main():
     parser.add_argument("--json", action="store_true", help="Output status in JSON format")
     args = parser.parse_args()
 
+
     if args.install_cron:
         install_cron()
         if not args.apply:
             return
 
+    hub_url = os.environ.get("HUB_URL", "").strip()
+    if hub_url:
+        import hub_client
+        import factory_store
+        
+        client = hub_client.HubClient.from_env()
+        backend = os.environ.get("WATCHDOG_STATE_BACKEND", "")
+        if not backend and os.environ.get("FIRESTORE_PROJECT") and not os.environ.get("WATCHDOG_STATE"):
+            backend = "firestore"
+            
+        store = None
+        state_id = "watchdog__default"
+        if backend == "firestore":
+            store = factory_store.store_from_env(dry_run=not args.apply)
+            state = factory_store.load_control_state(store, state_id)
+        else:
+            state_file = os.environ.get("WATCHDOG_STATE", "/tmp/watchdog.json")
+            if os.path.exists(state_file):
+                import json
+                with open(state_file, "r") as f:
+                    state = json.load(f)
+            else:
+                state = {"restarts": {}, "alerted": [], "last_user_msg_ts": ""}
+                
+        run_api_watchdog(client, state, apply=args.apply, runtime=os.environ.get("AGENT_RUNTIME", "kubernetes"))
+        
+        if args.apply:
+            if backend == "firestore":
+                factory_store.save_control_state(store, state_id, state)
+            else:
+                import json
+                with open(state_file, "w") as f:
+                    json.dump(state, f)
+        return 0
+
     if not os.path.exists(HUB_DB):
         sys.exit(f"hub.db not found at {HUB_DB}")
-
     conn = sqlite3.connect(f"file:{HUB_DB}?mode=ro", uri=True)
     conn.row_factory = sqlite3.Row
 

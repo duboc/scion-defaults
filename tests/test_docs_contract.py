@@ -80,3 +80,18 @@ def test_docs_cover_github_workflow_scope_and_lesson_l31():
         assert needle in lessons, f"missing {needle!r} in docs/lessons-learned.md"
 
 
+
+def test_docs_and_skill_cover_gke_runtime_and_auto_provision():
+    skill = (ROOT / "skills/scion-factory-bootstrap/SKILL.md").read_text()
+    for needle in ("setup-gke-hub.sh", "provision", "infrastructure.runtime", "kubernetes"):
+        assert needle in skill, f"missing {needle!r} in SKILL.md"
+
+    gke_runbook = (ROOT / "docs/gke-setup-runbook.md").read_text()
+    for needle in ("Workload Identity", "scion-worker", "scion-deployer", "install-k8s-control-plane.py", "/health", "setup-gke-hub.sh"):
+        assert needle in gke_runbook, f"missing {needle!r} in docs/gke-setup-runbook.md"
+
+    readme = (ROOT / "README.md").read_text()
+    assert "GKE" in readme and "scion-factory provision" in readme
+
+    lessons = (ROOT / "docs/lessons-learned.md").read_text()
+    assert "## L32." in lessons

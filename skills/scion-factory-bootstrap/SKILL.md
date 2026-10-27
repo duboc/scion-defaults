@@ -26,6 +26,18 @@ Run all commands from the root of the `scion-defaults` repository.
   provisioned database for it. For the product, default to Cloud Run, Firestore, BigQuery, Cloud Storage, and Vertex
   AI, and record a provisioned store (Spanner, AlloyDB, Cloud SQL) only with the requirement that justifies it.
 
+## Step 0: Target Hub mode
+
+Ask the user for the target Hub mode: **New Full GKE Scion Hub**, **Existing GKE / Cloud Run Scion Hub**, or **Existing Single-VM Hub**. If installing Scion from scratch on GKE, guide the user to use `scripts/setup-gke-hub.sh` with the appropriate tier flag:
+- For Full GKE Multi-Hub HA: `--tier terraform-ha`
+- For Hybrid VM + GKE: `--tier hybrid-gke`
+
+The full command syntax is:
+```bash
+DRY_RUN=1 scripts/setup-gke-hub.sh --tier <tier> --scion-repo <dir> --harnesses claude,antigravity --dry-run
+```
+After reviewing the plan, apply it using `--approve-apply`.
+
 ## Step 1: Detect static facts and write the draft
 
 Run the following command. Replace `TARGET_REPO_PATH` with the target repository, or omit `--repo` if no repository
@@ -60,7 +72,7 @@ Work through the `questions` in pillar order. For each question:
 | Pillar | Fields to fill |
 |---|---|
 | `1_mission_and_boundaries` | `project.name`, `project.mission`, `project.non_goals`, and the `vcs` section |
-| `2_runtime_data_and_iam` | `stack.*` commands, `infrastructure.deploy` (`service` or `none`), `infrastructure.cloud_stores`, `infrastructure.deployer_iam_roles` |
+| `2_runtime_data_and_iam` | `stack.*` commands, `infrastructure.runtime` (`kubernetes` or `docker`), `infrastructure.runtime_profile` (`""` or `"gke"`), `infrastructure.worker_sa_name` (default `"agent-worker"`), `infrastructure.deploy` (`service` or `none`), `infrastructure.cloud_stores`, `infrastructure.deployer_iam_roles` |
 | `3_roster_models_and_cost` | `team.build_roles`, `team.eval_roles`, `team.dropped_defaults`, `team.autonomy`, `team.heartbeat_mode`, `team.max_wip`, `infrastructure.budget_usd` |
 | `4_evaluation_pyramid_oracle` | `evaluation_pyramid.l1_health` through `evaluation_pyramid.l5_latency_slo` |
 | `5_backlog_waves_and_autonomy` | `waves[*].issues[*]` with `owner_role`, `acceptance_criteria`, and `requirements` (REQ- IDs) |
@@ -74,7 +86,7 @@ The draft specification starts with the default roster:
 
 Work through the team configuration with the human:
 
-1. **Deploy mode:** Ask for `infrastructure.deploy`: `service` (the factory deploys and tests a live service) or `none` (a library, CLI, or monorepo package with nothing to deploy). With `none`, do not add `deployer` or `eval-deployer` roles.
+1. **Deploy mode:** Ask for `infrastructure.runtime` (`kubernetes` or `docker`), `infrastructure.runtime_profile` (`""` or `"gke"`), `infrastructure.worker_sa_name` (default `"agent-worker"`), `infrastructure.deploy`: `service` (the factory deploys and tests a live service) or `none` (a library, CLI, or monorepo package with nothing to deploy). With `none`, do not add `deployer` or `eval-deployer` roles.
 2. **Review proposed specialists:** Present the default roster and each item in `proposed_roles` with its evidence. For each specialist the human confirms, run:
    ```bash
    ./scripts/scion-factory add-role factory.yaml --role R --evidence "..."
@@ -151,6 +163,17 @@ with `cp -Rn` so that an existing knowledge plane in the repository is merged, n
 
 Recompiling never overwrites `knowledge-plane/`, `backlog/`, or `eval-workspace/`, because agents edit them after
 bootstrap. Add `--force-knowledge` only when the human asks to reseed them.
+
+
+## Step 5: Automated provisioning
+
+Once the kit is compiled, perform automated provisioning:
+
+```bash
+./scripts/scion-factory provision factory.yaml --kit OUTPUT_DIR --env config/<slug>.env
+```
+
+Review the dry-run output with the human first. After they approve, run the provision command with `--apply --go`.
 
 Summarize what was generated, and point the human to `docs/setup-runbook.md` to deploy the factory to a Scion Hub.
 

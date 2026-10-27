@@ -158,6 +158,36 @@ def now():
     return datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+
+def collect_agent_docs_from_api(client, projects: list[str], api_calls_by_agent: dict[str, int], tool_calls_by_agent: dict[str, int]) -> list[dict]:
+    docs = []
+    for p in projects:
+        agents = client.list_agents(p)
+        for a in agents:
+            aid = a.get("id")
+            turns_val = max(int(a.get("current_turns") or 0), int(tool_calls_by_agent.get(aid, 0)))
+            calls_val = max(int(a.get("current_model_calls") or 0), int(api_calls_by_agent.get(aid, 0)))
+            
+            # The API might return "slug" or "name", "harnessConfig" or "harness", "updated" or "created"
+            agent_name = a.get("slug") or a.get("name")
+            harness = a.get("harnessConfig") or a.get("harness")
+            
+            docs.append({
+                "project_slug": p,
+                "agent_name": agent_name,
+                "agent_id": aid,
+                "template": a.get("template"),
+                "harness": harness,
+                "phase": a.get("phase") or a.get("status"),
+                "activity": a.get("activity"),
+                "parent_agent": a.get("parent_agent") or a.get("created_by"),
+                "current_turns": counter(turns_val),
+                "model_calls": counter(calls_val),
+                "last_summary": truncate(a.get("taskSummary") or a.get("message")),
+                "last_activity_at": parse_ts(a.get("last_activity_event") or a.get("updated") or a.get("created")),
+            })
+    return docs
+
 def main():
     load_sync_env()
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
@@ -181,43 +211,52 @@ def main():
     api_calls_by_agent = fetch_monitoring_counts(hub_project, gcp_token, "workload.googleapis.com/gen_ai.api.calls")
     tool_calls_by_agent = fetch_monitoring_counts(hub_project, gcp_token, "workload.googleapis.com/agent.tool.calls")
 
-    db = sqlite3.connect(f"file:{hub_db}?mode=ro", uri=True)
-    db.row_factory = sqlite3.Row
-    names = {r["id"]: r["name"] for r in db.execute("SELECT id, name FROM agents")}
-    rows = db.execute(
-        f"""SELECT p.slug AS project_slug, a.name, a.id, a.template, a.phase, a.activity, a.created_by,
-                   a.current_turns, a.current_model_calls, a.task_summary, a.message, a.last_activity_event,
-                   COALESCE(json_extract(a.applied_config, '$.harnessConfig'), a.harness_config) AS harness
-            FROM agents a JOIN projects p ON p.id = a.project_id
-            WHERE a.deleted_at IS NULL AND p.slug IN ({",".join("?" * len(projects))})
-            ORDER BY p.slug, a.name""",
-        projects,
-    ).fetchall()
-    if not rows:
-        print(f"{now()} no agents found in {projects}; nothing to sync")
-        return 0
-
-    docs = []
-    for r in rows:
-        parent = names.get(r["created_by"])  # None when a user (not an agent) created it
-        aid = r["id"]
-        turns_val = max(int(r["current_turns"] or 0), int(tool_calls_by_agent.get(aid, 0)))
-        calls_val = max(int(r["current_model_calls"] or 0), int(api_calls_by_agent.get(aid, 0)))
-        docs.append({
-            "project_slug": r["project_slug"],
-            "agent_name": r["name"],
-            "agent_id": r["id"],
-            "template": r["template"],
-            "harness": r["harness"],
-            "phase": r["phase"],
-            "activity": r["activity"],
-            "parent_agent": parent,
-            "current_turns": counter(turns_val),
-            "model_calls": counter(calls_val),
-            "last_summary": truncate(r["task_summary"] or r["message"]),
-            "last_activity_at": parse_ts(r["last_activity_event"]),
-        })
-
+    hub_url = os.environ.get("HUB_URL", "").strip()
+    if hub_url:
+        import hub_client
+        client = hub_client.HubClient.from_env()
+        docs = collect_agent_docs_from_api(client, projects, api_calls_by_agent, tool_calls_by_agent)
+        if not docs:
+            print(f"{now()} no agents found in {projects}; nothing to sync")
+            return 0
+    else:
+        db = sqlite3.connect(f"file:{hub_db}?mode=ro", uri=True)
+        db.row_factory = sqlite3.Row
+        names = {r["id"]: r["name"] for r in db.execute("SELECT id, name FROM agents")}
+        rows = db.execute(
+            f"""SELECT p.slug AS project_slug, a.name, a.id, a.template, a.phase, a.activity, a.created_by,
+                       a.current_turns, a.current_model_calls, a.task_summary, a.message, a.last_activity_event,
+                       COALESCE(json_extract(a.applied_config, '$.harnessConfig'), a.harness_config) AS harness
+                FROM agents a JOIN projects p ON p.id = a.project_id
+                WHERE a.deleted_at IS NULL AND p.slug IN ({",".join("?" * len(projects))})
+                ORDER BY p.slug, a.name""",
+            projects,
+        ).fetchall()
+        if not rows:
+            print(f"{now()} no agents found in {projects}; nothing to sync")
+            return 0
+    
+        docs = []
+        for r in rows:
+            parent = names.get(r["created_by"])  # None when a user (not an agent) created it
+            aid = r["id"]
+            turns_val = max(int(r["current_turns"] or 0), int(tool_calls_by_agent.get(aid, 0)))
+            calls_val = max(int(r["current_model_calls"] or 0), int(api_calls_by_agent.get(aid, 0)))
+            docs.append({
+                "project_slug": r["project_slug"],
+                "agent_name": r["name"],
+                "agent_id": r["id"],
+                "template": r["template"],
+                "harness": r["harness"],
+                "phase": r["phase"],
+                "activity": r["activity"],
+                "parent_agent": parent,
+                "current_turns": counter(turns_val),
+                "model_calls": counter(calls_val),
+                "last_summary": truncate(r["task_summary"] or r["message"]),
+                "last_activity_at": parse_ts(r["last_activity_event"]),
+            })
+    
     cutoff = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(minutes=prune_minutes)
     try:
         written = store.commit(factory_store.agent_status_writes(store, docs))

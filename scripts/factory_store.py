@@ -33,6 +33,7 @@ from typing import Any
 
 AGENT_STATUS = "factory_agent_status"
 EVAL_RUNS = "eval_runs"
+CONTROL_STATE_COLLECTION = "factory_control_state"
 MAX_WRITES_PER_COMMIT = 500
 API = "https://firestore.googleapis.com/v1"
 
@@ -315,3 +316,49 @@ def main(argv: list[str] | None = None) -> int:
 
 if __name__ == "__main__":
     sys.exit(main())
+
+# ---------------------------------------------------------------------------
+# Control State (written by watchdog)
+# ---------------------------------------------------------------------------
+
+def load_control_state(store, state_id: str) -> dict:
+    default_state = {"restarts": {}, "alerted": [], "last_user_msg_ts": ""}
+    # store could be a duck-typed fake_firestore that implements get_document
+    if hasattr(store, "get_document"):
+        doc = store.get_document(CONTROL_STATE_COLLECTION, state_id)
+    else:
+        # Our FirestoreStore _request can do GET
+        try:
+            doc = store._request("GET", store.doc_name(CONTROL_STATE_COLLECTION, state_id))
+            if "fields" in doc:
+                doc = from_fields(doc["fields"])
+            else:
+                doc = None
+        except RuntimeError as e:
+            if "HTTP 404" in str(e):
+                doc = None
+            else:
+                raise
+    
+    if doc and "state_json" in doc:
+        try:
+            loaded = json.loads(doc["state_json"])
+            default_state.update(loaded)
+        except json.JSONDecodeError:
+            pass
+    return default_state
+
+def save_control_state(store, state_id: str, state: dict) -> None:
+    state_json = json.dumps(state)
+    fields = {
+        "state_json": state_json,
+    }
+    
+    if hasattr(store, "upsert_document"):
+        store.upsert_document(CONTROL_STATE_COLLECTION, state_id, {"state_json": state_json, "updated_at": "REQUEST_TIME"})
+    else:
+        writes = [{
+            "update": {"name": store.doc_name(CONTROL_STATE_COLLECTION, state_id), "fields": to_fields(fields)},
+            "updateTransforms": [{"fieldPath": "updated_at", "setToServerValue": "REQUEST_TIME"}],
+        }]
+        store.commit(writes)

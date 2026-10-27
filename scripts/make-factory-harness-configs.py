@@ -116,7 +116,66 @@ def via_hub(argv):
         return subprocess.run([runner, script, *[a for a in argv if a != "--via-hub"]]).returncode
 
 
+
+def via_api(client, harnesses, apply):
+    import hashlib
+    import urllib.request
+    status, data = client.request("GET", "/api/v1/harness-configs?scope=global")
+    configs = {c["name"]: c for c in data.get("items", [])}
+    
+    for harness in harnesses:
+        if harness not in configs:
+            print(f"ERROR: {harness} not found globally on Hub", file=sys.stderr)
+            continue
+        c = configs[harness]
+        status, urls_data = client.request("GET", f"/api/v1/harness-configs/{c['id']}/download-urls")
+        urls = urls_data.get("urls") or urls_data.get("downloadUrls") or urls_data.get("files") or []
+        
+        files = {}
+        config_text = ""
+        for u in urls:
+            req = urllib.request.Request(u["url"])
+            if client.transport_mode == "iap" and getattr(client, "transport_token", None):
+                req.add_header("Proxy-Authorization", "Bearer " + client.transport_token)
+            elif hasattr(client, "token") and client.token:
+                req.add_header("Authorization", "Bearer " + client.token)
+            with urllib.request.urlopen(req) as resp:
+                content = resp.read()
+                files[u["path"]] = content
+                if u["path"] == "config.yaml":
+                    config_text = content.decode("utf-8")
+        
+        if not config_text:
+            print(f"ERROR: config.yaml not found in {harness}", file=sys.stderr)
+            continue
+            
+        new_text, changed = prefix_command_base(config_text)
+        files["config.yaml"] = new_text.encode("utf-8")
+        files["home/.local/bin/factory-cd.sh"] = launcher_bytes()
+        
+        print(f"{harness} -> {harness + SUFFIX}: download from API, command.base = {json.dumps(LAUNCHER)} + bundled base")
+        
+        if apply:
+            payload = {"name": harness + SUFFIX, "scope": "global"}
+            if harness + SUFFIX in configs:
+                hc_id = configs[harness + SUFFIX]["id"]
+            else:
+                status, res = client.request("POST", "/api/v1/harness-configs", body=payload)
+                hc_id = res["id"]
+            
+            upload_payload = {"files": [{"path": p, "size": len(c)} for p, c in files.items()]}
+            status, up_res = client.request("POST", f"/api/v1/harness-configs/{hc_id}/upload", body=upload_payload)
+            
+            up_urls = up_res.get("urls") or up_res.get("uploadUrls") or up_res.get("files") or []
+            for u in up_urls:
+                client.request(u.get("method", "PUT"), u["url"], raw=files[u["path"]], headers=u.get("headers") or {"Content-Type": "application/octet-stream"})
+                
+            manifest = {"version": "1.0", "files": [{"path": p, "size": len(c), "hash": "sha256:" + hashlib.sha256(c).hexdigest(), "mode": 0o644 if p == "config.yaml" else 0o755} for p, c in files.items()]}
+            client.request("POST", f"/api/v1/harness-configs/{hc_id}/finalize", body={"manifest": manifest})
+            print(f"{harness + SUFFIX} published via API")
+
 def cli_env(scion_home, email, base=None):
+
     """Environment for `scion harness-config sync --global` on the Hub VM.
 
     Keeps a SCION_HUB_TOKEN that is already set. Otherwise mints a 10-minute admin JWT for `email` the way
@@ -162,10 +221,27 @@ def main(argv=None):
     parser.add_argument("--harness", default=",".join(HARNESSES), help="comma-separated harnesses")
     parser.add_argument("--apply", action="store_true", help="write the copies (default: print the plan)")
     parser.add_argument("--no-sync", action="store_true", help="don't publish with `scion harness-config sync`")
+
     parser.add_argument("--via-hub", action="store_true", help="run on the Hub VM through run-on-hub.sh")
+    parser.add_argument("--via-api", action="store_true", help="build and publish via Hub API directly")
     args = parser.parse_args(argv)
     if args.via_hub:
         return via_hub(sys.argv[1:] if argv is None else argv)
+        
+    use_api = args.via_api
+    if not use_api and os.environ.get("HUB_URL", "").strip():
+        for h in [h for h in args.harness.split(",") if h]:
+            if not os.path.exists(os.path.join(args.scion_home, "harness-configs", h, "config.yaml")):
+                use_api = True
+                break
+                
+    if use_api:
+        sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+        from hub_client import HubClient
+        client = HubClient.from_env()
+        via_api(client, [h for h in args.harness.split(",") if h], args.apply)
+        return 0
+
 
     failed = []
     for harness in [h for h in args.harness.split(",") if h]:

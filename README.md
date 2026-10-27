@@ -40,10 +40,12 @@ flowchart LR
     Compile --> Kit["Factory kit: templates, oracle, DDL, waves"]
 ```
 
-The factory is serverless wherever possible. Agents run on the Scion Hub, products deploy to Cloud Run, and the
-factory's own data (agent status and evaluation runs) lives in Firestore, so there is no database instance to size or
-pay for while idle. The interview steers products toward serverless stores too, and asks you to justify a
-provisioned store such as Spanner, AlloyDB, or Cloud SQL.
+The factory supports three supported execution topologies:
+1. **Full GKE Multi-Hub HA:** Scion Hub running on Cloud Run or GKE, with agent pods running on GKE Autopilot.
+2. **Hybrid VM + GKE (`gke_target`):** A single-VM Scion Hub connecting to a GKE cluster for agent execution.
+3. **Single-VM Docker fallback:** A standalone VM using Docker for agents.
+
+In all topologies, the factory control plane (agent status and evaluation runs) uses Firestore, so there is no database instance to size or pay for while idle. Products deploy to Cloud Run. The interview steers products toward serverless stores too, and asks you to justify a provisioned store such as Spanner, AlloyDB, or Cloud SQL.
 
 The tools separate two kinds of information:
 
@@ -60,7 +62,7 @@ The tools separate two kinds of information:
 Open your coding agent in a clone of this repository, and paste one of the following prompts. Replace the uppercase
 placeholders (`OWNER/REPO`, `PROJECT_ID`, `HUB_VM`, `HUB_ZONE`, `ADMIN_EMAIL`) with your values.
 
-### Add a factory to an existing Scion Hub
+### Add a factory to an existing Scion Hub (**Existing GKE Scion Hub** or Single-VM Hub)
 
 Use this prompt when a Scion Hub already runs in your Google Cloud project and you want the agent to inspect your
 repository, interview you, compile the kit, and launch the factory on isolated branches (`factory/main` and
@@ -73,7 +75,16 @@ Use the scion-factory-bootstrap skill and README.md to set up a Scion software f
 Clone or inspect the repository first, propose specialist roles from what you find in the codebase, interview me one topic at a time, compile the kit, and deploy and start the factory on the Hub.
 ```
 
-### Create a new Scion Hub and launch a factory end to end
+### Automated Provisioning Quickstart
+
+If you have already compiled a kit and configured your environment, you can quickly provision the Hub and Factory:
+
+```bash
+./scripts/scion-factory provision factory.yaml --kit OUTPUT_DIR --env config/<slug>.env
+```
+Use `--apply` and `--go` to execute the provision plan.
+
+### Create a new Scion Hub and launch a factory end to end (**Full GKE Scion installation + auto-factory**)
 
 Use this prompt when you don't have a Scion Hub yet and want the agent to provision the Google Cloud project and Hub,
 run the interview, and start the factory:
