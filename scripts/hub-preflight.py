@@ -202,7 +202,7 @@ def main(argv=None):
     new = _split(os.environ.get("FACTORY_PROJECTS")) or [p for p in (os.environ.get("BUILD_PROJECT"), os.environ.get("EVAL_PROJECT")) if p]
     token_path = os.path.expanduser(os.environ.get("GITHUB_TOKEN_FILE", "~/.factory-github-token"))
     
-    if os.environ.get("HUB_URL"):
+    if os.environ.get("HUB_URL", "").strip():
         import sys
         sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
         from hub_client import HubClient

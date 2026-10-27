@@ -72,13 +72,19 @@ run gcloud services enable --project="$HUB_PROJECT" container.googleapis.com run
   cloudbuild.googleapis.com iap.googleapis.com aiplatform.googleapis.com iam.googleapis.com iamcredentials.googleapis.com
 
 REPO_NAME=$(basename "$IMAGE_REGISTRY")
-REPO_LOC=$(dirname "$IMAGE_REGISTRY" | cut -d- -f1,2) # approximate location from domain
+registry_host="${IMAGE_REGISTRY%%/*}"
+if [[ "$registry_host" == *-docker.pkg.dev ]]; then
+  REPO_LOC="${registry_host%-docker.pkg.dev}"
+else
+  REPO_LOC="$HUB_REGION"
+fi
+
 if [[ "$DRY_RUN" == "0" ]]; then
-  if ! gcloud artifacts repositories describe "$REPO_NAME" --project="$HUB_PROJECT" --location="$HUB_REGION" >/dev/null 2>&1; then
-    run gcloud artifacts repositories create "$REPO_NAME" --project="$HUB_PROJECT" --location="$HUB_REGION" --repository-format=docker || true
+  if ! gcloud artifacts repositories describe "$REPO_NAME" --project="$HUB_PROJECT" --location="$REPO_LOC" >/dev/null 2>&1; then
+    run gcloud artifacts repositories create "$REPO_NAME" --project="$HUB_PROJECT" --location="$REPO_LOC" --repository-format=docker || true
   fi
 else
-  run gcloud artifacts repositories create "$REPO_NAME" --project="$HUB_PROJECT" --location="$HUB_REGION" --repository-format=docker
+  run gcloud artifacts repositories create "$REPO_NAME" --project="$HUB_PROJECT" --location="$REPO_LOC" --repository-format=docker
 fi
 
 echo "== 2. Build multi-arch harness images"

@@ -902,6 +902,13 @@ def install_cron():
 # ---------------------------------------------------------------------------
 
 def run_api_watchdog(client, state: dict, apply: bool, runtime: str = "kubernetes") -> None:
+    alerted = state.get("alerted")
+    if isinstance(alerted, list):
+        alerted = {k: 0 for k in alerted}
+    elif not isinstance(alerted, dict):
+        alerted = {}
+    state["alerted"] = alerted
+
     projects = client.list_projects()
     factory_projects = os.environ.get("FACTORY_PROJECTS")
     if factory_projects:
@@ -974,7 +981,7 @@ def run_api_watchdog(client, state: dict, apply: bool, runtime: str = "kubernete
                         print(f'STARTING {pid} {slug} WITH {len(restarts)} RESTARTS'); client.ensure_agent_started(pid, slug, force_resume=True)
                 else:
                     if apply and key not in state["alerted"]:
-                        state["alerted"].append(key)
+                        state["alerted"][key] = time.time()
                         
     # Check 4: PO Inbox escalations
     try:

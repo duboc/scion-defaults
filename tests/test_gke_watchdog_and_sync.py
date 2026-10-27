@@ -67,11 +67,21 @@ def test_watchdog_api_mode_reaps_hung_subprocess_via_exec_and_persists_circuit_b
 
     # Simulate 3 crash restarts -> 4th run in a fresh process loads state from Firestore and trips circuit breaker
     state["restarts"] = {"proj-1/backend": [time.time() - 10, time.time() - 5, time.time() - 1]}
+    # Seed alerted as a dict to ensure watchdog can handle legacy or dict-based states
+    state["alerted"] = {"old-agent": 12345.0}
     factory_store.save_control_state(fake_firestore, "watchdog__default", state)
     fake_hub.set_agent_phase("proj-1", "backend", "error")
     reloaded = factory_store.load_control_state(fake_firestore, "watchdog__default")
     watchdog_mod.run_api_watchdog(client, reloaded, apply=True, runtime="kubernetes")
+    factory_store.save_control_state(fake_firestore, "watchdog__default", reloaded)
     assert not fake_hub.started_agents  # circuit breaker blocked the 4th restart!
+    
+    # Assert circuit breaker persisted the alert as a dict with timestamp
+    final_state = factory_store.load_control_state(fake_firestore, "watchdog__default")
+    assert isinstance(final_state["alerted"], dict)
+    assert "proj-1/backend" in final_state["alerted"]
+    assert final_state["alerted"]["proj-1/backend"] > 0
+    assert final_state["alerted"]["old-agent"] == 12345.0
 
 
 def test_install_k8s_control_plane_renders_cronjobs_and_workload_identity_ksa():

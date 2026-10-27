@@ -32,6 +32,7 @@ def _load_hub_preflight():
 ROOT_DIR = Path(__file__).resolve().parent.parent
 
 def provision_factory(spec: dict, kit_dir, env_file, seed_repo = None, apply: bool = False, send_go: bool = False) -> dict:
+    phases = []
     try:
         kit_dir = Path(kit_dir)
         env_file = Path(env_file)
@@ -42,7 +43,6 @@ def provision_factory(spec: dict, kit_dir, env_file, seed_repo = None, apply: bo
         token = eff_env.get("HUB_TOKEN", "")
         client = HubClient(hub_url, token) if token else HubClient.from_env(eff_env)
         
-        phases = []
         build_pid = spec.get("project", {}).get("slug", "")
         eval_pid = spec.get("project", {}).get("eval_slug", "")
         
@@ -212,4 +212,4 @@ def provision_factory(spec: dict, kit_dir, env_file, seed_repo = None, apply: bo
     except Exception as e:
         import traceback
         traceback.print_exc()
-        return {"ok": False, "error": str(e), "phases": []}
+        return {"ok": False, "error": str(e), "phases": phases}
