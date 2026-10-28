@@ -5,16 +5,17 @@ This guide covers setting up Scion Hub on a Full GKE Multi-Hub HA architecture o
 ## Prerequisites & Environment
 
 Before starting, configure your `config/factory.env` with the following GKE keys:
-- `HUB_URL`: URL of the Scion Hub API.
-- `HUB_IAP_AUDIENCE`: IAP Client ID if using IAP mode.
-- `HUB_TRANSPORT_MODE`: Either `iap` or `serverless`.
-- `AGENT_RUNTIME=kubernetes`: Instructs tools to use the K8s execution mode.
-- `RUNTIME_PROFILE`: Leave empty `""` for Full GKE, or set to `"gke"` for Hybrid.
-- `HUB_GKE_CLUSTER` / `HUB_GKE_LOCATION`: Your GKE cluster name and location.
-- `HUB_K8S_NAMESPACE`: Kubernetes namespace for workloads (e.g. `scion-hub`).
-- `IMAGE_REGISTRY`: Artifact Registry path for harness images.
-- `WORKER_SA_NAME`: GCP Service Account for agents (default `agent-worker`).
-- `HUB_SA`: Hub service account.
+- `HUB_URL`: URL of the Scion Hub API (e.g. `https://<hub-name>-<project-number>.<region>.run.app`).
+- `HUB_IAP_AUDIENCE`: IAP OAuth Client ID when IAP is enabled (`369001918367-<client-id>.apps.googleusercontent.com` on Cloud Run Direct IAP).
+- `HUB_IMPERSONATE_SA`: Operator Google Service Account to impersonate from developer workstations when org policy blocks user-credential OIDC/IAP tokens (optional inside GKE pods, which use Workload Identity automatically).
+- `HUB_TRANSPORT_MODE`: `iap` (default when `HUB_IAP_AUDIENCE` is set) or `serverless`.
+- `AGENT_RUNTIME=kubernetes`: Instructs provisioning, sandbox IAM, and control-plane scripts to target GKE pods (`workspaceMode: "per-agent"` / `clone-per-agent`).
+- `RUNTIME_PROFILE`: Set to `remote` on Full Terraform HA (`--hub-mode cloudrun`), empty `""` when using the Hub's default K8s profile, or `gke` for Hybrid VM+GKE.
+- `HUB_K8S_CLUSTER` / `HUB_REGION`: GKE cluster name and region/zone.
+- `HUB_K8S_NAMESPACE`: Kubernetes namespace for agent pods and control-plane `CronJob`s (e.g. `scion-hub`).
+- `IMAGE_REGISTRY`: Artifact Registry path for multi-arch Hub and harness images.
+- `WORKER_SA_NAME` / `CONTROL_SA_NAME`: GCP Service Accounts for agent pods (default `agent-worker`, KSA `scion-worker`) and K8s control-plane `CronJob`s (default `factory-control`, KSA `scion-factory-control`).
+- `HUB_SA`: Hub runtime broker service account granted `roles/iam.serviceAccountUser` on worker/deployer SAs.
 
 ## Option A: Full GKE Multi-Hub HA Scion
 
@@ -29,7 +30,7 @@ For a completely serverless/managed infrastructure, use the Terraform configurat
    ```bash
    scripts/setup-gke-hub.sh --tier terraform-ha --scion-repo <dir> --harnesses claude,antigravity --approve-apply
    ```
-4. Verify connectivity using IAP `Proxy-Authorization` and the `/health` endpoint.
+4. Verify connectivity using IAP `Proxy-Authorization` and the `/health` endpoint. On Cloud Run Direct IAP (`369001918367-*`), both `scripts/hub_client.py` (for K8s `CronJob`s) and `config/harness/home/.local/bin/factory-cd.sh` (for agent pods) automatically mint Workload Identity Service Account access tokens with `cloud-platform`, `userinfo.email`, and `openid` scopes—requiring zero static Kubernetes Secrets or PATs.
 
 ## Option B: Hybrid VM + GKE Tier
 

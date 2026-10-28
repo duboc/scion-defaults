@@ -88,14 +88,23 @@ def test_docs_and_skill_cover_gke_runtime_and_auto_provision():
         assert needle in skill, f"missing {needle!r} in SKILL.md"
 
     gke_runbook = (ROOT / "docs/gke-setup-runbook.md").read_text()
-    for needle in ("Workload Identity", "scion-worker", "scion-deployer", "install-k8s-control-plane.py", "/health", "setup-gke-hub.sh"):
+    for needle in (
+        "Workload Identity",
+        "scion-worker",
+        "scion-deployer",
+        "install-k8s-control-plane.py",
+        "/health",
+        "setup-gke-hub.sh",
+        "HUB_IMPERSONATE_SA",
+        "per-agent",
+    ):
         assert needle in gke_runbook, f"missing {needle!r} in docs/gke-setup-runbook.md"
 
     readme = (ROOT / "README.md").read_text()
-    assert "GKE" in readme and "scion-factory provision" in readme
+    assert "GKE" in readme and "scion-factory provision" in readme and "L33" in readme
 
     lessons = (ROOT / "docs/lessons-learned.md").read_text()
-    assert "## L32." in lessons
+    assert "## L32." in lessons and "## L33." in lessons
 
 
 def _strip_fenced_code_blocks(markdown: str) -> str:

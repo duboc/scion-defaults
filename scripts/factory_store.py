@@ -105,12 +105,13 @@ def from_fields(fields: dict[str, Any]) -> dict[str, Any]:
 
 def get_access_token() -> str:
     """Token for the attached service account (metadata server), or the active gcloud account."""
+    meta_timeout = 10 if os.environ.get("KUBERNETES_SERVICE_HOST") else 3
     try:
         req = urllib.request.Request(
             "http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token",
             headers={"Metadata-Flavor": "Google"},
         )
-        with urllib.request.urlopen(req, timeout=3) as resp:
+        with urllib.request.urlopen(req, timeout=meta_timeout) as resp:
             token = json.loads(resp.read().decode()).get("access_token", "")
             if token:
                 return token
@@ -329,7 +330,7 @@ def load_control_state(store, state_id: str) -> dict:
     else:
         # Our FirestoreStore _request can do GET
         try:
-            doc = store._request("GET", store.doc_name(CONTROL_STATE_COLLECTION, state_id))
+            doc = store._request("GET", f"{store.api}/{store.doc_name(CONTROL_STATE_COLLECTION, state_id)}")
             if "fields" in doc:
                 doc = from_fields(doc["fields"])
             else:

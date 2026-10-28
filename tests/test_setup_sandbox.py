@@ -116,10 +116,14 @@ def _sandbox_with_kubectl(tmp_path, env_text, dry_run):
     (bindir / "sleep").write_text("#!/bin/sh\nexit 0\n")
     (bindir / "sleep").chmod(0o755)
     
-    # Fake kubectl
+    # Fake kubectl (also records stdin manifests for `kubectl apply -f -`)
     fake_kubectl = r"""#!/usr/bin/env bash
 state="$FAKE_STATE"
-echo "$*" >> "$state/calls"
+echo "kubectl $*" >> "$state/calls"
+if [[ "$*" == *"apply -f -"* ]]; then
+  cat >> "$state/manifests"
+  echo "---" >> "$state/manifests"
+fi
 if [[ "$1" == "get" && "$2" == "serviceaccount" ]]; then
   exit 1
 fi
@@ -138,22 +142,35 @@ exit 0
         env.pop(name, None)
     res = subprocess.run(["bash", str(SCRIPT)], env=env, capture_output=True, text=True)
     calls = (state / "calls").read_text() if (state / "calls").exists() else ""
-    return res, calls
+    manifests = (state / "manifests").read_text() if (state / "manifests").exists() else ""
+    return res, calls + "\n" + manifests
 
 
 def test_setup_sandbox_kubernetes_mode_creates_worker_sa_and_keeps_docker_deploy_none_clean(tmp_path):
     k8s_env = (
         "AGENT_RUNTIME=kubernetes\nSANDBOX_PROJECT=sandbox\nSANDBOX_REGION=us-central1\n"
-        "HUB_PROJECT=hub-proj\nHUB_K8S_NAMESPACE=scion-prod\nDATA_BUCKET=sandbox-data\n"
+        "HUB_PROJECT=hub-proj\nHUB_REGION=us-east1\nHUB_URL=https://scion-prod-123456.us-east1.run.app\n"
+        "HUB_K8S_NAMESPACE=scion-prod\nHUB_SA=scion-prod-hub\nDATA_BUCKET=sandbox-data\n"
         "DEPLOYER_SA_NAME=agent-deployer\nRUNTIME_SA_NAME=app-serving\n"
     )
     res, calls = _sandbox_with_kubectl(tmp_path, k8s_env, "0")
     assert res.returncode == 0, res.stdout + res.stderr
     assert "compute instances describe" not in calls
     assert "iam service-accounts create agent-worker" in calls
+    assert "iam service-accounts create factory-control" in calls
+    assert "iap web add-iam-policy-binding --project=hub-proj --region=us-east1 --resource-type=cloud-run --service=scion-prod --member=serviceAccount:agent-worker@sandbox.iam.gserviceaccount.com --role=roles/iap.httpsResourceAccessor" in calls
+    assert "iap web add-iam-policy-binding --project=hub-proj --region=us-east1 --resource-type=cloud-run --service=scion-prod --member=serviceAccount:factory-control@sandbox.iam.gserviceaccount.com --role=roles/iap.httpsResourceAccessor" in calls
     assert "serviceAccount:hub-proj.svc.id.goog[scion-prod/scion-worker]" in calls
+    assert "serviceAccount:hub-proj.svc.id.goog[scion-prod/scion-factory-control]" in calls
     assert "serviceAccount:hub-proj.svc.id.goog[scion-prod/scion-deployer]" in calls
-    assert "create serviceaccount -n scion-prod scion-worker" in calls or "create serviceaccount scion-worker -n scion-prod" in calls
+    # scion-worker and scion-factory-control must NOT share the same GSA annotation (prevents AmbiguousGSAs 400)
     assert "annotate serviceaccount -n scion-prod scion-worker iam.gke.io/gcp-service-account=agent-worker@sandbox.iam.gserviceaccount.com" in calls
-    assert "create serviceaccount -n scion-prod scion-deployer" in calls or "create serviceaccount scion-deployer -n scion-prod" in calls
+    assert "annotate serviceaccount -n scion-prod scion-factory-control iam.gke.io/gcp-service-account=factory-control@sandbox.iam.gserviceaccount.com" in calls
+    assert "annotate serviceaccount -n scion-prod scion-worker iam.gke.io/gcp-service-account=factory-control@" not in calls
+    assert "annotate serviceaccount -n scion-prod scion-factory-control iam.gke.io/gcp-service-account=agent-worker@" not in calls
     assert "annotate serviceaccount -n scion-prod scion-deployer iam.gke.io/gcp-service-account=agent-deployer@sandbox.iam.gserviceaccount.com" in calls
+    # Hub SA normalized and granted token creator + user on WORKER_SA for /gcp-service-accounts VerifyImpersonation
+    assert "service-accounts add-iam-policy-binding agent-worker@sandbox.iam.gserviceaccount.com --project=sandbox --member=serviceAccount:scion-prod-hub@hub-proj.iam.gserviceaccount.com --role=roles/iam.serviceAccountTokenCreator" in calls
+    # K8s Role + RoleBinding allowing Hub SA to list/get serviceaccounts for discoverAssignKSA
+    assert 'resources: ["serviceaccounts"]' in calls
+    assert "name: scion-prod-hub@hub-proj.iam.gserviceaccount.com" in calls

@@ -112,9 +112,17 @@ HUB_VM="${HUB_VM:-}"
 HUB_SA="${HUB_SA:-}"
 
 if [[ "$IS_GKE_MODE" == 1 ]]; then
+  if [[ -n "$HUB_SA" && "$HUB_SA" != *"@"* ]]; then
+    HUB_SA="${HUB_SA}@${HUB_PROJECT}.iam.gserviceaccount.com"
+  fi
   if [[ -n "$HUB_VM" && -z "$HUB_SA" ]]; then
     HUB_SA="$(gcloud compute instances describe "$HUB_VM" --project="$HUB_PROJECT" --zone="$HUB_ZONE" \
       --format='value(serviceAccounts[0].email)' 2>/dev/null || true)"
+  elif [[ -z "$HUB_SA" && -n "$HUB_K8S_NAMESPACE" && -n "$HUB_PROJECT" ]]; then
+    _cand_sa="${HUB_K8S_NAMESPACE}-hub@${HUB_PROJECT}.iam.gserviceaccount.com"
+    if exists gcloud iam service-accounts describe "$_cand_sa" --project="$HUB_PROJECT"; then
+      HUB_SA="$_cand_sa"
+    fi
   fi
   HUB_VM_SA="$HUB_SA"
 else
@@ -300,6 +308,9 @@ if [[ "$IS_GKE_MODE" == 1 ]]; then
   step "10. GKE Workload Identity"
   WORKER_SA_NAME="${WORKER_SA_NAME:-agent-worker}"
   WORKER_SA="${WORKER_SA_NAME}@${P}.iam.gserviceaccount.com"
+  CONTROL_SA_NAME="${CONTROL_SA_NAME:-factory-control}"
+  CONTROL_SA="${CONTROL_SA_NAME}@${P}.iam.gserviceaccount.com"
+
   if exists gcloud iam service-accounts describe "$WORKER_SA" --project="$P"; then
     echo "service-account $WORKER_SA_NAME: exists"
   else
@@ -313,12 +324,57 @@ if [[ "$IS_GKE_MODE" == 1 ]]; then
     iam gcloud storage buckets add-iam-policy-binding "gs://$DATA_BUCKET" --member="serviceAccount:$WORKER_SA" \
       --role=roles/storage.objectAdmin --quiet
   fi
-  if [[ -n "${HUB_PROJECT:-}" && -n "${HUB_K8S_NAMESPACE:-}" ]]; then
-    for ksa in scion-worker scion-factory-control; do
-      iam gcloud iam service-accounts add-iam-policy-binding "$WORKER_SA" --project="$P" \
-        --role=roles/iam.workloadIdentityUser \
-        --member="serviceAccount:${HUB_PROJECT}.svc.id.goog[${HUB_K8S_NAMESPACE}/${ksa}]" --quiet
+
+  if [[ "$CONTROL_SA" != "$WORKER_SA" ]]; then
+    if exists gcloud iam service-accounts describe "$CONTROL_SA" --project="$P"; then
+      echo "service-account $CONTROL_SA_NAME: exists"
+    else
+      run gcloud iam service-accounts create "$CONTROL_SA_NAME" --project="$P" \
+        --description="Identity for Scion factory control CronJobs in GKE" --display-name="Factory Control"
+    fi
+    for role in roles/datastore.user roles/serviceusage.serviceUsageConsumer; do
+      bind_project "serviceAccount:$CONTROL_SA" "$role"
     done
+    if [[ -n "${DATA_BUCKET:-}" ]]; then
+      iam gcloud storage buckets add-iam-policy-binding "gs://$DATA_BUCKET" --member="serviceAccount:$CONTROL_SA" \
+        --role=roles/storage.objectAdmin --quiet
+    fi
+  fi
+
+  if [[ -n "$HUB_VM_SA" ]]; then
+    for role in roles/iam.serviceAccountTokenCreator roles/iam.serviceAccountUser; do
+      iam gcloud iam service-accounts add-iam-policy-binding "$WORKER_SA" --project="$P" \
+        --member="serviceAccount:$HUB_VM_SA" --role="$role" --quiet
+    done
+    echo "Hub SA ($HUB_VM_SA): token creator + user on $WORKER_SA"
+  fi
+
+  HUB_SVC="${HUB_CLOUDRUN_SERVICE:-${HUB_NAME:-}}"
+  HUB_R="${HUB_REGION:-}"
+  if [[ -z "$HUB_SVC" && "${HUB_URL:-}" =~ ^https://([a-z0-9-]+)-[0-9]+\.([a-z0-9-]+)\.run\.app ]]; then
+    HUB_SVC="${BASH_REMATCH[1]}"
+    HUB_R="${HUB_R:-${BASH_REMATCH[2]}}"
+  fi
+  HUB_R="${HUB_R:-$R}"
+  if [[ -n "${HUB_PROJECT:-}" && -n "$HUB_SVC" ]]; then
+    iam gcloud iap web add-iam-policy-binding --project="$HUB_PROJECT" --region="$HUB_R" \
+      --resource-type=cloud-run --service="$HUB_SVC" \
+      --member="serviceAccount:$WORKER_SA" --role=roles/iap.httpsResourceAccessor --quiet
+    if [[ "$CONTROL_SA" != "$WORKER_SA" ]]; then
+      iam gcloud iap web add-iam-policy-binding --project="$HUB_PROJECT" --region="$HUB_R" \
+        --resource-type=cloud-run --service="$HUB_SVC" \
+        --member="serviceAccount:$CONTROL_SA" --role=roles/iap.httpsResourceAccessor --quiet
+    fi
+    echo "Cloud Run Direct IAP ($HUB_SVC): httpsResourceAccessor granted to $WORKER_SA and $CONTROL_SA"
+  fi
+
+  if [[ -n "${HUB_PROJECT:-}" && -n "${HUB_K8S_NAMESPACE:-}" ]]; then
+    iam gcloud iam service-accounts add-iam-policy-binding "$WORKER_SA" --project="$P" \
+      --role=roles/iam.workloadIdentityUser \
+      --member="serviceAccount:${HUB_PROJECT}.svc.id.goog[${HUB_K8S_NAMESPACE}/scion-worker]" --quiet
+    iam gcloud iam service-accounts add-iam-policy-binding "$CONTROL_SA" --project="$P" \
+      --role=roles/iam.workloadIdentityUser \
+      --member="serviceAccount:${HUB_PROJECT}.svc.id.goog[${HUB_K8S_NAMESPACE}/scion-factory-control]" --quiet
     if [[ "$deploys" == 1 ]]; then
       iam gcloud iam service-accounts add-iam-policy-binding "$DEPLOYER_SA" --project="$P" \
         --role=roles/iam.workloadIdentityUser \
@@ -335,11 +391,52 @@ if [[ "$IS_GKE_MODE" == 1 ]]; then
           run kubectl annotate serviceaccount -n "$HUB_K8S_NAMESPACE" "$ksa" "iam.gke.io/gcp-service-account=${gsa}" --overwrite
         fi
       }
-      for ksa in scion-worker scion-factory-control; do
-        ensure_ksa "$ksa" "$WORKER_SA"
-      done
+      ensure_ksa scion-worker "$WORKER_SA"
+      ensure_ksa scion-factory-control "$CONTROL_SA"
       if [[ "$deploys" == 1 ]]; then
         ensure_ksa scion-deployer "$DEPLOYER_SA"
+      fi
+
+      if [[ -n "$HUB_VM_SA" ]]; then
+        HUB_SA_UID="$(gcloud iam service-accounts describe "$HUB_VM_SA" --project="$HUB_PROJECT" --format='value(uniqueId)' 2>/dev/null || true)"
+        RBAC_YAML="apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: ${HUB_K8S_NAMESPACE}-sa-reader
+  namespace: ${HUB_K8S_NAMESPACE}
+rules:
+- apiGroups: [\"\"]
+  resources: [\"serviceaccounts\"]
+  verbs: [\"get\", \"list\"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: ${HUB_K8S_NAMESPACE}-sa-reader
+  namespace: ${HUB_K8S_NAMESPACE}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: ${HUB_K8S_NAMESPACE}-sa-reader
+subjects:
+- apiGroup: rbac.authorization.k8s.io
+  kind: User
+  name: ${HUB_VM_SA}
+- kind: ServiceAccount
+  name: scion-hub
+  namespace: ${HUB_K8S_NAMESPACE}
+"
+        if [[ -n "$HUB_SA_UID" && "$HUB_SA_UID" != "$HUB_VM_SA" ]]; then
+          RBAC_YAML+="- apiGroup: rbac.authorization.k8s.io
+  kind: User
+  name: \"${HUB_SA_UID}\"
+"
+        fi
+        if [[ "$DRY_RUN" == "1" ]]; then
+          echo "+ kubectl apply -f - (${HUB_K8S_NAMESPACE}-sa-reader)"
+        else
+          printf '%s' "$RBAC_YAML" | kubectl apply -f - >/dev/null
+        fi
       fi
     fi
   fi

@@ -140,7 +140,7 @@ def main():
     except ValueError as e:
         sys.exit(str(e))
     values.update(role_agent_vars(prefix, all_roles))
-    values.update(harness_vars(values["FACTORY_SUBDIR"]))
+    values.update(harness_vars(values["FACTORY_SUBDIR"], values.get("AGENT_RUNTIME", "docker")))
     values["KNOWLEDGE_PLANE"] = knowledge_plane_path(values["FACTORY_SUBDIR"])
     if args.agent_names:
         for role in all_roles:

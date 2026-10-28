@@ -15,6 +15,63 @@
 #
 # Exit codes: 64 FACTORY_SUBDIR is absolute or leaves the repository; 66 the folder does not exist.
 
+# Google-managed Cloud Run Direct IAP (369001918367-*) rejects OIDC ID tokens unless a custom OAuth client is
+# manually bound via Console, and instead accepts Service Account OAuth2 access tokens in Proxy-Authorization.
+# When running under Direct IAP, swap SCION_TRANSPORT_TOKEN_FILE to a metadata-fetched SA access token (refreshed
+# every 25m) and unset SCION_TRANSPORT_TOKEN so `scion list|start|resume|message` works zero-click inside pods.
+if [ "${SCION_TRANSPORT_MODE:-}" = "iap" ]; then
+  case "${SCION_TRANSPORT_AUDIENCE:-}" in
+    369001918367-*)
+      _iap_tok_file="${HOME}/.scion/iap-access-token"
+      _refresh_direct_iap_token() {
+        command -v python3 >/dev/null 2>&1 || return 1
+        SCION_IAP_TOK_OUT="$_iap_tok_file" python3 - <<'PY' >/dev/null 2>&1
+import json, os, urllib.request
+out = os.environ["SCION_IAP_TOK_OUT"]
+os.makedirs(os.path.dirname(out), exist_ok=True)
+bases = [os.environ.get("SCION_METADATA_URL", "").rstrip("/"), "http://169.254.169.254", "http://metadata.google.internal"]
+scopes = "https://www.googleapis.com/auth/cloud-platform,https://www.googleapis.com/auth/userinfo.email,openid"
+for base in [b for b in bases if b]:
+    for _ in range(2):
+        try:
+            req = urllib.request.Request(
+                f"{base}/computeMetadata/v1/instance/service-accounts/default/token?scopes={scopes}",
+                headers={"Metadata-Flavor": "Google"},
+            )
+            with urllib.request.urlopen(req, timeout=10.0) as resp:
+                tok = (json.loads(resp.read().decode("utf-8", errors="replace")).get("access_token") or "").strip()
+            if tok:
+                tmp = f"{out}.{os.getpid()}.tmp"
+                fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+                with os.fdopen(fd, "w") as f:
+                    f.write(tok)
+                os.replace(tmp, out)
+                raise SystemExit(0)
+        except SystemExit:
+            raise
+        except Exception:
+            pass
+raise SystemExit(1)
+PY
+      }
+      if _refresh_direct_iap_token && [ -s "$_iap_tok_file" ]; then
+        export SCION_TRANSPORT_TOKEN_FILE="$_iap_tok_file"
+        unset SCION_TRANSPORT_TOKEN
+        _iap_refresh="${FACTORY_CD_IAP_REFRESH_SEC:-1500}"
+        if [ "$_iap_refresh" -gt 0 ] 2>/dev/null; then
+          _f_pid="$$"
+          (
+            while sleep "$_iap_refresh"; do
+              kill -0 "$_f_pid" 2>/dev/null || exit 0
+              _refresh_direct_iap_token || true
+            done
+          ) </dev/null >/dev/null 2>&1 &
+        fi
+      fi
+      ;;
+  esac
+fi
+
 sub="${FACTORY_SUBDIR:-}"
 sub="${sub#./}"
 sub="${sub%/}"

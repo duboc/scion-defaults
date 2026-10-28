@@ -281,7 +281,7 @@ def api(method, path, body=None):
 
 def log_alert(event_type, payload, severity="ERROR"):
     print(f"[{severity}] {event_type}: {json.dumps(payload)}")
-    if not HUB_PROJECT_ID:
+    if not HUB_PROJECT_ID or not shutil.which("gcloud"):
         return
     cmd = [
         "gcloud",
@@ -917,22 +917,23 @@ def run_api_watchdog(client, state: dict, apply: bool, runtime: str = "kubernete
 
     # Check 2: Schedule Guard
     for p in projects:
-        pid = p["slug"]
+        pid = p.get("id") or p["slug"]
         try:
-            schedules = client.request("GET", f"/api/v1/projects/{pid}/schedules")[1]
+            sched_resp = client.request("GET", f"/api/v1/projects/{pid}/schedules")[1]
+            schedules = sched_resp.get("schedules", []) if isinstance(sched_resp, dict) else (sched_resp or [])
             for s in schedules:
                 if s.get("status") in ("paused", "error"):
                     if apply:
                         if s.get("status") == "paused":
                             client.request("POST", f"/api/v1/projects/{pid}/schedules/{s['id']}/resume")
                         else:
-                            client.request("PATCH", f"/api/v1/projects/{pid}/schedules/{s['id']}", json={"status": "active"})
+                            client.request("PATCH", f"/api/v1/projects/{pid}/schedules/{s['id']}", body={"status": "active"})
         except Exception:
             pass
 
     # Check 3: Agent health + hung subprocess reaping
     for p in projects:
-        pid = p["slug"]
+        pid = p.get("id") or p["slug"]
         agents = client.list_agents(pid)
         for a in agents:
             slug = a.get("slug") or a.get("name")
@@ -943,53 +944,69 @@ def run_api_watchdog(client, state: dict, apply: bool, runtime: str = "kubernete
                 try:
                     res = client.exec_agent(pid, slug, ["ps", "-eo", "pid,etimes,comm,args"], timeout=10)
                     if res:
-                        lines_exec = res[1].splitlines()
-                        for line_exec in lines_exec[1:]:
-                            parts = line_exec.split(None, 3)
-                            if len(parts) < 4: continue
-                            pid_num_str, etimes_str, comm, args = parts
-                            try:
-                                pid_num = int(pid_num_str)
-                                etimes = int(etimes_str)
-                            except ValueError:
-                                continue
-                                
-                            if pid_num == 1: continue
-                            if comm in ("sciontool", "node", "claude", "opencode"): continue
-                            if "harness" in args: continue
-                            
-                            hung_max = int(os.environ.get("HUNG_PROC_MAX_SEC", "600"))
-                            if etimes > hung_max:
-                                if apply:
-                                    client.exec_agent(pid, slug, ["kill", "-9", str(pid_num)], timeout=5)
+                        hung_max = int(os.environ.get("HUNG_PROC_MAX_SEC", str(WATCHDOG_SUBPROCESS_TIMEOUT_SEC)))
+                        for h in find_hung_subprocesses(res[1], max_age_sec=hung_max):
+                            if apply:
+                                client.exec_agent(pid, slug, ["kill", "-9", str(h["pid"])], timeout=5)
                 except Exception:
                     pass
             elif phase in ("error", "stopped"):
-                if phase == "stopped" and slug not in ("lead", "eval-lead"):
+                if phase == "stopped" and not should_wake(slug, a.get("template", "")):
                     continue
                     
                 key = f"{pid}/{slug}"
                 restarts = state["restarts"].get(key, [])
                 now = time.time()
-                restarts = [ts for ts in restarts if now - ts < 3600]; print(f'RESTARTS FOR {key}: {len(restarts)}')
+                restarts = [ts for ts in restarts if now - ts < 3600]
                 
                 max_restarts = int(os.environ.get("MAX_RESTARTS_PER_HOUR", "3"))
                 if len(restarts) < max_restarts:
                     if apply:
                         restarts.append(now)
                         state["restarts"][key] = restarts
-                        print(f'STARTING {pid} {slug} WITH {len(restarts)} RESTARTS'); client.ensure_agent_started(pid, slug, force_resume=True)
+                        client.ensure_agent_started(pid, slug, force_resume=True)
                 else:
                     if apply and key not in state["alerted"]:
                         state["alerted"][key] = time.time()
                         
     # Check 4: PO Inbox escalations
     try:
-        msgs = client.request("GET", "/api/v1/messages?limit=100")[1]
+        msgs_resp = client.request("GET", "/api/v1/messages?limit=100")[1]
+        msgs = (
+            msgs_resp.get("messages")
+            if isinstance(msgs_resp, dict) and isinstance(msgs_resp.get("messages"), list)
+            else (msgs_resp.get("items", []) if isinstance(msgs_resp, dict) else (msgs_resp or []))
+        )
+
+        def _msg_ts(m: dict) -> str:
+            return str(m.get("createdAt") or m.get("created") or "")
+
         last_ts = state.get("last_user_msg_ts", "")
-        new_msgs = [m for m in msgs if m.get("type") != "state-change" and m.get("created", "") > last_ts]
-        if new_msgs:
-            state["last_user_msg_ts"] = max(m.get("created", "") for m in new_msgs)
+        new_msgs = [
+            m
+            for m in msgs
+            if isinstance(m, dict) and m.get("type") != "state-change" and _msg_ts(m) > last_ts
+        ]
+        if new_msgs and apply:
+            if last_ts:
+                for m in new_msgs:
+                    msg_text = str(m.get("msg") or m.get("message") or "")
+                    log_alert(
+                        "PO_ESCALATION",
+                        {
+                            "event": "PO_ESCALATION",
+                            "message_id": m.get("id", ""),
+                            "project_id": m.get("projectId") or m.get("project_id", ""),
+                            "sender": m.get("sender", ""),
+                            "recipient": m.get("recipient", ""),
+                            "type": m.get("type") or "instruction",
+                            "created": _msg_ts(m),
+                            "summary": msg_text.strip().replace("\n", " ")[:150],
+                            "message": msg_text[:2000],
+                        },
+                        severity="ERROR",
+                    )
+            state["last_user_msg_ts"] = max(_msg_ts(m) for m in new_msgs)
     except Exception:
         pass
         
@@ -998,7 +1015,7 @@ def run_api_watchdog(client, state: dict, apply: bool, runtime: str = "kubernete
     if kp_dir and os.path.isdir(kp_dir):
         for p in projects:
             try:
-                client.sync_shared_dir(p["slug"], "knowledge-plane", kp_dir, apply=apply)
+                client.sync_shared_dir(p.get("id") or p["slug"], "knowledge-plane", kp_dir, apply=apply)
             except Exception:
                 pass
 

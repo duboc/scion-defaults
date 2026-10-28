@@ -83,6 +83,31 @@ def test_seed_waves_creates_issues_with_dry_run_0(kit, tmp_path):
     assert created and all("--repo example-org/ledger" in line for line in created)
 
 
+def test_seed_waves_skips_already_existing_wave_issues_on_rerun(kit, tmp_path):
+    import json
+    import os
+
+    waves = json.loads((kit / "waves" / "issues.json").read_text())
+    existing_title = waves[0]["issues"][0]["title"]
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    log = tmp_path / "gh.log"
+    gh = bindir / "gh"
+    gh.write_text(
+        "#!/usr/bin/env bash\n"
+        f'echo "$@" >> "{log}"\n'
+        'if [[ "$1 $2" == "issue list" && "$*" == *"--json title"* ]]; then\n'
+        f"  printf '[%s]\\n' '{json.dumps({'title': existing_title})}'\n"
+        "fi\n"
+    )
+    gh.chmod(0o755)
+    env = {**os.environ, "PATH": f"{bindir}:{os.environ['PATH']}", "DRY_RUN": "0", "GITHUB_REPO": "example-org/ledger"}
+    res = subprocess.run(["bash", str(kit / "scripts" / "seed-github-waves.sh")], env=env, capture_output=True, text=True)
+    assert res.returncode == 0, res.stderr
+    created = [line for line in log.read_text().splitlines() if line.startswith("issue create") and existing_title in line]
+    assert created == [], f"Expected existing wave issue to be skipped on rerun, got: {created}"
+
+
 def test_seed_waves_is_a_dry_run_by_default(kit, tmp_path):
     log = _fake_gh(tmp_path)
     import os

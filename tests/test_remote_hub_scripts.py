@@ -37,7 +37,7 @@ class FakeHubHandler(BaseHTTPRequestHandler):
             self._send_json(200, {"status": "healthy", "scionVersion": "0.9.0"})
             return
         if self.path.startswith("/api/v1/users?search=po%40example.com"):
-            self._send_json(200, {"items": [{"email": "po@example.com"}]})
+            self._send_json(200, {"users": [{"email": "po@example.com"}]})
             return
         if self.path.startswith("/api/v1/users/"):
             self._send_json(200, {"email": "po@example.com"})
@@ -46,7 +46,7 @@ class FakeHubHandler(BaseHTTPRequestHandler):
         if self.path == "/api/v1/projects" or self.path.startswith("/api/v1/projects?"):
             self._send_json(200, {"projects": [{"slug": "demo", "id": "proj-1"}]})
             return
-        if self.path.startswith("/api/v1/projects/proj-1/service-accounts"):
+        if self.path.startswith("/api/v1/projects/proj-1/gcp-service-accounts"):
             self._send_json(200, {"items": getattr(self.server.hub_state, "service_accounts", [])})
             return
         if self.path.startswith("/api/v1/projects/proj-1/settings"):
@@ -59,15 +59,19 @@ class FakeHubHandler(BaseHTTPRequestHandler):
             self._send_json(200, {"id": "proj-1", "slug": "demo"})
             return
         if self.path.startswith("/api/v1/templates"):
-            self._send_json(200, {"items": getattr(self.server.hub_state, "templates", [])})
+            self._send_json(200, {"templates": getattr(self.server.hub_state, "templates", [])})
             return
-        if self.path.startswith("/api/v1/harness-configs/hc-claude/download-urls"):
-            self._send_json(200, {"urls": [{"path": "config.yaml", "url": self.server.url + "/dl/config.yaml"}]})
+        if self.path.startswith("/api/v1/harness-configs/hc-claude/download") and not self.path.endswith("/download-urls"):
+            dl_base = getattr(self.server.hub_state, "cross_origin_dl_url", self.server.url)
+            self._send_json(200, {"files": [{"path": "config.yaml", "url": dl_base + "/dl/config.yaml"}]})
             return
         if self.path.startswith("/api/v1/harness-configs?scope=global"):
-            self._send_json(200, {"items": list(self.server.hub_state.harness_configs.values())})
+            self._send_json(200, {"harnessConfigs": list(self.server.hub_state.harness_configs.values())})
             return
         if self.path.startswith("/dl/config.yaml"):
+            if "Authorization" in self.headers or "Proxy-Authorization" in self.headers:
+                self._send_json(400, {"error": "GCS signed URL rejects Authorization headers"})
+                return
             self.send_response(200)
             self.end_headers()
             self.wfile.write(b"command:\n  base: [\"echo\"]\n")
@@ -82,48 +86,68 @@ class FakeHubHandler(BaseHTTPRequestHandler):
             if self.path.endswith("/upload"):
                 data = json.loads(body.decode("utf-8"))
                 urls = [{"path": f["path"], "url": self.server.url + "/ul/tmpl/" + f["path"], "method": "PUT"} for f in data.get("files", [])]
-                self._send_json(200, {"urls": urls})
+                self._send_json(200, {"uploadUrls": urls, "uploadId": "up-tmpl-1"})
                 return
             elif self.path.endswith("/finalize"):
                 data = json.loads(body.decode("utf-8"))
+                manifest = data.get("manifest") or {}
+                for f in manifest.get("files", []):
+                    if not isinstance(f.get("mode"), str):
+                        self._send_json(400, {"error": "json: cannot unmarshal number into Go struct field TemplateFile.manifest.files.mode of type string"})
+                        return
                 tid = self.path.split("/")[-2]
                 for t in self.server.hub_state.templates:
                     if t.get("id") == tid:
-                        t["manifest"] = data.get("manifest")
-                self._send_json(200, {"status": "ok"})
+                        t["manifest"] = manifest
+                        t["uploadId"] = data.get("uploadId")
+                self._send_json(200, {"status": "active", "contentHash": "sha256:abc"})
                 return
             else:
                 data = json.loads(body.decode("utf-8"))
-                data["id"] = "tmpl-new"
-                self.server.hub_state.templates.append(data)
-                self._send_json(200, data)
+                tmpl = dict(data)
+                tmpl["id"] = f"tmpl-new-{len(self.server.hub_state.templates) + 1}"
+                self.server.hub_state.templates.append(tmpl)
+                self._send_json(201, {"template": tmpl, "uploadId": "up-init"})
                 return
                 
         if self.path.startswith("/api/v1/harness-configs"):
             if self.path.endswith("/upload"):
                 data = json.loads(body.decode("utf-8"))
                 urls = [{"path": f["path"], "url": self.server.url + "/ul/hc/" + f["path"], "method": "PUT"} for f in data.get("files", [])]
-                self._send_json(200, {"urls": urls})
+                self._send_json(200, {"uploadUrls": urls, "uploadId": "up-hc-1"})
                 return
             elif self.path.endswith("/finalize"):
-                self._send_json(200, {"status": "ok"})
+                data = json.loads(body.decode("utf-8"))
+                manifest = data.get("manifest") or {}
+                for f in manifest.get("files", []):
+                    if not isinstance(f.get("mode"), str):
+                        self._send_json(400, {"error": "mode must be octal string"})
+                        return
+                self._send_json(200, {"status": "active"})
                 return
             else:
                 data = json.loads(body.decode("utf-8"))
+                if not data.get("harness"):
+                    self._send_json(400, {"error": "harness is required"})
+                    return
                 name = data["name"]
                 if name in self.server.hub_state.harness_configs:
                     self._send_json(409, {"error": "already exists"})
                     return
-                data["id"] = f"hc-{name}"
-                self.server.hub_state.harness_configs[name] = {"id": f"hc-{name}", "name": name, "files": {}}
-                self._send_json(200, data)
+                hc = {"id": f"hc-{name}", "name": name, "harness": data["harness"], "files": {}}
+                self.server.hub_state.harness_configs[name] = hc
+                self._send_json(201, {"harnessConfig": hc})
                 return
                 
-        if self.path.startswith("/api/v1/projects/proj-1/service-accounts"):
+        if self.path.startswith("/api/v1/projects/proj-1/gcp-service-accounts"):
+            if self.path.endswith("/verify"):
+                self._send_json(200, {"verified": True})
+                return
             sa = json.loads(body.decode("utf-8"))
             sa["id"] = "sa-new"
+            sa["verified"] = True
             self.server.hub_state.service_accounts.append(sa)
-            self._send_json(200, sa)
+            self._send_json(201, sa)
             return
 
         self._send_json(200, {"status": "ok"})
@@ -187,18 +211,28 @@ class FakeHubState:
 
 @pytest.fixture
 def fake_hub():
-    port = get_free_port()
-    server = HTTPServer(("127.0.0.1", port), FakeHubHandler)
+    server = HTTPServer(("127.0.0.1", 0), FakeHubHandler)
+    port = server.server_address[1]
     server.url = f"http://127.0.0.1:{port}"
     server.hub_state = FakeHubState(server.url)
-    
+
+    dl_server = HTTPServer(("127.0.0.1", 0), FakeHubHandler)
+    dl_port = dl_server.server_address[1]
+    dl_server.url = f"http://127.0.0.1:{dl_port}"
+    dl_server.hub_state = server.hub_state
+    server.hub_state.cross_origin_dl_url = dl_server.url
+
     t = threading.Thread(target=server.serve_forever, daemon=True)
+    t_dl = threading.Thread(target=dl_server.serve_forever, daemon=True)
     t.start()
-    
+    t_dl.start()
+
     yield server.hub_state
-    
+
     server.shutdown()
     server.server_close()
+    dl_server.shutdown()
+    dl_server.server_close()
 
 
 
@@ -212,6 +246,10 @@ def test_push_templates_direct_api_isolates_shared_storage_and_uploads(fake_hub,
         "FACTORY_ENV": str(write_minimal_env(tmp_path)),
     }
     shutil.copytree(os.path.join(ROOT, "templates"), tmp_path / "templates")
+    # Compiled kits emit default_harness_config instead of harness:
+    (tmp_path / "templates" / "lead" / "scion-agent.yaml").write_text(
+        "schema_version: '1'\ndefault_harness_config: antigravity-factory\n"
+    )
     helper = tmp_path / "templates" / "lead" / "home" / ".local" / "bin" / "helper.sh"
     helper.parent.mkdir(parents=True, exist_ok=True)
     helper.write_text("echo helper")
@@ -225,15 +263,13 @@ def test_push_templates_direct_api_isolates_shared_storage_and_uploads(fake_hub,
     assert "rename it to lead-legacy" in res.stdout
     assert "other templates unchanged: yes" in res.stdout
     
-    # Find the newly created lead template and check its files
     new_lead = [t for t in fake_hub.templates if t["slug"] == "lead" and t["id"] != "tmpl-lead"][0]
-    # Check what files were passed to finalize
-
-    new_lead = [t for t in fake_hub.templates if t["slug"] == "lead" and t["id"] != "tmpl-lead"][0]
+    assert new_lead["harness"] == "antigravity"
+    assert new_lead.get("uploadId") == "up-tmpl-1"
     assert "manifest" in new_lead
     manifest_files = {f["path"]: f for f in new_lead["manifest"]["files"]}
     assert "home/.local/bin/helper.sh" in manifest_files
-    assert manifest_files["home/.local/bin/helper.sh"]["mode"] == 0o755
+    assert manifest_files["home/.local/bin/helper.sh"]["mode"] == "0755"
 
 
 
@@ -255,6 +291,7 @@ def test_scion_admin_project_settings_and_service_accounts_over_api(fake_hub, tm
     assert r2.returncode == 0, r2.stderr
     assert fake_hub.project_settings["proj-1"]["activeProfile"] == "gke"
     assert fake_hub.project_settings["proj-1"]["defaultGCPIdentityMode"] == "assign"
+    assert fake_hub.project_settings["proj-1"]["defaultGCPIdentityServiceAccountID"] == "sa-new"
 
 
 def test_make_factory_harness_configs_via_api_wraps_command_base(fake_hub):
@@ -265,6 +302,7 @@ def test_make_factory_harness_configs_via_api_wraps_command_base(fake_hub):
     )
     assert res.returncode == 0, res.stderr
     uploaded = fake_hub.harness_configs["claude-factory"]
+    assert uploaded["harness"] == "claude"
     assert '["sh", "/home/scion/.local/bin/factory-cd.sh"' in uploaded["files"]["config.yaml"]
     assert "home/.local/bin/factory-cd.sh" in uploaded["files"]
 
@@ -294,6 +332,7 @@ def test_hub_preflight_api_mode_checks_registry_images_and_merges_k8s_projects(f
         k8s_ready=True,
     )
     assert report["ok"] is True
+    assert report["harness_configs"] == ["claude"]
     assert report["factory_projects"] == "existing,alpha,alpha-eval"
     assert any("scion-opencode" in w for w in report["warnings"])
 

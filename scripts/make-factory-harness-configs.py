@@ -37,9 +37,9 @@ SUFFIX = "-factory"
 BASE_LINE = re.compile(r"^(?P<indent>[ \t]+)base:[ \t]*(?P<list>\[.*\])[ \t]*$", re.M)
 
 
-def harness_vars(subdir):
-    """${<HARNESS>_HARNESS} for the templates: the -factory config when the factory has a product folder."""
-    suffix = SUFFIX if subdir not in ("", ".") else ""
+def harness_vars(subdir, runtime="docker"):
+    """${<HARNESS>_HARNESS} for the templates: the -factory config for monorepo subdirs or GKE pods."""
+    suffix = SUFFIX if (subdir not in ("", ".") or runtime == "kubernetes") else ""
     return {f"{h.upper()}_HARNESS": h + suffix for h in HARNESSES}
 
 
@@ -121,25 +121,34 @@ def via_api(client, harnesses, apply):
     import hashlib
     import urllib.request
     status, data = client.request("GET", "/api/v1/harness-configs?scope=global")
-    configs = {c["name"]: c for c in data.get("items", [])}
+    hc_list = (
+        data.get("harnessConfigs")
+        if isinstance(data, dict) and isinstance(data.get("harnessConfigs"), list)
+        else (data.get("items", []) if isinstance(data, dict) else [])
+    )
+    configs = {c["name"]: c for c in hc_list}
     
     for harness in harnesses:
         if harness not in configs:
             print(f"ERROR: {harness} not found globally on Hub", file=sys.stderr)
             continue
         c = configs[harness]
-        status, urls_data = client.request("GET", f"/api/v1/harness-configs/{c['id']}/download-urls")
-        urls = urls_data.get("urls") or urls_data.get("downloadUrls") or urls_data.get("files") or []
+        status, urls_data = client.request("GET", f"/api/v1/harness-configs/{c['id']}/download")
+        urls = urls_data.get("files") or urls_data.get("urls") or urls_data.get("downloadUrls") or []
         
         files = {}
         config_text = ""
         for u in urls:
             req = urllib.request.Request(u["url"])
-            if client.transport_mode == "iap" and getattr(client, "transport_token", None):
-                req.add_header("Proxy-Authorization", "Bearer " + client.transport_token)
-            elif hasattr(client, "token") and client.token:
-                req.add_header("Authorization", "Bearer " + client.token)
-            with urllib.request.urlopen(req) as resp:
+            same_origin = client._is_same_origin(u["url"]) if hasattr(client, "_is_same_origin") else False
+            if same_origin:
+                if client.transport_mode == "iap" and getattr(client, "transport_token", None):
+                    req.add_header("Proxy-Authorization", "Bearer " + client.transport_token)
+                elif client.transport_mode == "serverless" and getattr(client, "transport_token", None):
+                    req.add_header("X-Serverless-Authorization", "Bearer " + client.transport_token)
+                if getattr(client, "token", None):
+                    req.add_header("Authorization", "Bearer " + client.token)
+            with urllib.request.urlopen(req, timeout=60) as resp:
                 content = resp.read()
                 files[u["path"]] = content
                 if u["path"] == "config.yaml":
@@ -156,22 +165,38 @@ def via_api(client, harnesses, apply):
         print(f"{harness} -> {harness + SUFFIX}: download from API, command.base = {json.dumps(LAUNCHER)} + bundled base")
         
         if apply:
-            payload = {"name": harness + SUFFIX, "scope": "global"}
+            payload = {"name": harness + SUFFIX, "harness": harness, "scope": "global"}
             if harness + SUFFIX in configs:
                 hc_id = configs[harness + SUFFIX]["id"]
             else:
                 status, res = client.request("POST", "/api/v1/harness-configs", body=payload)
-                hc_id = res["id"]
+                hc_obj = res.get("harnessConfig") if isinstance(res, dict) and isinstance(res.get("harnessConfig"), dict) else res
+                hc_id = hc_obj["id"]
             
             upload_payload = {"files": [{"path": p, "size": len(c)} for p, c in files.items()]}
             status, up_res = client.request("POST", f"/api/v1/harness-configs/{hc_id}/upload", body=upload_payload)
             
-            up_urls = up_res.get("urls") or up_res.get("uploadUrls") or up_res.get("files") or []
+            up_urls = up_res.get("uploadUrls") or up_res.get("urls") or up_res.get("files") or []
             for u in up_urls:
                 client.request(u.get("method", "PUT"), u["url"], raw=files[u["path"]], headers=u.get("headers") or {"Content-Type": "application/octet-stream"})
                 
-            manifest = {"version": "1.0", "files": [{"path": p, "size": len(c), "hash": "sha256:" + hashlib.sha256(c).hexdigest(), "mode": 0o644 if p == "config.yaml" else 0o755} for p, c in files.items()]}
-            client.request("POST", f"/api/v1/harness-configs/{hc_id}/finalize", body={"manifest": manifest})
+            manifest = {
+                "version": "1.0",
+                "harness": harness,
+                "files": [
+                    {
+                        "path": p,
+                        "size": len(c),
+                        "hash": "sha256:" + hashlib.sha256(c).hexdigest(),
+                        "mode": "0644" if p == "config.yaml" else "0755",
+                    }
+                    for p, c in files.items()
+                ],
+            }
+            fin_body = {"manifest": manifest}
+            if up_res.get("uploadId"):
+                fin_body["uploadId"] = up_res["uploadId"]
+            client.request("POST", f"/api/v1/harness-configs/{hc_id}/finalize", body=fin_body)
             print(f"{harness + SUFFIX} published via API")
 
 def cli_env(scion_home, email, base=None):

@@ -55,12 +55,13 @@ def read_hub_project_id(scion_home):
 
 
 def get_gcp_access_token():
+    meta_timeout = 10 if os.environ.get("KUBERNETES_SERVICE_HOST") else 3
     try:
         req = urllib.request.Request(
             "http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token",
             headers={"Metadata-Flavor": "Google"},
         )
-        with urllib.request.urlopen(req, timeout=3) as resp:
+        with urllib.request.urlopen(req, timeout=meta_timeout) as resp:
             return json.loads(resp.read().decode()).get("access_token", "")
     except Exception:
         try:
@@ -161,16 +162,20 @@ def now():
 
 def collect_agent_docs_from_api(client, projects: list[str], api_calls_by_agent: dict[str, int], tool_calls_by_agent: dict[str, int]) -> list[dict]:
     docs = []
+    id_by_slug = {proj["slug"]: proj["id"] for proj in client.list_projects() if proj.get("slug") and proj.get("id")}
     for p in projects:
-        agents = client.list_agents(p)
+        pid = id_by_slug.get(p, p)
+        agents = client.list_agents(pid)
+        names_by_id = {a.get("id"): (a.get("slug") or a.get("name")) for a in agents if a.get("id")}
         for a in agents:
             aid = a.get("id")
-            turns_val = max(int(a.get("current_turns") or 0), int(tool_calls_by_agent.get(aid, 0)))
-            calls_val = max(int(a.get("current_model_calls") or 0), int(api_calls_by_agent.get(aid, 0)))
+            turns_val = max(int(a.get("current_turns") or a.get("currentTurns") or 0), int(tool_calls_by_agent.get(aid, 0)))
+            calls_val = max(int(a.get("current_model_calls") or a.get("currentModelCalls") or 0), int(api_calls_by_agent.get(aid, 0)))
             
-            # The API might return "slug" or "name", "harnessConfig" or "harness", "updated" or "created"
             agent_name = a.get("slug") or a.get("name")
             harness = a.get("harnessConfig") or a.get("harness")
+            raw_parent = a.get("parent_agent") or a.get("createdBy") or a.get("created_by")
+            parent_agent = names_by_id.get(raw_parent, raw_parent if a.get("parent_agent") else None)
             
             docs.append({
                 "project_slug": p,
@@ -180,11 +185,11 @@ def collect_agent_docs_from_api(client, projects: list[str], api_calls_by_agent:
                 "harness": harness,
                 "phase": a.get("phase") or a.get("status"),
                 "activity": a.get("activity"),
-                "parent_agent": a.get("parent_agent") or a.get("created_by"),
+                "parent_agent": parent_agent,
                 "current_turns": counter(turns_val),
                 "model_calls": counter(calls_val),
                 "last_summary": truncate(a.get("taskSummary") or a.get("message")),
-                "last_activity_at": parse_ts(a.get("last_activity_event") or a.get("updated") or a.get("created")),
+                "last_activity_at": parse_ts(a.get("lastActivityEvent") or a.get("last_activity_event") or a.get("updated") or a.get("created")),
             })
     return docs
 

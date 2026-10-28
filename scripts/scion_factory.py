@@ -1025,12 +1025,20 @@ def _render_shared_agents_md_base(spec: dict[str, Any]) -> str:
             "issue, then sends `scion message user:<PO_USER> \"<one line> <issue URL>\"`. Every message to the PO raises "
             "an ERROR alert (watchdog), so nothing else goes by message. Everyone else escalates to their lead."
         )
+        k8s_clone_note = (
+            "\n- **Per-Pod Clones (`runtime: kubernetes`):** Each agent pod owns an isolated `/workspace` clone and shares "
+            "`/scion-volumes/scratchpad` plus `origin` (never uncommitted local files). Before requesting review on uncommitted "
+            "work, write `git diff HEAD > /scion-volumes/scratchpad/patches/issue-<N>.patch` (or push `factory/issue-<N>`) so "
+            "your reviewer pod can apply, test, and audit the exact diff before trunk merge."
+            if runtime_mode(spec) == "kubernetes"
+            else ""
+        )
         integrate = f"""## 4. Pre-Commit Verification & Commit Slot (Lesson L18)
-Before committing or pushing to your team's trunk (`{vcs['build_branch']}` in `{proj['slug']}`, `{vcs['eval_branch']}` in `{proj['eval_slug']}`), ask your lead for the commit slot, then:
+Before committing or pushing to your team's trunk (`{vcs['build_branch']}` in `{proj['slug']}`, `{vcs['eval_branch']}` in `{proj['eval_slug']}`), ask your lead for the commit slot, then:{k8s_clone_note}
 1. Run build, test, and lint verification: `{stack['build_command']}`, `{stack['test_command']}`, and `{lint}`.
-2. Check whether your remote trunk moved (`git fetch origin <branch> && git rev-list --count HEAD..origin/<branch>`). When `0`, commit and push directly without `git pull --rebase` or `git stash`. When `> 0`, stash **only** your own paths (`git stash push -m "pre-rebase" -- <files>`, never `git stash -u`), rebase onto `origin/<branch>`, pop, and re-verify (or ask your lead if shared files conflict).
+2. Check whether your remote trunk moved (`git fetch origin <branch> && git rev-list --count HEAD..origin/<branch>`). When `0`, commit and push directly (`git push origin HEAD:<branch>`) without `git pull --rebase` or `git stash`. When `> 0`, stash **only** your own paths (`git stash push -m "pre-rebase" -- <files>`, never `git stash -u`), rebase onto `origin/<branch>`, pop, and re-verify (or ask your lead if shared files conflict).
 3. Stage **only** explicit paths (`git add -- <files>`) and verify `git diff --cached --name-only` contains only your assigned paths (or coupled paths your lead explicitly authorized for a co-commit). Never run `git add -A`, `git add .`, `git add -u`, or `git stash -u`, and never stage or stash `.scion/` or `.agents/`.
-4. If `git push` is rejected by GitHub token scope limits (for example `.github/workflows/*` without `workflow` scope), save the reviewed restricted files as a patch under `/scion-volumes/scratchpad/pending-<issue>/`, commit and push the permitted files, and report the patch path so your lead opens a `status:po-decision` issue while keeping other backlog items moving.
+4. If `git push origin HEAD:<branch>` is rejected by GitHub token scope limits (for example `.github/workflows/*` without `workflow` scope), save the reviewed restricted files as a patch under `/scion-volumes/scratchpad/pending-<issue>/`, commit and push the permitted files, and report the patch path so your lead opens a `status:po-decision` issue while keeping other backlog items moving.
 5. Never commit secrets, tokens, `.env` files, or agent state files.
 """
         deploy = """## 5. Clean Deployment Packaging & Traffic Unpinning (Lesson L23)
@@ -1146,16 +1154,19 @@ def _render_scion_agent_yaml(role_spec: dict[str, Any], spec: dict[str, Any] | N
     harness = role_spec["harness"]
     model = role_spec["model"]
     subdir = _monorepo(spec)[1] if spec else ""
+    use_factory_hc = bool(subdir) or (spec is not None and runtime_mode(spec) == "kubernetes")
     lines = [
         "schema_version: \"1\"",
-        f"default_harness_config: {harness}-factory" if subdir else f"default_harness_config: {harness}",
+        f"default_harness_config: {harness}-factory" if use_factory_hc else f"default_harness_config: {harness}",
         f"model: \"{model}\"",
         "telemetry:",
         "  enabled: true",
     ]
     env = []
-    if harness == "opencode" and "vertex" in model.lower():
-        # Lesson L6: Gemini 4 Argon on Vertex requires global endpoint
+    if (harness == "opencode" and "vertex" in model.lower()) or (
+        harness in ("antigravity", "gemini", "gemini-cli") and "gemini" in model.lower()
+    ):
+        # Lesson L6: Gemini 4 Argon / 3.8 Flash on Vertex requires global endpoint
         env.append("  GOOGLE_CLOUD_LOCATION: \"global\"")
     if subdir:
         env.append(f"  FACTORY_SUBDIR: \"{subdir}\"   # product folder the harness starts in (factory-cd.sh)")
@@ -1334,11 +1345,20 @@ def _render_chain_of_command(spec: dict[str, Any], role_spec: dict[str, Any], is
   the repository.
 
 """
+    vcs = spec.get("vcs", {}) or {}
+    team_branch = (
+        (vcs.get("eval_branch") if is_eval else vcs.get("build_branch"))
+        if runtime_mode(spec) == "kubernetes" and _vcs_enabled(spec)
+        else ""
+    )
     rows = []
     for r in team:
         if r["role"] == lead_role:
             continue
-        cmd = f'scion start {_agent(spec, r["role"])} -t {r["role"]} --harness-auth vertex-ai'
+        cmd = f'scion start {_agent(spec, r["role"])} -t {r["role"]}'
+        if team_branch:
+            cmd += f" -b {team_branch}"
+        cmd += " --harness-auth vertex-ai"
         if r.get("gcp_identity"):
             cmd += " --service-account <ID>"
         rows.append(f'| `{_agent(spec, r["role"])}` | `{cmd} "Read your instructions, then run your wake-up steps."` |')
@@ -2013,19 +2033,34 @@ else
 fi
 
 # DRY_RUN goes in as an argument: the quoted heredoc below is not expanded by the shell.
-python3 - "$ISSUES_FILE" "$REPO" "${{DRY_RUN:-1}}" <<'PY'
+python3 - "$ISSUES_FILE" "$REPO" "${{DRY_RUN:-1}}" "$FACTORY_LABEL" <<'PY'
 import json, subprocess, sys
-issues_path, repo, dry_run = sys.argv[1], sys.argv[2], sys.argv[3]
+issues_path, repo, dry_run, factory_label = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
 waves = json.load(open(issues_path))
+existing_titles = set()
+if dry_run == "0":
+    raw = subprocess.run(
+        ["gh", "issue", "list", "--repo", repo, "--state", "all", "--label", factory_label, "--limit", "500", "--json", "title"],
+        capture_output=True, text=True, check=False,
+    ).stdout.strip()
+    if raw:
+        try:
+            existing_titles = {{item.get("title", "") for item in json.loads(raw) if isinstance(item, dict)}}
+        except Exception:
+            existing_titles = set()
 for w in waves:
     wave_num = w["wave"]
     for issue in w["issues"]:
         title = issue["title"]
         criteria = "\\n".join(f"- [ ] {{c}}" for c in issue.get("acceptance_criteria", []))
         body = f"## Wave {{wave_num}}: {{w['title']}}\\n\\n**Owner Role:** `{{issue['owner_role']}}`\\n\\n### Acceptance Criteria\\n{{criteria}}\\n"
+        if title in existing_titles:
+            print(f"[wave-{{wave_num}}] {{title}} (already exists, skipping)")
+            continue
         print(f"[wave-{{wave_num}}] {{title}} (owner={{issue['owner_role']}})")
         if dry_run == "0":
             subprocess.run(["gh", "issue", "create", "--repo", repo, "--title", title, "--body", body, "--label", {create_labels}], check=True)
+            existing_titles.add(title)
 PY
 """
 

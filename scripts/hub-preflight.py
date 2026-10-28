@@ -162,7 +162,12 @@ def build_api_report(client, po_email, new_projects, images, watchdog_projects, 
         
     try:
         status, data = client.request("GET", "/api/v1/harness-configs?scope=global")
-        harness_configs = sorted([c["name"] for c in data.get("items", [])]) if status == 200 else []
+        hc_list = (
+            data.get("harnessConfigs")
+            if isinstance(data, dict) and isinstance(data.get("harnessConfigs"), list)
+            else (data.get("items", []) if isinstance(data, dict) else [])
+        )
+        harness_configs = sorted([c["name"] for c in hc_list]) if status == 200 else []
     except Exception:
         harness_configs = []
         

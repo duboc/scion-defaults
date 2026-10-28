@@ -99,16 +99,10 @@ _TOKEN = None
 
 def _hub_client():
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-    from hub_client import HubClient, load_credentials_token
-    token = os.environ.get("SCION_HUB_TOKEN")
-    if not token:
-        try:
-            token = load_credentials_token(SCION_HOME, HUB_URL)
-        except Exception:
-            pass
-    if not token:
-        token = _token()
-    return HubClient(base_url=HUB_URL, token=token)
+    from hub_client import HubClient
+    if os.environ.get("HUB_URL", "").strip():
+        return HubClient.from_env()
+    return HubClient(base_url=HUB_URL, token=_token())
 
 def api(method, path, body=None, timeout=60):
     global _TOKEN
@@ -388,23 +382,17 @@ def cmd_service_accounts(args):
     client = _hub_client()
     pid = client.project_id(args.project)
     if args.subcmd == "list":
-        status, data = client.request("GET", f"/api/v1/projects/{pid}/service-accounts")
-        for sa in data.get("items", []):
-            print(f"{sa['id']} {sa['email']} (project: {sa['gcpProject']})")
+        for sa in client.list_project_service_accounts(pid):
+            gcp_proj = sa.get("projectId") or sa.get("gcpProject") or ""
+            print(f"{sa['id']} {sa['email']} (project: {gcp_proj})")
     elif args.subcmd == "add":
-        status, data = client.request("POST", f"/api/v1/projects/{pid}/service-accounts", body={
-            "email": args.email,
-            "gcpProject": args.gcp_project,
-            "displayName": args.name or args.email.split("@")[0]
-        })
-        print(f"Registered {data['id']}")
+        sa = client.register_project_service_account(pid, args.email, args.gcp_project, name=args.name or "")
+        print(f"Registered {sa['id']}")
 
 def cmd_project_settings(args):
     client = _hub_client()
     pid = client.project_id(args.project)
-    status, settings = client.request("GET", f"/api/v1/projects/{pid}/settings")
-    if status != 200:
-        settings = {}
+    settings = client.get_project_settings(pid)
         
     if args.profile:
         settings["activeProfile"] = args.profile
@@ -414,8 +402,7 @@ def cmd_project_settings(args):
     if args.service_account:
         sa_id = args.service_account
         if "@" in sa_id:
-            status, data = client.request("GET", f"/api/v1/projects/{pid}/service-accounts")
-            for sa in data.get("items", []):
+            for sa in client.list_project_service_accounts(pid):
                 if sa["email"] == sa_id:
                     sa_id = sa["id"]
                     break
@@ -426,7 +413,7 @@ def cmd_project_settings(args):
         if prof:
             settings.setdefault("defaultGCPIdentityServiceAccountIDByProfile", {})[prof] = sa_id
 
-    status, new_settings = client.request("PUT", f"/api/v1/projects/{pid}/settings", body=settings)
+    new_settings = client.put_project_settings(pid, settings)
     print(json.dumps(new_settings, indent=2))
 
 def cmd_metrics(args):

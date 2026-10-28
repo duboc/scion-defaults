@@ -248,13 +248,53 @@ main()
 
 
 
+def _extract_templates(data: dict) -> list[dict]:
+    if not isinstance(data, dict):
+        return []
+    for k in ("templates", "items"):
+        if k in data and isinstance(data[k], list):
+            return data[k]
+    return []
+
+
 def push_templates_via_api(client, project_slug: str, roles: list[str], rendered_dir: str, apply: bool = False, default_dir: str = "") -> dict:
     pid = client.project_id(project_slug)
-    status, data = client.request("GET", f"/api/v1/templates?scope=project&projectId={pid}")
-    templates = data.get("items", []) if status == 200 else []
+    status, data = client.request("GET", f"/api/v1/templates?scope=project&scopeId={pid}&projectId={pid}")
+    templates = _extract_templates(data) if status == 200 else []
     before = {t["id"]: t.get("contentHash") for t in templates}
     touched = set()
-    
+
+    def _upload_and_finalize(tid: str, harness: str, files: dict) -> dict:
+        payload = {"files": [{"path": path, "size": len(raw)} for path, (raw, _mode) in files.items()]}
+        _st, up_r = client.request("POST", f"/api/v1/templates/{tid}/upload", body=payload)
+        urls = up_r.get("uploadUrls") or up_r.get("urls") or up_r.get("files") or []
+        for entry in urls:
+            raw = files[entry["path"]][0]
+            client.request(
+                entry.get("method", "PUT"),
+                entry["url"],
+                raw=raw,
+                headers=entry.get("headers") or {"Content-Type": "application/octet-stream"},
+            )
+        manifest = {
+            "version": "1.0",
+            "harness": harness,
+            "files": [
+                {
+                    "path": p,
+                    "size": len(r),
+                    "hash": "sha256:" + hashlib.sha256(r).hexdigest(),
+                    "mode": f"{mode & 0o777:04o}",
+                }
+                for p, (r, mode) in files.items()
+            ],
+        }
+        fin_body = {"manifest": manifest}
+        if up_r.get("uploadId"):
+            fin_body["uploadId"] = up_r["uploadId"]
+        _st, res = client.request("POST", f"/api/v1/templates/{tid}/finalize", body=fin_body)
+        return res
+
     for role in roles:
         role_dir = os.path.join(rendered_dir, role)
         files = {}
@@ -264,70 +304,65 @@ def push_templates_via_api(client, project_slug: str, roles: list[str], rendered
                 path = os.path.relpath(full, role_dir)
                 with open(full, "rb") as fd:
                     files[path] = (fd.read(), 0o755 if os.access(full, os.X_OK) else 0o644)
-        
+
         harness = "claude"
         if "scion-agent.yaml" in files:
             yaml = files["scion-agent.yaml"][0].decode("utf-8")
-            m = re.search(r"harness:\s*(\S+)", yaml)
+            m = re.search(r"(?:default_harness_config|harness):\s*(\S+)", yaml)
             if m:
-                harness = harness_type(m.group(1))
-        
+                harness = harness_type(m.group(1).strip("'\""))
+
         existing = [t for t in templates if t["slug"] == role or t["name"] == role]
         row = existing[0] if existing else None
-        
+
         if row:
             touched.add(row["id"])
-            shared = [t for t in templates if t["id"] != row["id"] and (t.get("storagePath") == row.get("storagePath") or t.get("storageUri") == row.get("storageUri")) and (row.get("storagePath") or row.get("storageUri"))]
+            shared = [
+                t
+                for t in templates
+                if t["id"] != row["id"]
+                and (t.get("storagePath") == row.get("storagePath") or t.get("storageUri") == row.get("storageUri"))
+                and (row.get("storagePath") or row.get("storageUri"))
+            ]
             if shared:
                 legacy = role + "-legacy"
-                print(f"{role}: row {row['id']} uses storage it doesn't own ({row.get('storagePath')}): rename it to {legacy} and create a fresh {role} with {len(files)} files")
+                print(
+                    f"{role}: row {row['id']} uses storage it doesn't own ({row.get('storagePath')}): "
+                    f"rename it to {legacy} and create a fresh {role} with {len(files)} files"
+                )
                 if apply:
                     client.request("PATCH", f"/api/v1/templates/{row['id']}", body={"name": legacy, "slug": legacy})
-                    
-                    st, r = client.request("POST", f"/api/v1/templates", body={"name": role, "slug": role, "harness": harness, "scope": "project", "scopeId": pid})
-                    tid = r["id"]
+                    _st, r = client.request(
+                        "POST",
+                        "/api/v1/templates",
+                        body={"name": role, "slug": role, "harness": harness, "scope": "project", "scopeId": pid},
+                    )
+                    tid = (r.get("template") if isinstance(r, dict) and isinstance(r.get("template"), dict) else r)["id"]
                     touched.add(tid)
-                    payload = {"files": [{"path": path, "size": len(raw)} for path, (raw, mode) in files.items()]}
-                    st, up_r = client.request("POST", f"/api/v1/templates/{tid}/upload", body=payload)
-                    urls = up_r.get("urls") or up_r.get("uploadUrls") or up_r.get("files") or []
-                    for entry in urls:
-                        raw = files[entry["path"]][0]
-                        client.request(entry.get("method", "PUT"), entry["url"], raw=raw, headers=entry.get("headers") or {"Content-Type": "application/octet-stream"})
-                    manifest = {"version": "1.0", "harness": harness, "files": [{"path": p, "size": len(r), "hash": "sha256:" + hashlib.sha256(r).hexdigest(), "mode": mode} for p, (r, mode) in files.items()]}
-                    st, res = client.request("POST", f"/api/v1/templates/{tid}/finalize", body={"manifest": manifest})
+                    res = _upload_and_finalize(tid, harness, files)
                     print(f"{role}: created {tid}, status={res.get('status')} hash={res.get('contentHash')}")
             else:
                 print(f"{role}: update in place {row['id']}")
                 if apply:
-                    payload = {"files": [{"path": path, "size": len(raw)} for path, (raw, mode) in files.items()]}
-                    st, r = client.request("POST", f"/api/v1/templates/{row['id']}/upload", body=payload)
-                    urls = r.get("urls") or r.get("uploadUrls") or r.get("files") or []
-                    for entry in urls:
-                        raw = files[entry["path"]][0]
-                        client.request(entry.get("method", "PUT"), entry["url"], raw=raw, headers=entry.get("headers") or {"Content-Type": "application/octet-stream"})
-                    manifest = {"version": "1.0", "harness": harness, "files": [{"path": p, "size": len(r), "hash": "sha256:" + hashlib.sha256(r).hexdigest(), "mode": mode} for p, (r, mode) in files.items()]}
-                    st, res = client.request("POST", f"/api/v1/templates/{row['id']}/finalize", body={"manifest": manifest})
+                    res = _upload_and_finalize(row["id"], harness, files)
                     print(f"{role}: updated, status={res.get('status')} hash={res.get('contentHash')}")
-                    
+
         if not row:
             print(f"{role}: create with {len(files)} files")
             if apply:
-                st, r = client.request("POST", f"/api/v1/templates", body={"name": role, "slug": role, "harness": harness, "scope": "project", "scopeId": pid})
-                tid = r["id"]
+                _st, r = client.request(
+                    "POST",
+                    "/api/v1/templates",
+                    body={"name": role, "slug": role, "harness": harness, "scope": "project", "scopeId": pid},
+                )
+                tid = (r.get("template") if isinstance(r, dict) and isinstance(r.get("template"), dict) else r)["id"]
                 touched.add(tid)
-                payload = {"files": [{"path": path, "size": len(raw)} for path, (raw, mode) in files.items()]}
-                st, up_r = client.request("POST", f"/api/v1/templates/{tid}/upload", body=payload)
-                urls = up_r.get("urls") or up_r.get("uploadUrls") or up_r.get("files") or []
-                for entry in urls:
-                    raw = files[entry["path"]][0]
-                    client.request(entry.get("method", "PUT"), entry["url"], raw=raw, headers=entry.get("headers") or {"Content-Type": "application/octet-stream"})
-                manifest = {"version": "1.0", "harness": harness, "files": [{"path": p, "size": len(r), "hash": "sha256:" + hashlib.sha256(r).hexdigest(), "mode": mode} for p, (r, mode) in files.items()]}
-                st, res = client.request("POST", f"/api/v1/templates/{tid}/finalize", body={"manifest": manifest})
+                res = _upload_and_finalize(tid, harness, files)
                 print(f"{role}: created {tid}, status={res.get('status')} hash={res.get('contentHash')}")
 
     print("\nverification:")
-    status, data = client.request("GET", f"/api/v1/templates?scope=project&projectId={pid}")
-    after_templates = data.get("items", []) if status == 200 else []
+    status, data = client.request("GET", f"/api/v1/templates?scope=project&scopeId={pid}&projectId={pid}")
+    after_templates = _extract_templates(data) if status == 200 else []
     after = {t["id"]: t.get("contentHash") for t in after_templates}
     others = [tid for tid, h in before.items() if tid not in touched and after.get(tid) != h]
     if others:

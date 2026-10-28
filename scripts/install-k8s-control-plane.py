@@ -63,7 +63,7 @@ def render_manifests(
             {"name": "FIRESTORE_PROJECT", "value": firestore_project},
             {"name": "FIRESTORE_DATABASE", "value": firestore_database},
             {"name": "AGENT_RUNTIME", "value": "kubernetes"},
-            {"name": "SCION_HUB_TOKEN", "valueFrom": {"secretKeyRef": {"name": "scion-factory-hub-auth", "key": "token"}}}
+            {"name": "SCION_HUB_TOKEN", "valueFrom": {"secretKeyRef": {"name": "scion-factory-hub-auth", "key": "token", "optional": True}}}
         ]
         if iap_audience:
             env.append({"name": "HUB_IAP_AUDIENCE", "value": iap_audience})
@@ -82,6 +82,7 @@ def render_manifests(
                 "concurrencyPolicy": "Forbid",
                 "jobTemplate": {
                     "spec": {
+                        "backoffLimit": 1,
                         "template": {
                             "spec": {
                                 "serviceAccountName": ksa_name,
@@ -134,6 +135,7 @@ def main():
     parser.add_argument("--sandbox-project", default="")
     parser.add_argument("--firestore-project", default="")
     parser.add_argument("--gsa-email", default="")
+    parser.add_argument("--iap-audience", default="")
     parser.add_argument("--apply", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--out", default="")
@@ -145,7 +147,8 @@ def main():
         factory_projects=args.factory_projects or os.environ.get("FACTORY_PROJECTS", ""),
         sandbox_project=args.sandbox_project or os.environ.get("SANDBOX_PROJECT", ""),
         firestore_project=args.firestore_project or os.environ.get("FIRESTORE_PROJECT", ""),
-        gsa_email=args.gsa_email or os.environ.get("GSA_EMAIL", "")
+        gsa_email=args.gsa_email or os.environ.get("GSA_EMAIL", ""),
+        iap_audience=args.iap_audience or os.environ.get("HUB_IAP_AUDIENCE", ""),
     )
     
     json_docs = "\n---\n".join(json.dumps(m) for m in manifests)

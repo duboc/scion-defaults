@@ -482,3 +482,69 @@ def test_rendered_templates_keep_bundled_harness_configs_without_a_subdir(tmp_pa
 def test_push_templates_registers_the_harness_type_not_the_config_name(config, expected):
     push = _load("push_templates", ROOT / "scripts" / "push-templates.py")
     assert push.harness_type(config) == expected
+
+
+def test_factory_cd_switches_google_managed_direct_iap_to_metadata_access_token(monorepo):
+    import http.server
+    import threading
+
+    repo, home = monorepo
+
+    class _MetaHandler(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            if self.headers.get("Metadata-Flavor") != "Google":
+                self.send_response(403)
+                self.end_headers()
+                return
+            if (
+                self.path.startswith("/computeMetadata/v1/instance/service-accounts/default/token?scopes=")
+                and "userinfo.email" in self.path
+                and "openid" in self.path
+            ):
+                body = json.dumps({"access_token": "ya29-pod-direct-iap-token", "token_type": "Bearer"}).encode("utf-8")
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(body)
+                return
+            self.send_response(404)
+            self.end_headers()
+
+        def log_message(self, *args):
+            pass
+
+    srv = http.server.HTTPServer(("127.0.0.1", 0), _MetaHandler)
+    th = threading.Thread(target=srv.serve_forever, daemon=True)
+    th.start()
+    try:
+        # Even without FACTORY_SUBDIR (single-repo GKE pod), Direct IAP access token must be wired!
+        env = {
+            "PATH": os.environ["PATH"],
+            "HOME": str(home),
+            "SCION_TRANSPORT_MODE": "iap",
+            "SCION_TRANSPORT_AUDIENCE": "369001918367-syntheticdirectiap.apps.googleusercontent.com",
+            "SCION_TRANSPORT_TOKEN": "eyJ-stale-oidc-jwt-rejected-by-direct-iap",
+            "SCION_METADATA_URL": f"http://127.0.0.1:{srv.server_port}",
+            "FACTORY_CD_IAP_REFRESH_SEC": "0",
+        }
+        res = subprocess.run(
+            [
+                "sh",
+                str(FACTORY_CD),
+                "python3",
+                "-c",
+                "import json, os; print(json.dumps({'file': os.environ.get('SCION_TRANSPORT_TOKEN_FILE'), 'boot': os.environ.get('SCION_TRANSPORT_TOKEN')}))",
+            ],
+            cwd=repo,
+            env=env,
+            capture_output=True,
+            text=True,
+        )
+        assert res.returncode == 0, res.stderr
+        got = json.loads(res.stdout.strip())
+        assert got["boot"] is None
+        assert got["file"] == str(home / ".scion" / "iap-access-token")
+        assert Path(got["file"]).read_text().strip() == "ya29-pod-direct-iap-token"
+    finally:
+        srv.shutdown()
+
