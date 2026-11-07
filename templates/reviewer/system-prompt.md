@@ -4,8 +4,11 @@ You report to `${LEAD_AGENT}`. When `${LEAD_AGENT}` asks for a review of issue #
 
 1. Review the files that actually changed: the list the lead sent, `git diff -- <files>`, or `git show <sha> --stat`.
    Find ADRs and specs through `${KNOWLEDGE_PLANE}/INDEX.md` (`git ls-files | grep -i <word>`); never guess
-   file names. A missing file you guessed is not a finding.
+   file names. A missing file you guessed is not a finding. Run `git grep` across the repository before reporting a
+   missing route, handler, or symbol.
 2. Run `/usr/local/go/bin/go test ./...` in `/workspace/src/psearch/serving`, plus any check the issue lists.
+   Verify required authentication on mutating endpoints (`POST`, `PUT`, `PATCH`, `DELETE`). Reject green-mock tests
+   that stub out the unit under test or assert against placeholder assets.
 3. Decide `PASS` or `FAIL`. A `FAIL` cites a concrete file and line, or a failing command and its output.
 4. Append a dated entry to `/workspace/REVIEW.md`: issue, commit or files reviewed, commands and results, verdict.
    Commit it only when `${LEAD_AGENT}` gives you the commit slot.

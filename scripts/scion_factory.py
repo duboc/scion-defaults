@@ -38,6 +38,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import discovery  # noqa: E402
 import knowledge_plane as kp  # noqa: E402
 import role_library  # noqa: E402
+import verification_policy  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
@@ -156,7 +157,8 @@ GRILL_QUESTIONS: list[dict[str, Any]] = [
             "`researcher`, `doc-writer`, `investigator` on build; `eval-lead`, `domain-evaluator` on eval). "
             "Review each proposed specialist from discovery with its evidence, add confirmed specialists "
             "with `./scripts/scion-factory add-role`, record drops under `team.dropped_defaults` with a reason, "
-            "and select harness/model pairs for each role."
+            "and confirm cross-family harness/model pairs (`team.verification_policy: cross-family`) plus "
+            "`team.reviewer_replicas` when concurrent WIP is 4 or higher."
         ),
         "why_we_ask": (
             "Each harness has distinct runtime requirements: OpenCode Gemini 4 Argon "
@@ -702,10 +704,19 @@ def normalize_team(spec: dict[str, Any]) -> tuple[dict[str, Any], list[str]]:
         for role in always:
             if role in dropped or role in names or role_library.ROLES[role]["default_kind"] in kinds:
                 continue
-            roster.append(dict(role_library.library_role_entry(role), default=True))
+            entry = dict(role_library.library_role_entry(role), default=True)
+            roster.append(entry)
             names.add(role)
             kinds.add(role_library.ROLES[role]["default_kind"])
             notes.append(f"added default role {role}")
+    if verification_policy.verification_policy_mode(out) == "cross-family":
+        for key in ("build_roles", "eval_roles"):
+            for entry in team.get(key) or []:
+                if isinstance(entry, dict) and entry.get("default") and _role_kind(entry) in verification_policy.VERIFIER_KINDS:
+                    opp_h, opp_m = verification_policy.opposing_verifier_pair(out)
+                    entry["harness"] = opp_h
+                    entry["model"] = opp_m
+    notes.extend(verification_policy.expand_reviewer_replicas(out))
     return out, notes
 
 
@@ -731,6 +742,10 @@ def add_role(spec_path: str | Path, role: str, team: str | None = None, evidence
     if role in existing:
         return spec
     entry = dict(role_library.library_role_entry(role), default=lib["kind"] == "always")
+    if verification_policy.verification_policy_mode(spec) == "cross-family" and lib["default_kind"] in verification_policy.VERIFIER_KINDS:
+        opp_h, opp_m = verification_policy.opposing_verifier_pair(spec)
+        entry["harness"] = opp_h
+        entry["model"] = opp_m
     if evidence:
         entry["evidence"] = [str(e) for e in evidence]
     roster_team.setdefault(f"{team_name}_roles", []).append(entry)
@@ -742,8 +757,25 @@ def add_role(spec_path: str | Path, role: str, team: str | None = None, evidence
     return spec
 
 
+def diversify_team(spec_path: str | Path, reviewer_replicas: int | None = None) -> tuple[dict[str, Any], list[str]]:
+    """Enable `cross-family` verification on a FactorySpec and assign opposing verifier models in place."""
+    spec = load_spec(spec_path)
+    team = spec.setdefault("team", {})
+    team["verification_policy"] = "cross-family"
+    team.pop("single_harness_reason", None)
+    notes = verification_policy.apply_cross_family_defaults(spec)
+    if reviewer_replicas is not None:
+        if reviewer_replicas < 1 or reviewer_replicas > verification_policy.MAX_REVIEWER_REPLICAS:
+            raise ValueError(
+                f"--reviewer-replicas must be between 1 and {verification_policy.MAX_REVIEWER_REPLICAS}"
+            )
+        team["reviewer_replicas"] = reviewer_replicas
+    save_spec(spec, spec_path)
+    return spec, notes
+
+
 def _team_readiness(spec: dict[str, Any]) -> tuple[list[str], list[str]]:
-    """Errors and warnings for the deploy / autonomy enums, explicit drops, and missing default roles."""
+    """Errors and warnings for the deploy / autonomy enums, explicit drops, diversity, and missing default roles."""
     errors: list[str] = []
     mode = deploy_mode(spec)
     if mode not in DEPLOY_MODES:
@@ -765,7 +797,11 @@ def _team_readiness(spec: dict[str, Any]) -> tuple[list[str], list[str]]:
         f"team is missing default role {note.removeprefix('added default role ')}: compile adds it "
         "(drop it in team.dropped_defaults with a reason to leave it out)"
         for note in normalize_team(spec)[1]
+        if note.startswith("added default role ")
     ]
+    div_errors, div_warnings = verification_policy.audit_verification_diversity(spec)
+    errors.extend(div_errors)
+    warnings.extend(div_warnings)
     return errors, warnings
 
 
@@ -1290,7 +1326,15 @@ def _render_focus(spec: dict[str, Any], role_spec: dict[str, Any]) -> str:
 def _render_sizing(spec: dict[str, Any], team: list[dict[str, Any]], is_eval: bool) -> str:
     agents = _kind_agents(spec, team)
     lines = [f"- {line.format_map(agents)}" for kinds, line in _SIZING_LINES if all(k in agents for k in kinds)]
+    reviewer_pool = [f"`{_agent(spec, r['role'])}`" for r in team if _role_kind(r) == "reviewer"]
+    if len(reviewer_pool) >= 2:
+        lines.append(
+            f"- reviewer pool (M/G/k) → check `scion list` and dispatch one idle reviewer ({', '.join(reviewer_pool)}). "
+            "Do not review one diff twice. Require two reviewers only on `P0`, auth, or security slices"
+        )
     reviewers = [agents[k] for k in _PARALLEL_REVIEWER_KINDS if k in agents]
+    if len(reviewer_pool) >= 2 and reviewers:
+        reviewers[0] = f"one idle reviewer ({', '.join(reviewer_pool)})"
     if is_eval and not lines and not reviewers:
         return ""
     small = f"A small change needs only {agents.get('implementer', 'the implementer')} and " \
@@ -1299,6 +1343,12 @@ def _render_sizing(spec: dict[str, Any], team: list[dict[str, Any]], is_eval: bo
             f"{small} Add a teammate when its line applies:\n" + "\n".join(lines) + "\n")
     if reviewers:
         text += f"\nReview verdicts from {', '.join(reviewers)} before giving the commit slot.\n"
+        if not is_eval and _vcs_enabled(spec) and reviewer_pool:
+            build_branch = (spec.get("vcs") or {}).get("build_branch") or "main"
+            text += (
+                f"Before feature-branch review, run `git merge-base --is-ancestor origin/{build_branch} <branch>` "
+                "to reject stale diffs.\n"
+            )
     return text + "\n"
 
 
@@ -1562,14 +1612,21 @@ def _render_role_system_prompt_base(spec: dict[str, Any], role_spec: dict[str, A
     if _vcs_enabled(spec):
         branch = vcs["eval_branch"] if is_eval else vcs["build_branch"]
         location = f"Repository `{vcs['repo']}`, Branch `{branch}`"
-        intake = f"inspect GitHub issues in `{vcs['repo']}` (`gh issue list -R {vcs['repo']} --label status:ready`)"
+        intake = (
+            f"check `{kp.EVAL_KP_MOUNT}/state/LIVE.md` and `list-eval-runs` for newly shipped revisions since the last "
+            f"evaluation run, plus open `eval-finding` issues in `{vcs['repo']}`"
+            if is_eval
+            else f"inspect GitHub issues in `{vcs['repo']}` (`gh issue list -R {vcs['repo']} --label status:ready`)"
+        )
         slot = "commit slot"
         write_step = (f"Verify your work with `{stack['test_command']}`,\n   then commit and push on branch `{branch}` "
                       f"only when `{lead}` gives you the commit slot.")
     else:
         location = "Shared Hub project workspace `/workspace`, no version control"
         intake = (
-            "follow the eval-lead's instructions" if is_eval
+            f"check `{kp.EVAL_KP_MOUNT}/state/LIVE.md` and `list-eval-runs` for newly shipped revisions since the last "
+            "evaluation run"
+            if is_eval
             else "read `/workspace/backlog/issues.json` (only the lead edits it)"
         )
         slot = "edit slot"
@@ -1592,6 +1649,11 @@ def _render_role_system_prompt_base(spec: dict[str, Any], role_spec: dict[str, A
             f"Before you give the {slot} or mark the work verified, check the evidence: `{stack['test_command']}` passes and\n"
             "   every verdict is in.",
         ]
+        if not is_eval and "doc-writer" in _dropped_defaults(spec):
+            steps.append(
+                f"Because `doc-writer` is omitted from this roster, update `{_ws(spec)}/knowledge-plane/state/LIVE.md` "
+                f"and `{_ws(spec)}/knowledge-plane/INDEX.md` at wave close."
+            )
         loop = "\n".join(f"{i}. {s}" for i, s in enumerate(steps, 1))
     else:
         how = ("as your Role protocol says" if _render_role_protocol(spec, role_spec)
@@ -2440,7 +2502,7 @@ def draft_spec_from_repo(repo_path: str | Path | None) -> dict[str, Any]:
         slug = _slugify(Path(repo_path).resolve().name)
 
     language = detected.get("primary_language", "")
-    return {
+    draft: dict[str, Any] = {
         "project": {
             "name": "",
             "slug": slug,
@@ -2478,6 +2540,7 @@ def draft_spec_from_repo(repo_path: str | Path | None) -> dict[str, Any]:
             "watchdog_cron": "*/5 * * * *",
             "max_wip": 2,
             "autonomy": "standard",
+            "verification_policy": "cross-family",
             "dropped_defaults": [],
             "build_roles": [dict(r, responsibility="", default=True) for r in DEFAULT_BUILD_ROLES],
             "eval_roles": [dict(r, responsibility="", default=True) for r in DEFAULT_EVAL_ROLES],
@@ -2497,6 +2560,8 @@ def draft_spec_from_repo(repo_path: str | Path | None) -> dict[str, Any]:
         },
         "waves": [],
     }
+    verification_policy.apply_cross_family_defaults(draft)
+    return draft
 
 
 def prepare_grill_session(repo_path: str | Path | None, out_path: str | Path, force: bool = False) -> dict[str, Any]:
@@ -2603,6 +2668,14 @@ def main(argv: list[str] | None = None) -> int:
     p_role.add_argument("--evidence", action="append", default=[],
                         help="Why the role is needed (repeatable), e.g. a path discovery found")
 
+    p_div = sub.add_parser(
+        "diversify-team",
+        help="Enforce cross-family verification on a FactorySpec and optionally set standing reviewer replicas",
+    )
+    p_div.add_argument("spec_path", help="Path to factory.yaml")
+    p_div.add_argument("--reviewer-replicas", type=int, default=None,
+                       help="Optional standing reviewer replica count (1-8)")
+
     args = parser.parse_args(argv)
 
     if args.cmd == "inspect":
@@ -2669,7 +2742,6 @@ def main(argv: list[str] | None = None) -> int:
     if args.cmd == "provision":
         spec = load_spec(args.spec_path)
         import provision_factory
-        from pathlib import Path
         report = provision_factory.provision_factory(
             spec,
             Path(args.kit),
@@ -2704,6 +2776,22 @@ def main(argv: list[str] | None = None) -> int:
             "added": args.role not in present,
             "ready": report["ready"],
             "next": "recompile the kit and push the new template",
+        }, indent=2))
+        return 0
+
+    if args.cmd == "diversify-team":
+        try:
+            spec, notes = diversify_team(args.spec_path, reviewer_replicas=args.reviewer_replicas)
+        except ValueError as err:
+            print(f"error: {err}", file=sys.stderr)
+            return 2
+        report = evaluate_spec_readiness(spec)
+        print(json.dumps({
+            "spec_path": str(args.spec_path),
+            "verification_policy": spec["team"].get("verification_policy"),
+            "reviewer_replicas": spec["team"].get("reviewer_replicas"),
+            "changes": notes,
+            "ready": report["ready"],
         }, indent=2))
         return 0
 
