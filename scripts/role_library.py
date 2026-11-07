@@ -102,6 +102,10 @@ Deliver clean diffs to your lead and report completion with exact file locations
         "needs_service": False,
         "protocol": """You review code changes independently against repository invariants, design specifications, and ADRs.
 Examine the diff thoroughly for ACID transaction safety, edge-case coverage, and regressions.
+Run repository-wide `git grep` or `git ls-files` before reporting a missing route, handler, or symbol.
+If a diff adds or edits mutating endpoints (`POST`, `PUT`, `PATCH`, `DELETE`), verify authentication and authorization checks.
+Reject green-mock tests that stub out the unit under test.
+Reject tests that assert against placeholder media, zero-amplitude buffers, or empty UI shells instead of real behavior.
 Verify that tests importing optional or secondary-app packages guard those imports (for example `pytest.importorskip(...)`) so test collection stays green in minimal per-app environments.
 Deliver a definitive PASS or FAIL verdict with concrete file:line evidence to your lead.
 Never fix code yourself; provide actionable review feedback only.
