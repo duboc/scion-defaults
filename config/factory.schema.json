@@ -258,6 +258,12 @@
         "port": {
           "type": "integer",
           "default": 8080
+        },
+        "gate_timeout_sec": {
+          "type": "integer",
+          "minimum": 1,
+          "default": 300,
+          "description": "Foreground timeout in seconds wrapping compound build, test, and lint gates (L40)."
         }
       }
     },
@@ -762,6 +768,10 @@
             "type": "string"
           },
           "description": "Curated skill names from skill_bank to inject into this role template."
+        },
+        "reports_to": {
+          "type": "string",
+          "description": "Optional sub-coordinator role slug for 3-tier domain subtrees (lead -> sub-coordinator -> specialist)."
         }
       }
     }
