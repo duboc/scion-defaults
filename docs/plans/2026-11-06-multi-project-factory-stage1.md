@@ -159,7 +159,7 @@ def test_parse_owner_requires_email_and_github():
 
 ```python
 @pytest.mark.parametrize("secret", [
-    "ghp_" + "a" * 36, "github_pat_" + "B" * 30, "ghs_" + "c" * 36, "scion_pat_abcdEFGH1234",
+    "ghp_" + "a" * 36, "github_pat_" + "B" * 30, "ghs_" + "c" * 36, "scion_pat_" + "abcdEFGH1234",
     "AIza" + "d" * 35, "ya29." + "a0" + "x" * 12, "Authorization: Bearer abc.def", "password=hunter22"])
 def test_redacts_each_token_family(secret):
     r = redact.redact(f"before {secret} after")
