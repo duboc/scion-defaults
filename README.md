@@ -35,7 +35,7 @@ The workflow separates judgment tasks from repeatable automation. Your coding ag
 | Component | Purpose | Type |
 |---|---|---|
 | [`skills/scion-factory-bootstrap/SKILL.md`](skills/scion-factory-bootstrap/SKILL.md) | Guides your coding agent to inspect your repository, ask one topic at a time, and challenge vague answers using lessons L1 to L40. | Agentic skill |
-| [`scripts/scion-factory`](scripts/scion_factory.py) | Detects repository facts, writes a draft `factory.yaml`, checks readiness, adds specialist roles (`add-role`), compiles the kit, enables Git (`enable-git`), and runs `provision`, `gke-up`, and `gke-down`. It makes zero LLM calls and never blocks on interactive input. | Deterministic CLI |
+| [`scripts/scion-factory`](scripts/scion_factory.py) | Checks local prerequisites (`doctor`), detects repository facts, writes a draft `factory.yaml`, checks readiness, adds specialist roles (`add-role`), compiles the kit, enables Git (`enable-git`), and runs `provision`, `gke-up`, and `gke-down`. It makes zero LLM calls and never blocks on interactive input. | Deterministic CLI |
 | [`scripts/provision_factory.py`](scripts/provision_factory.py) and [`scripts/hub_client.py`](scripts/hub_client.py) | Provision projects, Workload Identity, shared directories, templates, schedules, and leads over the Hub HTTPS API. Supports IAP OIDC and local SQLite fallback. | Transport-agnostic control |
 | [`scripts/setup-gke-hub.sh`](scripts/setup-gke-hub.sh), [`scripts/install-k8s-control-plane.py`](scripts/install-k8s-control-plane.py), and [`scripts/factory_delta.py`](scripts/factory_delta.py) | Bootstrap a GKE-backed Scion Hub and install Kubernetes `CronJob` loops for Firestore sync, self-healing watchdog checks, and zero-LLM delta wakes. | Infrastructure automation |
 | Generated factory kit | A multi-agent build and evaluation system that runs on GKE pods or Docker containers. | Multi-agent system |
@@ -162,6 +162,8 @@ For a quick trial, this tutorial reuses one Google Cloud project for both the Hu
    - **GitHub:** A target product repository and a personal access token (PAT) with read/write access to contents, issues, and pull requests. Every agent acts as the token owner.
    - **Local CLI tools:** `gcloud` (with `beta`), `gh`, `git` 2.42+, `jq`, `openssl`, `python3`, and [`uv`](https://docs.astral.sh/uv/). Install `terraform` and `kubectl` when deploying a GKE Hub. You do not need Docker locally.
    - **Coding agent:** An assistant that supports skills, such as Antigravity or Claude Code.
+
+   Run `./scripts/scion-factory doctor --mode gke` (or `--mode vm` / `--mode local`) to verify local CLI versions and authentication before provisioning.
 
 2. Clone this repository and link the bootstrap skill into your coding agent. For Antigravity:
 
@@ -692,9 +694,10 @@ flowchart TB
 
 ### Reference presets
 
-Inspect [`presets/`](presets/) for four complete `FactorySpec` examples:
+Inspect [`presets/`](presets/) for five complete `FactorySpec` examples:
 
 - [`starter-service.factory.yaml`](presets/starter-service.factory.yaml): Double-entry ledger API demonstrating a non-search service factory.
+- [`go-library.factory.yaml`](presets/go-library.factory.yaml): Go library factory with `infrastructure.deploy: none` and code-pyramid grading.
 - [`psearch.factory.yaml`](presets/psearch.factory.yaml): 10-agent hybrid search software factory.
 - [`acme-airlines.factory.yaml`](presets/acme-airlines.factory.yaml): 14-agent airline-operations software factory with dedicated sensor roles.
 - [`bananacast-gke.factory.yaml`](presets/bananacast-gke.factory.yaml): Single-project GKE delta factory with Antigravity agents on Gemini 4 Argon.
@@ -704,7 +707,7 @@ Inspect [`presets/`](presets/) for four complete `FactorySpec` examples:
 | Path | Contents |
 |---|---|
 | [`skills/`](skills/) | Portable agent skills: [`scion-factory-bootstrap`](skills/scion-factory-bootstrap/SKILL.md), [`clean-room-reproducibility`](skills/clean-room-reproducibility/SKILL.md), and [`gke-hillclimb-verification`](skills/gke-hillclimb-verification/SKILL.md). |
-| [`scripts/scion_factory.py`](scripts/scion_factory.py) | Deterministic factory CLI (`inspect`, `grill`, `check`, `add-role`, `compile`, `enable-git`, `provision`, `gke-up`, `gke-down`). |
+| [`scripts/scion_factory.py`](scripts/scion_factory.py) | Deterministic factory CLI (`doctor`, `inspect`, `grill`, `check`, `add-role`, `compile`, `enable-git`, `provision`, `gke-up`, `gke-down`). |
 | [`scripts/gke_lifecycle.py`](scripts/gke_lifecycle.py) and [`scripts/factory_delta.py`](scripts/factory_delta.py) | Ephemeral GKE Hub lifecycle (`gke-up` / `gke-down`) and zero-LLM GitHub delta orchestrator (`scion-factory-delta`). |
 | [`scripts/provision_factory.py`](scripts/provision_factory.py) | Nine-phase idempotent provisioner for GKE and Single-VM Scion factories. |
 | [`scripts/hub_client.py`](scripts/hub_client.py) | Stdlib-only Scion Hub HTTPS client with IAP/Serverless OIDC, cold-Autopilot `503` polling, and local SQLite fallback. |

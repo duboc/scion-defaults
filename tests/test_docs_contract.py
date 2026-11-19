@@ -334,4 +334,24 @@ def test_public_repo_skills_cover_gcp_gke_reproducibility_without_corp_leaks():
         assert "\u2014" not in text, f"em-dash found in {rel}"
 
 
+def test_no_broken_relative_links_in_tracked_markdown_docs():
+    tracked = subprocess.check_output(["git", "ls-files", "*.md"], cwd=ROOT, text=True).splitlines()
+    broken = []
+    for rel_md in tracked:
+        md = ROOT / rel_md
+        prose = _strip_fenced_code_blocks(md.read_text(encoding="utf-8", errors="ignore"))
+        for target in re.findall(r"\[[^\]]+\]\(([^)]+)\)", prose):
+            target = target.strip()
+            if target.startswith(("http://", "https://", "mailto:", "#")):
+                continue
+            rel = target.split("#", 1)[0]
+            if not rel:
+                continue
+            resolved = (md.parent / rel).resolve()
+            if not resolved.exists():
+                broken.append((rel_md, target))
+    assert broken == [], f"Found broken relative Markdown links: {broken[:10]}"
+
+
+
 

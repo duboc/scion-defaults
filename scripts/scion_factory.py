@@ -3460,7 +3460,26 @@ def main(argv: list[str] | None = None) -> int:
     p_div.add_argument("--reviewer-replicas", type=int, default=None,
                        help="Optional standing reviewer replica count (1-8)")
 
+    p_doc = sub.add_parser(
+        "doctor",
+        help="Run fast (<15s) clean-room prerequisite and auth checks before provisioning",
+    )
+    p_doc.add_argument("--mode", choices=("gke", "vm", "local"), default="gke",
+                       help="Target deployment mode (default: gke)")
+    p_doc.add_argument("--skip-auth", action="store_true",
+                       help="Skip live gcloud and gh authentication checks")
+    p_doc.add_argument("--json", action="store_true", help="Output JSON")
+
     args = parser.parse_args(argv)
+
+    if args.cmd == "doctor":
+        import factory_doctor
+        report = factory_doctor.run_doctor(mode=args.mode, skip_auth=args.skip_auth)
+        if args.json:
+            print(json.dumps(report, indent=2))
+        else:
+            print(factory_doctor.format_report(report))
+        return 0 if report["ok"] else 1
 
     if args.cmd == "inspect":
         res = inspect_repository(args.repo_path)

@@ -47,7 +47,7 @@ fix now lives. Dates are UTC. "Encoded in" points to the script, template rule o
   Backticks and `$(...)` inside the text run as commands; nested quotes end early.
 - **Fix:** ship content base64-encoded and decode it remotely (`echo <b64> | base64 -d | sudo -u scion bash`).
 - **Encoded in:** [`scripts/run-on-hub.sh`](../scripts/run-on-hub.sh). Agents use `scion message --body-file` for long text
-  ([`_shared/agents.md`](../templates/_shared/agents.md)).
+  (compiled `_shared/agents.md` in [`scripts/scion_factory.py`](../scripts/scion_factory.py)).
 
 ## L2. The web terminal button stopped working
 
@@ -71,7 +71,7 @@ fix now lives. Dates are UTC. "Encoded in" points to the script, template rule o
 - **Fix:** the launcher writes a pinned catalog with only `google-vertex/gemini-2.5-pro` and `gemini-2.5-flash` on every
   start, then runs `opencode -m google-vertex/gemini-2.5-pro`. To reload a running agent without recreating it:
   `docker exec -u scion <project>--backend tmux respawn-pane -k -t scion:0.0 "sh /home/scion/.local/bin/opencode-launch.sh"`.
-- **Encoded in:** [`templates/backend/home/.local/bin/opencode-launch.sh`](../templates/backend/home/.local/bin/opencode-launch.sh),
+- **Encoded in:** compiled `opencode-launch.sh` in [`scripts/scion_factory.py`](../scripts/scion_factory.py),
   [`config/opencode-models.json`](../config/opencode-models.json).
 
 ## L4. A printed verdict deadlocked the factory for about 60 hours
@@ -85,8 +85,8 @@ fix now lives. Dates are UTC. "Encoded in" points to the script, template rule o
   `knowledge-plane/adr/ADR-001-hybrid-and-vector-1024.md` and `src/iac/migrations/011_add_embedding_v2_gemini_1024.sql`.
 - **Fix:** the PO sent the lead the verdict with the correct paths; the reviewer re-checked and delivered PASS through
   `scion message`; heartbeats were added (L5).
-- **Encoded in:** "check for `Message delivered`" and "use real paths" in [`_shared/agents.md`](../templates/_shared/agents.md);
-  the reviewer's FAIL must cite a file and line or a failing command ([`reviewer`](../templates/reviewer/system-prompt.md));
+- **Encoded in:** "check for `Message delivered`" and "use real paths" in compiled `_shared/agents.md` ([`scripts/scion_factory.py`](../scripts/scion_factory.py));
+  the reviewer's FAIL must cite a file and line or a failing command (`reviewer` in [`scripts/role_library.py`](../scripts/role_library.py));
   GitHub as the record of every handoff.
 
 ## L5. Leads looked stalled and nothing woke them
@@ -105,7 +105,7 @@ fix now lives. Dates are UTC. "Encoded in" points to the script, template rule o
   with a status. Since then the heartbeats have fired every 15 minutes without errors.
 - **Encoded in:** [`config/heartbeat-message.txt`](../config/heartbeat-message.txt),
   [setup-runbook.md](setup-runbook.md#9-heartbeats), "End every turn with a status" in
-  [`_shared/agents.md`](../templates/_shared/agents.md).
+  compiled `_shared/agents.md` ([`scripts/scion_factory.py`](../scripts/scion_factory.py)).
 
 ## L6. Antigravity couldn't run any tool (telemetry hook hang) — and its Phase J resolution
 
@@ -160,7 +160,7 @@ fix now lives. Dates are UTC. "Encoded in" points to the script, template rule o
   with `outputDimensionality: 1024`. Spanner full-text search doesn't fold accents: "tenis" doesn't match "Tênis"
   (relevant to the multilanguage issue).
 - **Encoded in:** [`scripts/setup-sandbox.sh`](../scripts/setup-sandbox.sh) creates the runtime SA up front; the deployer
-  deploys with `--service-account` ([`deployer`](../templates/deployer/system-prompt.md)).
+  deploys with `--service-account` (`deployer` in [`scripts/role_library.py`](../scripts/role_library.py)).
 
 ## L8. Workspaces: shared folder today, worktrees later
 
@@ -175,7 +175,7 @@ fix now lives. Dates are UTC. "Encoded in" points to the script, template rule o
     never fetched, and deleting an agent leaks its worktree (created by UUID, deleted by slug).
 - **Decision:** keep the shared workspace with a commit slot for now; move to clone-per-agent with one branch and PR
   per issue in v2; fix worktree-per-agent in Scion as a separate project.
-- **Encoded in:** "Git in the shared workspace" in [`_shared/agents.md`](../templates/_shared/agents.md);
+- **Encoded in:** "Git in the shared workspace" in compiled `_shared/agents.md` ([`scripts/scion_factory.py`](../scripts/scion_factory.py));
   [v2 design](specs/factory-orchestration-v2-design.md).
 
 ## L9. Agents fabricated telemetry and claimed storage that didn't exist
@@ -189,8 +189,8 @@ fix now lives. Dates are UTC. "Encoded in" points to the script, template rule o
 - **Fix:** real sources only: a Hub-to-Spanner sync of agent state every minute; the GitHub API with the token from
   Secret Manager; probe results only from real runs in `eval_runs`; counters the Hub doesn't report shown as "n/a".
   Firestore and the bucket were then created for real.
-- **Encoded in:** "Never invent numbers" in [`_shared/agents.md`](../templates/_shared/agents.md); the data-source table in
-  [`eval-lead`](../templates/eval-lead/system-prompt.md); [`scripts/sync-factory-agents.py`](../scripts/sync-factory-agents.py).
+- **Encoded in:** "Never invent numbers" in compiled `_shared/agents.md` ([`scripts/scion_factory.py`](../scripts/scion_factory.py)); the data-source contract in
+  `eval-lead` ([`scripts/role_library.py`](../scripts/role_library.py)); [`scripts/sync-factory-agents.py`](../scripts/sync-factory-agents.py).
   Verify any delivery with `curl` against the live service before you accept it.
 
 ## L10. Admin API access from scripts
@@ -252,7 +252,7 @@ fix now lives. Dates are UTC. "Encoded in" points to the script, template rule o
 - **When:** 2026-10-09/10 (issue #11).
 - **Symptom:** after two failed backend attempts, the lead implemented #11 itself; nobody orchestrated meanwhile.
 - **Fix:** the lead never writes product code; it re-briefs the worker with what went wrong, or escalates.
-- **Encoded in:** [`lead`](../templates/lead/system-prompt.md).
+- **Encoded in:** `lead` protocol in [`scripts/role_library.py`](../scripts/role_library.py) and [`scripts/scion_factory.py`](../scripts/scion_factory.py).
 
 ## L16. Hand-written Hub DB rows broke templates
 
@@ -303,7 +303,7 @@ fix now lives. Dates are UTC. "Encoded in" points to the script, template rule o
 - **Fix:** the heartbeat says to ping only agents you are waiting on, and to do nothing but set the status when nothing
   needs action.
 - **Encoded in:** [`config/heartbeat-message.txt`](../config/heartbeat-message.txt), "Messaging" in
-  [`_shared/agents.md`](../templates/_shared/agents.md).
+  compiled `_shared/agents.md` ([`scripts/scion_factory.py`](../scripts/scion_factory.py)).
 
 ## L20. Local patches don't survive upgrades silently
 
@@ -359,8 +359,7 @@ fix now lives. Dates are UTC. "Encoded in" points to the script, template rule o
   - Deployers must export the target commit cleanly using `git archive "$REV" | tar -x -C "$TMP_DIR"` and deploy from `$TMP_DIR`.
   - The deployer system prompt specifies passing `--to-latest` on deployments (or running `gcloud run services update-traffic --to-latest`)
     to re-enable automatic traffic routing to newly deployed revisions after a rollback.
-- **Encoded in:** [`templates/deployer/system-prompt.md`](../templates/deployer/system-prompt.md),
-  [`templates/eval-deployer/system-prompt.md`](../templates/eval-deployer/system-prompt.md),
+- **Encoded in:** `deployer` and `eval-deployer` protocols in [`scripts/role_library.py`](../scripts/role_library.py),
   [operations-runbook.md](operations-runbook.md#a-deploy-failed-or-needs-a-rollback).
 
 ## L24. Unannounced Hub restarts overwrite managed harness files (`update_policy: notify`)
@@ -389,9 +388,7 @@ fix now lives. Dates are UTC. "Encoded in" points to the script, template rule o
 - **Encoded in:** [setup-runbook.md](setup-runbook.md#6-hub-projects-and-the-deployer-identity),
   [architecture.md](architecture.md#components),
   [agent-protocol.md](agent-protocol.md#git-in-a-shared-workspace),
-  [`templates/_shared/agents.md`](../templates/_shared/agents.md),
-  [`templates/lead/system-prompt.md`](../templates/lead/system-prompt.md),
-  [`templates/eval-lead/system-prompt.md`](../templates/eval-lead/system-prompt.md).
+  compiled `_shared/agents.md`, `lead`, and `eval-lead` prompts in [`scripts/scion_factory.py`](../scripts/scion_factory.py).
 
 ## L26. Multi-harness upgrade to Gemini 4 Argon (Antigravity, OpenCode, Hermes)
 
@@ -412,17 +409,12 @@ fix now lives. Dates are UTC. "Encoded in" points to the script, template rule o
   - Automated patching via [`scripts/patch-antigravity-hooks.py`](../scripts/patch-antigravity-hooks.py) and [`scripts/patch-opencode-and-hermes.py`](../scripts/patch-opencode-and-hermes.py).
   - Configured `model: "Gemini 4 Argon (High)"` and `location: global` across all 6 Antigravity agent templates and container `settings.json`.
   - Configured OpenCode catalog `models.json` with `gemini-4-argon` and `gemini-3.8-flash`, setting `GOOGLE_CLOUD_LOCATION=global` and `model: google-vertex/gemini-4-argon`.
-  - Added wrapper [`templates/reviewer/home/.local/bin/hermes-launch.sh`](../templates/reviewer/home/.local/bin/hermes-launch.sh) for Hermes, setting `VERTEX_REGION=global` and launching `hermes chat --yolo --accept-hooks --provider vertex -m google/gemini-4-argon`.
+  - Added compiled `hermes-launch.sh` wrapper in [`scripts/scion_factory.py`](../scripts/scion_factory.py) for Hermes, setting `VERTEX_REGION=global` and launching `hermes chat --yolo --accept-hooks --provider vertex -m google/gemini-4-argon`.
   - Pushed updated templates to Hub via [`scripts/push-templates.py`](../scripts/push-templates.py).
 - **Encoded in:**
-  - [`templates/backend/home/.local/bin/opencode-launch.sh`](../templates/backend/home/.local/bin/opencode-launch.sh)
-  - [`templates/reviewer/home/.local/bin/hermes-launch.sh`](../templates/reviewer/home/.local/bin/hermes-launch.sh)
-  - [`templates/frontend/scion-agent.yaml`](../templates/frontend/scion-agent.yaml)
-  - [`templates/eval-deployer/scion-agent.yaml`](../templates/eval-deployer/scion-agent.yaml)
-  - [`templates/eval-lead/scion-agent.yaml`](../templates/eval-lead/scion-agent.yaml)
-  - [`templates/factory-analyst/scion-agent.yaml`](../templates/factory-analyst/scion-agent.yaml)
-  - [`templates/search-evaluator/scion-agent.yaml`](../templates/search-evaluator/scion-agent.yaml)
-  - [`templates/ui-craftsman/scion-agent.yaml`](../templates/ui-craftsman/scion-agent.yaml)
+  - [`scripts/scion_factory.py`](../scripts/scion_factory.py) (compiled `opencode-launch.sh`, `hermes-launch.sh`, and per-role `scion-agent.yaml`)
+  - [`scripts/role_library.py`](../scripts/role_library.py) (default Gemini 4 Argon role definitions)
+  - [`templates/README.md`](../templates/README.md)
   - [`scripts/patch-antigravity-hooks.py`](../scripts/patch-antigravity-hooks.py)
   - [`scripts/patch-opencode-and-hermes.py`](../scripts/patch-opencode-and-hermes.py)
   - [`scripts/push-templates.py`](../scripts/push-templates.py)
@@ -581,9 +573,8 @@ fix now lives. Dates are UTC. "Encoded in" points to the script, template rule o
   - The roles that `deploy.sh` grants the Hub VM stay (`aiplatform.user`, `logging.logWriter`, and the others).
   - Forks: `gh issue delete`, delete the `factory/*` refs and the labels, then `gh repo edit --enable-issues=false`.
 - **Encoded in:** [`scripts/scion_factory.py`](../scripts/scion_factory.py) (chain of command, `factory:<prefix>`,
-  close rule), [`scripts/knowledge_plane.py`](../scripts/knowledge_plane.py),
+  close rule, compiled `lead` and `eval-lead` prompts), [`scripts/knowledge_plane.py`](../scripts/knowledge_plane.py),
   [`scripts/scion-admin.py`](../scripts/scion-admin.py), [`scripts/setup-sandbox.sh`](../scripts/setup-sandbox.sh),
-  [`templates/lead`](../templates/lead/system-prompt.md), [`templates/eval-lead`](../templates/eval-lead/system-prompt.md),
   README step 8, [setup-runbook.md](setup-runbook.md) steps 8 and M8.
 
 ## L30. Multi-app repositories, the 13-agent specialist fabric (`deploy: none`), and autonomous self-healing
@@ -706,8 +697,8 @@ fix now lives. Dates are UTC. "Encoded in" points to the script, template rule o
      `hub-preflight.py` now checks `~/.factory-github-token` existence/non-zero size without reading secret bytes and
      warns when missing, and Step 6 / Step 5 document when to include vs intentionally omit `workflow` scope.
 - **Encoded in:** [`scripts/factory-watchdog.py`](../scripts/factory-watchdog.py),
-  [`scripts/run-on-hub.sh`](../scripts/run-on-hub.sh), [`templates/_shared/agents.md`](../templates/_shared/agents.md),
-  [`scripts/scion_factory.py`](../scripts/scion_factory.py), [`scripts/role_library.py`](../scripts/role_library.py),
+  [`scripts/run-on-hub.sh`](../scripts/run-on-hub.sh),
+  [`scripts/scion_factory.py`](../scripts/scion_factory.py) (compiled `_shared/agents.md`), [`scripts/role_library.py`](../scripts/role_library.py),
   [`scripts/hub-preflight.py`](../scripts/hub-preflight.py), [`README.md`](../README.md),
   [`docs/setup-runbook.md`](setup-runbook.md).
 

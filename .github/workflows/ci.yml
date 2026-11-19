@@ -1,0 +1,53 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: Syntax, Hygiene, and Full Test Suite
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Shell and Python syntax checks
+        run: |
+          bash -n scripts/*.sh
+          python3 -m py_compile scripts/*.py
+
+      - name: Repository hygiene scan
+        run: |
+          if git grep -n '<<<<<<<'; then
+            echo "Merge conflict marker detected" >&2
+            exit 1
+          fi
+          if git grep -inE '(ghp_[A-Za-z0-9]{6,}|github_pat_[A-Za-z0-9_]{6,}|scion_pat_[A-Za-z0-9_]{6,}|AIza[A-Za-z0-9_-]{6,}|ya29\.[A-Za-z0-9_-]+|-----BEGIN [A-Z ]*PRIVATE KEY-----|\.a\.run\.app)' -- ':!tests/test_docs_contract.py' ':!.github/workflows/ci.yml'; then
+            echo "Secret or live service URL leak detected" >&2
+            exit 1
+          fi
+
+      - name: Run scion-factory doctor (local mode)
+        run: |
+          ./scripts/scion-factory doctor --mode local --skip-auth --json
+
+      - name: Run full pytest suite
+        run: |
+          uv run --with pytest --with pyyaml --with jsonschema pytest tests -q
