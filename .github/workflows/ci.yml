@@ -35,7 +35,7 @@ jobs:
 
       - name: Repository hygiene scan
         run: |
-          if git grep -n '<<<<<<<'; then
+          if git grep -n '^<<<<<<< '; then
             echo "Merge conflict marker detected" >&2
             exit 1
           fi
