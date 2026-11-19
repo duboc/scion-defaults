@@ -90,10 +90,13 @@ The draft specification starts with the default roster:
 Work through the team configuration with the human:
 
 1. **Deploy & heartbeat mode:** Ask for `infrastructure.runtime` (`kubernetes` or `docker`), `infrastructure.runtime_profile` (`"remote"` on Full GKE Cloud Run HA, `"spot"` for GKE Autopilot Spot workers, `"gke"` on Hybrid VM+GKE, or `""`), `infrastructure.worker_sa_name` (default `"agent-worker"`), `infrastructure.deploy`: `service` (the factory deploys and tests a live service) or `none` (a library, CLI, or monorepo package with nothing to deploy), and `team.heartbeat_mode`: `delta` (`Recommended` on GKE with Git: single Hub project, zero-LLM 1-minute `scion-factory-delta`, automatic 0-pod idle sleep) or `direct-lead` (15-minute LLM schedule across build + eval projects). With `deploy: none`, do not add `deployer` or `eval-deployer` roles.
-2. **Review proposed specialists:** Present the default roster and each item in `proposed_roles` with its evidence. For each specialist the human confirms, run:
+2. **Review proposed specialists and `scion-frontiers/agent-team` roles:** Present the default roster and each item in `proposed_roles` with its evidence, including upstream `scion-frontiers/agent-team` roles (`architect` for design specs/ADRs, `eng-manager` for domain phase orchestration, `qa-tester` for real user-surface E2E/Playwright verification, and `web-builder` for static sites/dashboards). For each specialist the human confirms, run:
    ```bash
    ./scripts/scion-factory add-role factory.yaml --role R --evidence "..."
+   # Or bind directly to an upstream remote template URI:
+   ./scripts/scion-factory add-role factory.yaml --role architect --from-agent-team
    ```
+   Compiled templates automatically declare canonical `gh://scion-frontiers/agent-team/<skill>` URI skills (`artifact-durability`, `agent-state-continuity`, `software-engineering-process`, `code-review`, `docs-update`, `release-notes-daily`) in `scion-agent.yaml` via `team.skill_registry` (default `gh://scion-frontiers/agent-team`; set `none` to opt out). Never pair `gh://addyosmani/agent-skills/code-review-and-quality` with `gh://scion-frontiers/agent-team/code-review` on a reviewer role.
 3. **Drop defaults only with a reason:** If the human decides to drop any of the default specialists (`researcher`, `doc-writer`, `investigator`), record the drop and reason under `team.dropped_defaults`:
    ```yaml
    team:
@@ -103,13 +106,13 @@ Work through the team configuration with the human:
    ```
 4. **Autonomy level:** Ask for `team.autonomy`: `standard` (default; agents decide implementation and tell the PO about verified work, while scope, cost, IAM, ADRs, and acceptance wait for the PO), `supervised` (the PO approves the plan on GitHub before implementation starts), or `autonomous` (only cost, IAM, and acceptance wait for the PO).
 5. **Cross-family verification and reviewer capacity:** New drafts set `team.verification_policy: cross-family` so builders and verifiers use distinct model families. Run `./scripts/scion-factory diversify-team factory.yaml` if role edits reintroduce monoculture. If `team.max_wip >= 4`, set `team.reviewer_replicas: 2` to avoid review bottlenecks. Use `team.verification_policy: single-harness` with `team.single_harness_reason` only when the Hub exposes one harness.
-6. **Optional domain sub-coordinators (3-tier hierarchy for complex repositories):** Default to the flat 2-tier team (`lead -> specialists`) for small or medium repositories (`< 8` non-lead build roles or Single-VM `runtime: docker`). When the repository spans **3+ disjoint subsystems** (for example `backend`, `data-api`, and `frontend`) and **8+ non-lead build roles** on Kubernetes, offer optional domain `sub-coordinator` roles so Scion's native ancestry tree routes child notifications per domain while `lead` retains sole trunk-merge, deployment, and PO-inbox authority:
+6. **Optional domain sub-coordinators and engineering managers (3-tier hierarchy for complex repositories):** Default to the flat 2-tier team (`lead -> specialists`, Small tier depth 1) for small or medium repositories (`< 8` non-lead build roles or Single-VM `runtime: docker`). When the repository spans **3+ disjoint subsystems** (for example `backend`, `data-api`, and `frontend`) and **8+ non-lead build roles** on Kubernetes, offer optional domain `sub-coordinator` or `eng-manager` roles (Chunky/Large depth 3, with mandatory collapse on trivial work) so Scion's native ancestry tree routes child notifications per domain while `lead` retains sole trunk-merge, deployment, and PO-inbox authority:
    ```bash
-   ./scripts/scion-factory add-role factory.yaml --role sub-coordinator --as data-api-sub-coordinator --paths services/data-api
-   ./scripts/scion-factory add-role factory.yaml --role backend --as api-builder --reports-to data-api-sub-coordinator --paths services/data-api/api
-   ./scripts/scion-factory add-role factory.yaml --role security-auditor --as iap-security --reports-to data-api-sub-coordinator --paths services/data-api/auth
+   ./scripts/scion-factory add-role factory.yaml --role eng-manager --as data-api-eng-manager --paths services/data-api
+   ./scripts/scion-factory add-role factory.yaml --role backend --as api-builder --reports-to data-api-eng-manager --paths services/data-api/api
+   ./scripts/scion-factory add-role factory.yaml --role security-auditor --as iap-security --reports-to data-api-eng-manager --paths services/data-api/auth
    ```
-   Never nest sub-coordinators deeper than 3 tiers (`lead -> sub-coordinator -> specialist`), assign disjoint repo-relative `focus.paths` per sub-coordinator (include `<monorepo.subdir>/...` in monorepos), and keep `deployer`, `evaluator`, and `kaizen-analyst` directly under `lead`.
+   Never nest sub-coordinators deeper than 3 tiers (`lead -> sub-coordinator/eng-manager -> specialist`), assign disjoint repo-relative `focus.paths` per sub-coordinator (include `<monorepo.subdir>/...` in monorepos), and keep `deployer`, `evaluator`, and `kaizen-analyst` directly under `lead`.
 7. **Never invent intent:** Present candidates and evidence to the human first. Confirm every specialist addition, sub-coordinator subtree, default drop, autonomy level, and deploy choice before updating `factory.yaml`.
 
 ### Git is optional

@@ -21,6 +21,61 @@ class RoleDef(TypedDict):
     # Protocol for a factory with nothing to deploy (infrastructure.deploy: none), when the default one assumes a
     # deployed service.
     protocol_none: NotRequired[str]
+    # Upstream scion-frontiers/agent-team template slug and default skill names/URIs.
+    agent_team_template: NotRequired[str]
+    default_skill_uris: NotRequired[tuple[str, ...]]
+
+
+AGENT_TEAM_REPO = "gh://scion-frontiers/agent-team"
+
+# Public URI-addressable skill registry from https://github.com/scion-frontiers/agent-team
+AGENT_TEAM_SKILLS: dict[str, str] = {
+    "agent-state-continuity": "Per-agent durable scratchpad state protocol (`<agent-name>-state.md`).",
+    "artifact-durability": "Durability property: deliverables must survive container deletion (pushed remote ref, shared scratchpad, or sent message body).",
+    "backlog-stewardship": "Evidence-based issue intake, bug triage, shared implementation bundles, and per-issue completion traceability.",
+    "changelog-parallel-backfill": "Parallel historical changelog backfill across branches.",
+    "code-review": "Five-axis code review (correctness, readability, architecture, security, performance), severity labels, and containerized PR diff recipes.",
+    "docs-update": "Branch-impact doc health review, code-doc alignment, and link verification.",
+    "gcs-artifact-publishing": "Publish human-reviewable HTML reports and dashboards to a shared GCS artifact bucket.",
+    "release-notes-daily": "Synthesize daily git history into semantic Features / Fixes / Breaking Changes release notes.",
+    "software-engineering-process": "Ownership tree, sizing by delegation depth with mandatory collapse, prose-vs-code review boundary, blind review cycle, and rebase rules.",
+}
+
+# Mapping from scion-defaults role or default_kind -> (agent-team template slug, default skills)
+_AGENT_TEAM_ROLE_MAP: dict[str, tuple[str, tuple[str, ...]]] = {
+    "lead": ("coordinator", ("artifact-durability", "agent-state-continuity", "software-engineering-process")),
+    "eval-lead": ("coordinator", ("artifact-durability", "agent-state-continuity")),
+    "sub-coordinator": ("coordinator", ("artifact-durability", "agent-state-continuity", "software-engineering-process")),
+    "eng-manager": ("eng-manager", ("artifact-durability", "agent-state-continuity", "software-engineering-process")),
+    "architect": ("architect", ("artifact-durability",)),
+    "backend": ("developer", ("artifact-durability",)),
+    "implementer": ("developer", ("artifact-durability",)),
+    "frontend": ("developer", ("artifact-durability",)),
+    "web-builder": ("web-builder", ("artifact-durability",)),
+    "reviewer": ("code-reviewer", ("code-review", "software-engineering-process")),
+    "security-auditor": ("security-auditor", ("artifact-durability",)),
+    "investigator": ("investigator", ("artifact-durability", "software-engineering-process")),
+    "researcher": ("researcher", ("artifact-durability",)),
+    "doc-writer": ("doc-writer", ("artifact-durability", "docs-update")),
+    "test-engineer": ("test-engineer", ("artifact-durability",)),
+    "qa-tester": ("qa-tester", ("artifact-durability", "gh://microsoft/playwright-cli/playwright-cli")),
+    "release-manager": ("release-notes", ("artifact-durability", "release-notes-daily")),
+    "deployer": ("developer", ("artifact-durability",)),
+    "eval-deployer": ("developer", ("artifact-durability",)),
+    "migration-specialist": ("developer", ("artifact-durability",)),
+    "performance-analyst": ("code-reviewer", ("artifact-durability",)),
+    "evaluator": ("qa-tester", ("artifact-durability",)),
+    "domain-evaluator": ("qa-tester", ("artifact-durability",)),
+    "kaizen-analyst": ("researcher", ("artifact-durability",)),
+    "contract-tester": ("qa-tester", ("artifact-durability",)),
+    "latency-prober": ("qa-tester", ("artifact-durability",)),
+    "ui-auditor": ("qa-tester", ("artifact-durability",)),
+    "ui-craftsman": ("web-builder", ("artifact-durability",)),
+    "safety-evaluator": ("security-auditor", ("artifact-durability",)),
+    "factory-analyst": ("researcher", ("artifact-durability",)),
+    "benchmark-runner": ("test-engineer", ("artifact-durability",)),
+    "api-compat-checker": ("code-reviewer", ("artifact-durability",)),
+}
 
 
 ALWAYS_BUILD: tuple[str, ...] = (
@@ -113,6 +168,8 @@ Reject green-mock tests that stub out the unit under test.
 Reject tests that assert against placeholder media, zero-amplitude buffers, or empty UI shells instead of real behavior.
 Reject diffs that clamp or hardcode exported metrics to satisfy thresholds, swallow upstream fallback errors silently, omit scenario entry preconditions in regression tests, or update a shared schema on only a subset of its contract surfaces.
 Verify that tests importing optional or secondary-app packages guard those imports (for example `pytest.importorskip(...)`) so test collection stays green in minimal per-app environments.
+Review across five axes (correctness, readability and simplicity, architecture, security, performance) and classify every finding as blocking (`Critical` or `Required`, each naming a concrete failure and fix) or non-blocking (`Nit`, `Optional`, or `FYI`, never blocking merge on their own).
+Approve when a change clearly improves code health with zero unresolved `Critical`/`Required` findings; rebasing onto the base branch does not require re-review unless conflict or semantic resolution introduces defect risk.
 Deliver a definitive PASS or FAIL verdict with concrete file:line evidence to your lead.
 Never fix code yourself; provide actionable review feedback only.
 Never start or message other agents; send your verdict only to your lead.
@@ -268,6 +325,50 @@ Build responsive, accessible user interfaces compliant with WCAG accessibility g
 Verify client-side interactions, state management, and visual consistency locally.
 Never modify backend server endpoints or database transaction logic.
 Deliver your interface changes and verification screenshots to your lead.""",
+    },
+    "architect": {
+        "team": "build",
+        "kind": "catalog",
+        "default_kind": "architect",
+        "harness": "antigravity",
+        "model": _DEFAULT_ANTIGRAVITY_MODEL,
+        "responsibility": "Produces implementation-ready system designs, API contracts, and ADRs with explicit trade-offs before development begins.",
+        "needs_service": False,
+        "protocol": """You design systems before they are built, balancing correctness, ergonomics, migration cost, and reversibility.
+Read existing investigation findings and the knowledge plane rather than re-running investigation work that was already delivered.
+Write design documents and ADRs to `/scion-volumes/scratchpad/reports/<issue>-design.md` (or the requested ADR path) naming alternatives considered, why they were rejected, and which decisions are load-bearing versus easily reversible.
+Collapse proportionally to task size: for a trivial change, deliver a concise decision rather than a multi-page spec.
+You design; you never implement production code (code in designs is illustrative interface stubs only).
+Prose-only design documents go directly to human or lead review rather than through a code-reviewer loop.""",
+    },
+    "eng-manager": {
+        "team": "build",
+        "kind": "catalog",
+        "default_kind": "sub-coordinator",
+        "harness": "antigravity",
+        "model": _DEFAULT_ANTIGRAVITY_MODEL,
+        "responsibility": "Decomposes agreed designs into scoped phases, supervises domain developers and reviewers, runs blind quality gates, and relays verified work.",
+        "needs_service": False,
+        "protocol": """You are an engineering manager and technical domain coordinator supervising a subtree of developers and reviewers.
+Read your `<agent-name>-state.md` checkpoint on `/scion-volumes/scratchpad/` and the agreed design before dispatching work.
+Decompose agreed designs into well-scoped phases sized to stay within ~40% of a worker's context window; collapse immediately to a single developer when handed a trivial design instead of manufacturing phases.
+Track workstream dependencies and sequence foundational or generator changes before parallel feature fan-out; never fan out past an unverified gating phase.
+Run blind independent code review (`Critical`/`Required` block; `Nit`/`Optional`/`FYI` get finite disposition without forcing extra rounds) and confirm every worker's work branch is durably pushed to the remote before deleting completed workers.
+Keep integration pushes and trunk merges gated as directed by the root lead, escalate blockers immediately rather than parking them in your context, and never implement substantive application code yourself.""",
+    },
+    "web-builder": {
+        "team": "build",
+        "kind": "catalog",
+        "default_kind": "web-builder",
+        "harness": "antigravity",
+        "model": _DEFAULT_ANTIGRAVITY_MODEL,
+        "responsibility": "Builds and maintains end-to-end static websites, documentation portals, and interactive dashboards from specifications.",
+        "needs_service": False,
+        "protocol": """You build and maintain static websites, documentation portals, and interactive web dashboards from specifications.
+Focus on clean information hierarchy, responsive layouts, accessible semantics, and deployment-ready asset bundling.
+Verify builds, links, and interactive states locally with bounded foreground timeouts (`timeout 60s`) before pushing your work branch.
+Never leave deliverables only in container-local scratch directories; push tracked changes or write reviewable artifacts to `/scion-volumes/scratchpad/`.
+Report exact changed paths and verification outputs to your lead.""",
     },
     "performance-analyst": {
         "team": "build",
@@ -511,6 +612,20 @@ Avoid generic AI UI anti-patterns: eyebrow labels above headings, rows of four e
 Render only real telemetry from Firestore and GitHub; show unknown or `NULL` values as `"n/a"` or `"no data yet"`, never sample numbers.
 Run `impeccable detect --json` when installed and resolve findings before handing changes to the evaluation lead.""",
     },
+    "qa-tester": {
+        "team": "eval",
+        "kind": "catalog",
+        "default_kind": "qa-tester",
+        "harness": "antigravity",
+        "model": _DEFAULT_ANTIGRAVITY_MODEL,
+        "responsibility": "Runs end-to-end acceptance, browser, and user-surface integration tests against live surfaces without unit-test mocks.",
+        "needs_service": True,
+        "protocol": """You are an integration and QA tester focused on real user-facing behavior across the UI, API, and CLI surfaces.
+Verify golden paths, boundary cases, and adjacent-feature regressions through the real deployed or running surface (using Playwright/Chromium or real HTTP/CLI calls with explicit `timeout 60s` bounds), never through unit-test mocks.
+Distinguish between "the code compiles" and "the feature works for a user," and treat the second as your mandate.
+Record structured pass/fail findings and minimal reproducers in `/scion-volumes/scratchpad/reports/<issue>-qa.md` so implementers can act immediately.
+File findings only; never modify product code yourself.""",
+    },
 }
 
 
@@ -596,7 +711,7 @@ def library_role_entry(role: str) -> dict[str, Any]:
     }
     if "gcp_identity" in d:
         entry["gcp_identity"] = d["gcp_identity"]
-    if role == "sub-coordinator":
+    if role in ("sub-coordinator", "eng-manager"):
         entry["default_kind"] = d["default_kind"]
     return entry
 
@@ -610,6 +725,44 @@ def resolve_role_kind(role_spec: dict[str, Any]) -> str:
     lib = ROLES.get(role)
     if lib:
         return str(lib["default_kind"])
-    if role.endswith("-sub-coordinator"):
+    if role.endswith("-sub-coordinator") or role.endswith("-eng-manager"):
         return "sub-coordinator"
     return role
+
+
+def agent_team_template_uri(role_or_spec: str | dict[str, Any], registry: str = AGENT_TEAM_REPO) -> str | None:
+    """Return the upstream `gh://.../templates/<slug>` URI for a role, or None if disabled/unknown."""
+    reg = str(registry or "").strip().rstrip("/")
+    if not reg or reg.lower() == "none":
+        return None
+    if isinstance(role_or_spec, dict):
+        role = str(role_or_spec.get("role") or "").strip()
+        kind = resolve_role_kind(role_or_spec)
+    else:
+        role = str(role_or_spec).strip()
+        kind = resolve_role_kind({"role": role})
+    mapped = _AGENT_TEAM_ROLE_MAP.get(role) or _AGENT_TEAM_ROLE_MAP.get(kind)
+    if not mapped:
+        return None
+    return f"{reg}/templates/{mapped[0]}"
+
+
+def agent_team_skill_uris(role_or_spec: str | dict[str, Any], registry: str = AGENT_TEAM_REPO) -> list[str]:
+    """Return canonical URI skill references for a role from the agent-team registry."""
+    reg = str(registry or "").strip().rstrip("/")
+    if not reg or reg.lower() == "none":
+        return []
+    if isinstance(role_or_spec, dict):
+        role = str(role_or_spec.get("role") or "").strip()
+        kind = resolve_role_kind(role_or_spec)
+    else:
+        role = str(role_or_spec).strip()
+        kind = resolve_role_kind({"role": role})
+    mapped = _AGENT_TEAM_ROLE_MAP.get(role) or _AGENT_TEAM_ROLE_MAP.get(kind)
+    names = mapped[1] if mapped else ("artifact-durability",)
+    uris: list[str] = []
+    for item in names:
+        uri = item if "://" in item else f"{reg}/{item}"
+        if uri not in uris:
+            uris.append(uri)
+    return uris

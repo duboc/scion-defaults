@@ -408,6 +408,11 @@
           "type": "boolean",
           "description": "Deny in-process Claude Agent/Task subagent tools on coordinator roles so delegation spawns Scion child containers."
         },
+        "skill_registry": {
+          "type": "string",
+          "default": "gh://scion-frontiers/agent-team",
+          "description": "Public URI skill registry imported into compiled scion-agent.yaml skills stanzas (set to 'none' to disable)."
+        },
         "dropped_defaults": {
           "type": "array",
           "description": "Default roles the PO left out on purpose, each with a reason.",
@@ -767,7 +772,11 @@
           "items": {
             "type": "string"
           },
-          "description": "Curated skill names from skill_bank to inject into this role template."
+          "description": "Local skill names from skill_bank or remote URI skill references (e.g. gh://scion-frontiers/agent-team/code-review)."
+        },
+        "template_uri": {
+          "type": "string",
+          "description": "Optional upstream remote template URI passed via scion start --type (e.g. gh://scion-frontiers/agent-team/templates/architect)."
         },
         "reports_to": {
           "type": "string",

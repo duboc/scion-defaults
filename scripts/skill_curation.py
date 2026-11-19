@@ -27,6 +27,54 @@ MAX_SKILLS_PER_ROLE = 6
 _LINK_RE = re.compile(r"\[[^\]]+\]\(([^)]+)\)")
 _FRONTMATTER_RE = re.compile(r"\A---\r?\n(.*?)\r?\n---(?:\r?\n|\Z)", re.DOTALL)
 _SAFE_NAME_RE = re.compile(r"\A[a-zA-Z0-9][a-zA-Z0-9._-]*\Z")
+_SKILL_URI_RE = re.compile(r"\A(?:gh://[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/[A-Za-z0-9_./-]+|https://\S+|file://\S+)\Z")
+
+
+def is_skill_uri(value: str) -> bool:
+    """Return True if a role skill entry is a remote/URI skill reference (`gh://...`, `https://...`)."""
+    return "://" in str(value or "").strip()
+
+
+def audit_skill_uris(spec: dict[str, Any]) -> tuple[list[str], list[str]]:
+    """Validate declarative URI skills and catch contradictory skill pairings.
+
+    Enforces the scion-frontiers/agent-team reviewer conflict rule: never pair
+    `gh://addyosmani/agent-skills/code-review-and-quality` with
+    `gh://scion-frontiers/agent-team/code-review` on a reviewer role because
+    their Nit severity semantics contradict `software-engineering-process`.
+    """
+    errors: list[str] = []
+    warnings: list[str] = []
+    team = spec.get("team") or {}
+    all_roles = list(team.get("build_roles") or []) + list(team.get("eval_roles") or [])
+    for role_spec in all_roles:
+        if not isinstance(role_spec, dict):
+            continue
+        role = str(role_spec.get("role") or "")
+        kind = str(role_spec.get("default_kind") or role)
+        raw_skills = [str(s).strip() for s in (role_spec.get("skills") or []) if str(s).strip()]
+        uris = [s for s in raw_skills if is_skill_uri(s)]
+        for uri in uris:
+            if not _SKILL_URI_RE.fullmatch(uri):
+                errors.append(
+                    f"Role '{role}' declares invalid skill URI {uri!r} "
+                    "(expected 'gh://<owner>/<repo>/<skill>' or 'https://...')."
+                )
+        raw_tpl_uri = str(role_spec.get("template_uri") or "").strip()
+        if raw_tpl_uri and not _SKILL_URI_RE.fullmatch(raw_tpl_uri):
+            errors.append(
+                f"Role '{role}' declares invalid template_uri {raw_tpl_uri!r} "
+                "(expected 'gh://<owner>/<repo>/templates/<role>' or 'https://...')."
+            )
+        if kind == "reviewer" or role == "reviewer":
+            has_agent_team_review = any(u.endswith("/code-review") for u in uris)
+            has_addy_review = any("addyosmani/agent-skills/code-review-and-quality" in u for u in uris)
+            if has_addy_review and (has_agent_team_review or str(team.get("skill_registry", "gh://scion-frontiers/agent-team")).lower() not in ("", "none")):
+                errors.append(
+                    f"Role '{role}' combines 'code-review-and-quality' with 'scion-frontiers/agent-team/code-review': "
+                    "their Nit disposition semantics conflict (keep 'gh://scion-frontiers/agent-team/code-review' only)."
+                )
+    return errors, warnings
 
 
 def _validate_safe_segment(value: str, field_label: str) -> str:
@@ -190,7 +238,7 @@ def inject_skills(spec: dict[str, Any], bank_dir: str | Path, out_dir: str | Pat
     team = spec.get("team") or {}
     all_roles = list(team.get("build_roles") or []) + list(team.get("eval_roles") or [])
     for role_spec in all_roles:
-        role_skills = role_spec.get("skills") or []
+        role_skills = [s for s in (role_spec.get("skills") or []) if not is_skill_uri(str(s))]
         if not role_skills:
             continue
         role = _validate_safe_segment(str(role_spec["role"]), "role")

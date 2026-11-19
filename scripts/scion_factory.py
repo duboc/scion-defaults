@@ -158,13 +158,15 @@ GRILL_QUESTIONS: list[dict[str, Any]] = [
         "question": (
             "Confirm the default roster (lead, backend, reviewer, plus the three default specialists: "
             "`researcher`, `doc-writer`, `investigator` on build, and `eval-lead`, `domain-evaluator` on eval). "
-            "Review each proposed specialist from discovery with its evidence, add confirmed specialists "
-            "with `./scripts/scion-factory add-role`, record drops under `team.dropped_defaults` with a reason, "
-            "confirm cross-family harness/model pairs (`team.verification_policy: cross-family`) plus "
-            "`team.reviewer_replicas` when concurrent WIP is 4 or higher, and decide whether the repository stays "
-            "flat (`lead -> specialists`, default for `< 8` non-lead roles or Single-VM `runtime: docker`) or groups "
-            "`3+` disjoint domains (`8+` active build roles) under optional `sub-coordinator` roles "
-            "(`--role sub-coordinator --as <domain>-sub-coordinator` and `--reports-to`)."
+            "Review each proposed specialist from discovery with its evidence (including `scion-frontiers/agent-team` "
+            "roles such as `architect`, `eng-manager`, `qa-tester`, and `web-builder`), add confirmed specialists "
+            "with `./scripts/scion-factory add-role` (optionally `--from-agent-team` for upstream remote templates), "
+            "record drops under `team.dropped_defaults` with a reason, confirm URI skill sourcing (`team.skill_registry`, "
+            "default `gh://scion-frontiers/agent-team`), confirm cross-family harness/model pairs "
+            "(`team.verification_policy: cross-family`) plus `team.reviewer_replicas` when concurrent WIP is 4 or higher, "
+            "and decide whether the repository stays flat (`lead -> specialists`, default for `< 8` non-lead roles or "
+            "Single-VM `runtime: docker`) or groups `3+` disjoint domains (`8+` active build roles) under optional "
+            "`sub-coordinator` / `eng-manager` roles (`--role eng-manager --as <domain>-eng-manager` and `--reports-to`)."
         ),
         "why_we_ask": (
             "Each harness has distinct runtime requirements: OpenCode Gemini 4 Argon "
@@ -762,8 +764,11 @@ def add_role(
     as_role: str | None = None,
     reports_to: str | None = None,
     paths: list[str] | tuple[str, ...] = (),
+    template_uri: str | None = None,
+    from_agent_team: bool = False,
+    skills: list[str] | tuple[str, ...] = (),
 ) -> dict[str, Any]:
-    """Add a library role (optionally aliased via `as_role` or bound via `reports_to`) to a FactorySpec in place.
+    """Add a library role (optionally aliased via `as_role`, bound via `reports_to`, or linked to `agent-team`) to a FactorySpec in place.
 
     Idempotent: a role slug already in either roster is left as is. Raises ValueError for an unknown library role,
     an invalid role slug, a bad team, or a role that needs a deployed service when `infrastructure.deploy: none`.
@@ -802,7 +807,7 @@ def add_role(
         return spec
     entry = dict(role_library.library_role_entry(role), default=(lib["kind"] == "always" and target_role == role))
     entry["role"] = target_role
-    if target_role != role or role == "sub-coordinator":
+    if target_role != role or role in ("sub-coordinator", "eng-manager"):
         entry["default_kind"] = lib["default_kind"]
     if verification_policy.verification_policy_mode(spec) == "cross-family" and lib["default_kind"] in verification_policy.VERIFIER_KINDS:
         opp_h, opp_m = verification_policy.opposing_verifier_pair(spec)
@@ -828,6 +833,16 @@ def add_role(
                 if default_focus.get(fkey):
                     merged_focus[fkey] = default_focus[fkey]
             entry["focus"] = merged_focus
+    resolved_tpl_uri = (template_uri or "").strip()
+    if from_agent_team and not resolved_tpl_uri:
+        reg = str(roster_team.get("skill_registry", role_library.AGENT_TEAM_REPO) or role_library.AGENT_TEAM_REPO)
+        resolved_tpl_uri = role_library.agent_team_template_uri(role, reg) or ""
+    if resolved_tpl_uri:
+        entry["template_uri"] = resolved_tpl_uri
+    if skills:
+        clean_skills = [str(s).strip() for s in skills if str(s).strip()]
+        if clean_skills:
+            entry["skills"] = clean_skills
     if evidence:
         entry["evidence"] = [str(e) for e in evidence]
     roster_team.setdefault(f"{team_name}_roles", []).append(entry)
@@ -1025,6 +1040,10 @@ def evaluate_spec_readiness(spec: dict[str, Any]) -> dict[str, Any]:
     missing.extend(kp.validate_knowledge_plane(spec))
     team_errors, warnings = _team_readiness(spec)
     missing.extend(team_errors)
+    import skill_curation
+    uri_errors, uri_warnings = skill_curation.audit_skill_uris(spec)
+    missing.extend(uri_errors)
+    warnings.extend(uri_warnings)
     import topology_audit
     warnings.extend(topology_audit.audit(spec)["warnings"])
 
@@ -1369,8 +1388,10 @@ Every agent in this Scion software factory MUST follow these operational rules (
 {backlog}
 {integrate}
 {deploy}
-## 6. Communication & Turn Completion (Lessons L1, L2, L4, L5)
+## 6. Communication, Durability & Turn Completion (Lessons L1, L2, L4, L5)
 - **Verify message delivery (L1, L4):** Always check the exit code and `Message delivered` confirmation of `scion message <recipient> "<msg>"` (printed text in your own output reaches nobody), confirm recipient names reside in the same Scion project, and use `scion message <recipient> --body-file <file>` for long or multi-line messages to avoid shell quoting bugs.
+- **Artifact durability (`artifact-durability`):** A deliverable is durable only when it survives container deletion: a pushed remote Git ref, `/scion-volumes/scratchpad/`, or the body of a sent message. `/workspace/.scratch/` is container-local and dies with your container; never signal completion before verifying durability. Pushing your own work branch is a durability push (always safe); merging or pushing the shared trunk is a lead-gated integration push.
+- **Context discipline & state continuity (`agent-state-continuity`):** Keep coordinator and manager checkpoints in `/scion-volumes/scratchpad/<agent-name>-state.md`, treat ~40% context utilization as the rotation point for long-running sessions, and try `scion message <agent> "continue"` before recreating a stuck agent.
 - **Bounded foreground commands (no `pgrep -f` polling deadlocks):** Wrap build, test, and browser verification commands in an explicit foreground timeout subshell (for example `timeout 300s sh -c '<cmd>'`). Never wait on background jobs with `until` or `while` loops calling `pgrep -f <pattern>`, because `pgrep -f` matches the parent shell command line itself and deadlocks indefinitely.
 - **Signal turn completion (L2, L5):** End every turn by running `sciontool status task_completed "<concise summary with {turn_ref}>"`, `sciontool status blocked "waiting: <what, from whom>"` when waiting on a teammate, or `sciontool status ask_user "<blocker>"` when genuinely blocked on a human.{delta_comm_note}
 {escalation}
@@ -1519,8 +1540,29 @@ def _render_scion_agent_yaml(role_spec: dict[str, Any], spec: dict[str, Any] | N
     is_deployer = bool(role_spec.get("gcp_identity")) or _role_kind(role_spec) in ("deployer", "eval-deployer")
     if is_deployer and (spec is None or deploy_mode(spec) != "none"):
         env.append("  CLOUDSDK_CORE_DISABLE_PROMPTS: \"1\"")
+    if _role_kind(role_spec) == "qa-tester":
+        env.append("  PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH: \"/usr/bin/chromium\"")
     if env:
         lines.extend(["env:", *env])
+
+    registry = (
+        (spec.get("team") or {}).get("skill_registry", role_library.AGENT_TEAM_REPO)
+        if spec is not None
+        else role_library.AGENT_TEAM_REPO
+    )
+    skill_uris: list[str] = []
+    if registry is not False:
+        for uri in role_library.agent_team_skill_uris(role_spec, str(registry or "")):
+            if uri not in skill_uris:
+                skill_uris.append(uri)
+    for raw_skill in role_spec.get("skills") or []:
+        s = str(raw_skill or "").strip()
+        if "://" in s and s not in skill_uris:
+            skill_uris.append(s)
+    if skill_uris:
+        lines.append("skills:")
+        for uri in skill_uris:
+            lines.append(f"  - uri: \"{uri}\"")
     return "\n".join(lines) + "\n"
 
 
@@ -1546,17 +1588,17 @@ BRIEFS_DIR = "/scion-volumes/scratchpad/briefs"
 REPORTS_DIR = "/scion-volumes/scratchpad/reports"
 DURABILITY_RULE = "A task is done only when its result is pushed or sent in a message."
 
-_FOCUS_COMMAND_KINDS = ("implementer", "test-engineer", "investigator", "evaluator")
-_FOCUS_DOC_KINDS = ("doc-writer", "researcher", "kaizen-analyst")
+_FOCUS_COMMAND_KINDS = ("implementer", "test-engineer", "investigator", "evaluator", "web-builder")
+_FOCUS_DOC_KINDS = ("doc-writer", "researcher", "kaizen-analyst", "architect")
 _FOCUS_KEYS = ("paths", "commands", "docs")
 
 # Kinds that never change product code, commit or push: they deliver reports, verdicts or measurements to their lead.
-# Every other kind writes (implementer, doc-writer, test-engineer, frontend, migration-specialist, release-manager,
-# deployers, domain-evaluator, and roles outside the library).
+# Every other kind writes (implementer, doc-writer, test-engineer, frontend, web-builder, migration-specialist,
+# release-manager, deployers, domain-evaluator, and roles outside the library).
 _READ_ONLY_KINDS = frozenset({
-    "sub-coordinator", "reviewer", "researcher", "investigator", "security-auditor", "performance-analyst", "kaizen-analyst",
-    "contract-tester", "latency-prober", "ui-auditor", "safety-evaluator", "factory-analyst",
-    "benchmark-runner", "api-compat-checker", "evaluator",
+    "sub-coordinator", "architect", "reviewer", "researcher", "investigator", "security-auditor",
+    "performance-analyst", "kaizen-analyst", "contract-tester", "latency-prober", "ui-auditor",
+    "qa-tester", "safety-evaluator", "factory-analyst", "benchmark-runner", "api-compat-checker", "evaluator",
 })
 # Reviewers whose verdicts the lead collects before it gives the commit slot (they never message each other).
 _PARALLEL_REVIEWER_KINDS = ("reviewer", "security-auditor", "performance-analyst")
@@ -1566,12 +1608,15 @@ _PARALLEL_REVIEWER_KINDS = ("reviewer", "security-auditor", "performance-analyst
 _SIZING_LINES = (
     (("investigator",), "bug → {investigator} first"),
     (("researcher",), "unfamiliar ground → {researcher} first"),
+    (("architect",), "open design or multi-component trade-off → {architect} before implementation"),
     (("doc-writer",), "user-visible change → {doc-writer} after the commit"),
     (("security-auditor", "reviewer"), "auth/crypto/secrets → {security-auditor} in parallel with {reviewer}"),
     (("frontend",), "UI → {frontend}"),
+    (("web-builder",), "static site or dashboard → {web-builder}"),
     (("migration-specialist",), "schema/IaC → {migration-specialist}"),
     (("performance-analyst",), "perf-sensitive → {performance-analyst}"),
     (("release-manager",), "release → {release-manager}"),
+    (("qa-tester",), "user-surface E2E verification → {qa-tester}"),
     (("evaluator",), "wave or L1–L5 gate → {evaluator}"),
 )
 
@@ -1688,7 +1733,10 @@ def _render_sizing(spec: dict[str, Any], team: list[dict[str, Any]], is_eval: bo
     small = f"A small change needs only {agents.get('implementer', 'the implementer')} and " \
             f"{agents.get('reviewer', 'the reviewer')}."
     text = ("## Sizing an issue\nRead the issue and the knowledge plane, then decide who is needed.\n"
-            f"{small} Add a teammate when its line applies:\n" + "\n".join(lines) + "\n")
+            f"{small} Add a teammate when its line applies:\n" + "\n".join(lines) + "\n"
+            "Prose-only docs, specs, and ADRs go to human review without a code-reviewer loop; "
+            "executable code, scripts, and CI edits always require independent blind review. "
+            "Collapse to the minimum roles needed when work is simpler than a tier assumes.\n")
     subtrees_note = sub_coordinator_prompts.render_root_lead_subtrees_note(
         spec, team, root_role, _agent, vcs_enabled=_vcs_enabled(spec)
     )
@@ -1715,7 +1763,8 @@ def _render_briefs(spec: dict[str, Any], team: list[dict[str, Any]], lead: str) 
     ref = "#N" if _vcs_enabled(spec) else "<item ID>"
     reports = [f"{agents[k]}'s `{REPORTS_DIR}/<issue>-{suffix}.md` ({why})"
                for k, suffix, why in (("investigator", "investigation", "for a bug"),
-                                      ("researcher", "research", "for unfamiliar ground")) if k in agents]
+                                      ("researcher", "research", "for unfamiliar ground"),
+                                      ("architect", "design", "for open design decisions")) if k in agents]
     pre_work = ""
     if reports:
         implementer = agents.get("implementer", "the implementer")
@@ -1866,7 +1915,9 @@ def _render_chain_of_command(
 """
     rows = []
     for r in sub_coordinators.direct_children(team, lead_role, is_root_lead=True):
-        cmd = f'scion start {_agent(spec, r["role"])} -t {r["role"]}'
+        tpl_uri = str(r.get("template_uri") or "").strip()
+        tpl_flag = f"--type {tpl_uri}" if tpl_uri else f"-t {r['role']}"
+        cmd = f'scion start {_agent(spec, r["role"])} {tpl_flag}'
         if team_branch:
             cmd += f" -b {team_branch}"
         if not omit_vertex_harness_auth:
@@ -3419,13 +3470,19 @@ def main(argv: list[str] | None = None) -> int:
 
     p_role = sub.add_parser("add-role", help="Add a library specialist (for example one discovery proposed) to a FactorySpec")
     p_role.add_argument("spec_path", help="Path to factory.yaml")
-    p_role.add_argument("--role", required=True, help="Library role, e.g. security-auditor or sub-coordinator")
+    p_role.add_argument("--role", required=True, help="Library role, e.g. security-auditor, architect, eng-manager, qa-tester, or sub-coordinator")
     p_role.add_argument("--as", dest="as_role", default=None,
                         help="Optional custom role slug, e.g. backend-sub-coordinator or api-builder")
     p_role.add_argument("--reports-to", default=None,
                         help="Optional parent sub-coordinator role slug in the same team")
     p_role.add_argument("--paths", action="append", default=[],
                         help="Optional repo-relative focus path for this role (repeatable)")
+    p_role.add_argument("--from-agent-team", action="store_true",
+                        help="Bind this role to its upstream gh://scion-frontiers/agent-team/templates/<role> URI")
+    p_role.add_argument("--template-uri", default=None,
+                        help="Explicit remote template URI (e.g. gh://scion-frontiers/agent-team/templates/architect)")
+    p_role.add_argument("--skill", action="append", dest="skills", default=[],
+                        help="Skill name or URI (e.g. gh://scion-frontiers/agent-team/code-review) to attach (repeatable)")
     p_role.add_argument("--team", choices=("build", "eval"), default=None,
                         help="Roster to add it to (default: the role's team in the library)")
     p_role.add_argument("--evidence", action="append", default=[],
@@ -3662,6 +3719,9 @@ def main(argv: list[str] | None = None) -> int:
                 as_role=args.as_role,
                 reports_to=args.reports_to,
                 paths=args.paths,
+                template_uri=args.template_uri,
+                from_agent_team=args.from_agent_team,
+                skills=args.skills,
             )
         except ValueError as err:
             print(f"error: {err}", file=sys.stderr)

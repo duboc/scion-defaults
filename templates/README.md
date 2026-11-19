@@ -24,13 +24,19 @@ Each compiled kit writes `<kit_dir>/templates/_shared/agents.md` plus one subfol
 
 | File | Scion field | Notes |
 |---|---|---|
-| `scion-agent.yaml` | template config | `default_harness_config`, `system_prompt`, `agent_instructions`, and `env` (`FACTORY_ROLE`, `FACTORY_SUBDIR` on monorepo kits, `GOOGLE_CLOUD_LOCATION` on Vertex Gemini roles, and `CLOUDSDK_CORE_DISABLE_PROMPTS` on deployers) |
+| `scion-agent.yaml` | template config | `default_harness_config`, `system_prompt`, `agent_instructions`, `env` (`FACTORY_ROLE`, `FACTORY_SUBDIR` on monorepo kits, `GOOGLE_CLOUD_LOCATION` on Vertex Gemini roles, `CLOUDSDK_CORE_DISABLE_PROMPTS` on deployers, `PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH` on `qa-tester`), and declarative `skills:` URI imports from `gh://scion-frontiers/agent-team/<skill>` |
 | `system-prompt.md` | `system_prompt` | Role responsibility, specialist protocol from `role_library.py`, repository focus paths, chain of command, scratchpad brief rules, L1-L5 evaluation oracle, and operating loop |
 | `agents.md` | `agent_instructions` | Shared coordination protocol (`_shared/agents.md`, plus `agents.extra.md` when present) |
 | `home/.local/bin/opencode-launch.sh` and `opencode` | home overlay (OpenCode roles) | Pinned Vertex AI model catalog (`~/.config/opencode/opencode.json`), auto-approve tool permissions, `GH_TOKEN` / `GITHUB_TOKEN` wiring, and `sciontool` PATH fix (L3, L26) |
 | `home/.local/bin/hermes-launch.sh` and `hermes` | home overlay (Hermes roles) | Pinned `VERTEX_REGION=global` (`~/.hermes/.env`) and `hermes chat --yolo --accept-hooks --provider vertex -m <model>` wrapper (L4, L26) |
 
 Harnesses without a native system-prompt flag (OpenCode, Hermes) automatically prepend `system_prompt` to the instructions file.
+
+### Upstream `scion-frontiers/agent-team` skills and remote templates
+
+By default (`team.skill_registry: gh://scion-frontiers/agent-team`), every compiled `scion-agent.yaml` imports the canonical [`scion-frontiers/agent-team`](https://github.com/scion-frontiers/agent-team) skills for that role (such as `artifact-durability`, `agent-state-continuity`, `software-engineering-process`, `code-review`, `docs-update`, and `release-notes-daily`) via Scion's native `skills: - uri: "gh://..."` stanza. Set `team.skill_registry: none` to disable default URI imports, or add custom URIs to a role's `skills:` list.
+
+To start a specific role directly from an upstream remote template (`scion start <agent> --type gh://scion-frontiers/agent-team/templates/<role>`) instead of a compiled Hub template, add it with `./scripts/scion-factory add-role factory.yaml --role <role> --from-agent-team` (or set `template_uri` on the role in `factory.yaml`).
 
 ### Names and harness-configs
 

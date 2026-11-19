@@ -169,6 +169,14 @@ def discover_roles(
         _add_evidence(evidence_by_role["test-engineer"], "label: flaky")
     if "performance" in normalized_labels:
         _add_evidence(evidence_by_role["performance-analyst"], "label: performance")
+    if "architecture" in normalized_labels or "design" in normalized_labels:
+        _add_evidence(evidence_by_role["architect"], "label: architecture")
+    if "e2e" in normalized_labels or "qa" in normalized_labels:
+        _add_evidence(evidence_by_role["qa-tester"], "label: e2e")
+    if "website" in normalized_labels or "dashboard" in normalized_labels:
+        _add_evidence(evidence_by_role["web-builder"], "label: website")
+    if "multi-team" in normalized_labels or "large" in normalized_labels:
+        _add_evidence(evidence_by_role["eng-manager"], "label: multi-team")
 
     # 2. Subdir-based signals
     if subdir.strip():
@@ -179,6 +187,8 @@ def discover_roles(
     test_counts: dict[str, int] = {"go": 0, "python": 0, "typescript": 0, "rust": 0, "java": 0}
 
     go_source_files: list[str] = []
+    adr_files: list[str] = []
+    subsystem_dirs: set[str] = set()
 
     for rel_f, raw_f in zip(rel_files, raw_files):
         p = Path(rel_f)
@@ -187,6 +197,33 @@ def discover_roles(
         ext = p.suffix.lower()
 
         raw_parts = Path(raw_f).parts
+
+        # architect signals (.design/ directory or ADR accumulation)
+        if ".design" in raw_parts[:-1]:
+            _add_evidence(evidence_by_role["architect"], rel_f)
+        if any(part.lower() in ("adr", "adrs") for part in raw_parts[:-1]) and ext == ".md" and not name_lower.startswith("_"):
+            adr_files.append(rel_f)
+
+        # eng-manager signals (3+ distinct subsystem dirs under services/ or apps/)
+        if len(raw_parts) >= 3 and raw_parts[0].lower() in ("services", "apps"):
+            subsystem_dirs.add(f"{raw_parts[0]}/{raw_parts[1]}")
+
+        # qa-tester signals (Playwright / Cypress / E2E test suites)
+        if (
+            fnmatch.fnmatch(name_lower, "playwright.config.*")
+            or fnmatch.fnmatch(name_lower, "cypress.config.*")
+            or any(part.lower() == "e2e" for part in raw_parts[:-1])
+        ):
+            _add_evidence(evidence_by_role["qa-tester"], rel_f)
+
+        # web-builder signals (static site / docs / dashboard generator configs)
+        if (
+            fnmatch.fnmatch(name_lower, "astro.config.*")
+            or fnmatch.fnmatch(name_lower, "docusaurus.config.*")
+            or name_lower in ("hugo.toml", "hugo.yaml", "mkdocs.yml", "mkdocs.yaml")
+            or ".vitepress" in raw_parts[:-1]
+        ):
+            _add_evidence(evidence_by_role["web-builder"], rel_f)
 
         # security-auditor path signals (scoped to path below target_dir)
         if name_lower == "security.md":
@@ -384,6 +421,14 @@ def discover_roles(
     if evidence_by_role["frontend"]:
         for ev in evidence_by_role["frontend"]:
             _add_evidence(evidence_by_role["ui-auditor"], ev)
+
+    # 6b. architect (3+ ADRs) and eng-manager (3+ subsystem directories)
+    if len(adr_files) >= 3:
+        for ev in adr_files[:3]:
+            _add_evidence(evidence_by_role["architect"], ev)
+    if len(subsystem_dirs) >= 3:
+        for ev in sorted(subsystem_dirs)[:3]:
+            _add_evidence(evidence_by_role["eng-manager"], f"subsystem: {ev}")
 
     # 7. benchmark-runner shares performance-analyst signals when deploy="none"
     if deploy == "none" and evidence_by_role["performance-analyst"]:

@@ -73,7 +73,9 @@ def render_sub_coordinator_chain(
     rows: list[str] = []
     for ch in kids:
         ch_slug = agent_fn(spec, str(ch["role"]))
-        cmd = f"scion start {ch_slug} -t {ch['role']}"
+        tpl_uri = str(ch.get("template_uri") or "").strip()
+        tpl_flag = f"--type {tpl_uri}" if tpl_uri else f"-t {ch['role']}"
+        cmd = f"scion start {ch_slug} {tpl_flag}"
         if team_branch:
             cmd += f" -b {team_branch}"
         if not omit_vertex_harness_auth:
