@@ -95,7 +95,7 @@ def _fmt_ver(ver: tuple[int, int, int]) -> str:
     return f"{ver[0]}.{ver[1]}.{ver[2]}"
 
 
-def _run_quick(cmd: list[str], env: dict[str, str] | None = None, timeout: float = 5.0) -> tuple[int, str]:
+def _run_quick(cmd: list[str], env: dict[str, str] | None = None, timeout: float = 8.0) -> tuple[int, str]:
     try:
         res = subprocess.run(
             cmd,
@@ -125,7 +125,12 @@ def _check_tool(tool: str, required: bool, env: dict[str, str]) -> dict[str, Any
             "fix": TOOL_REMEDIATIONS.get(tool, f"Install {tool} and add it to PATH."),
         }
 
-    rc, out = _run_quick([binary, *TOOL_VERSION_ARGS[tool]], env=env)
+    check_env = env
+    if tool == "kubectl":
+        # Prevent kubectl-dispatcher from hanging on stale/unreachable kubeconfig clusters.
+        check_env = {**env, "KUBECONFIG": os.devnull}
+
+    rc, out = _run_quick([binary, *TOOL_VERSION_ARGS[tool]], env=check_env)
     first_line = next((ln.strip() for ln in out.splitlines() if ln.strip()), "")
     parsed = parse_semver(first_line or out)
     ver_str = _fmt_ver(parsed) if parsed else first_line[:60]

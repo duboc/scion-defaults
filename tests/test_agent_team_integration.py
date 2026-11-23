@@ -1,6 +1,7 @@
 """Tests for integrating https://github.com/scion-frontiers/agent-team roles, URI skills, and workflow rules."""
 from __future__ import annotations
 
+import json
 import subprocess
 import sys
 from pathlib import Path
@@ -25,7 +26,8 @@ def test_agent_team_catalog_roles_and_uri_mappings():
         assert role_library.role_protocol(role)
 
     assert sub_coordinators.is_sub_coordinator(role_library.library_role_entry("eng-manager"))
-    assert role_library.ROLES["qa-tester"]["needs_service"] is True
+    assert role_library.ROLES["qa-tester"]["needs_service"] is False
+    assert "in-process WSGI/ASGI" in (role_library.role_protocol("qa-tester", deploy="none") or "")
     assert role_library.ROLES["architect"]["needs_service"] is False
 
     assert role_library.agent_team_template_uri("lead") == "gh://scion-frontiers/agent-team/templates/coordinator"
@@ -186,5 +188,74 @@ def test_discovery_proposes_agent_team_roles_from_repo_signals(tmp_path):
     assert {"architect", "eng-manager", "qa-tester", "web-builder"} <= roles_service
 
     roles_none = {r["role"] for r in discovery.discover_roles(tmp_path, deploy="none")}
-    assert {"architect", "eng-manager", "web-builder"} <= roles_none
-    assert "qa-tester" not in roles_none
+    assert {"architect", "eng-manager", "qa-tester", "web-builder"} <= roles_none
+
+
+def test_qa_tester_adds_to_single_project_delta_build_roles_and_rejects_explicit_eval_team(tmp_path):
+    preset = ROOT / "presets" / "bananacast-gke.factory.yaml"
+    spec_path = tmp_path / "bananacast.factory.yaml"
+    spec_path.write_text(preset.read_text(encoding="utf-8"), encoding="utf-8")
+
+    # Single-project delta factory routes eval-library roles into build_roles automatically.
+    updated = scion_factory.add_role(spec_path, "qa-tester")
+    build_names = [r["role"] for r in updated["team"]["build_roles"]]
+    assert "qa-tester" in build_names
+    assert not (updated["team"].get("eval_roles") or [])
+    report = scion_factory.evaluate_spec_readiness(updated)
+    assert report["ready"] is True, report["missing_or_weak"]
+
+    # Explicit --team eval on a single-project delta factory fails cleanly.
+    with pytest.raises(ValueError, match="single-project delta"):
+        scion_factory.add_role(spec_path, "factory-analyst", team="eval")
+
+
+def test_list_roles_and_cli_usability_error_handling(tmp_path):
+    res_list = subprocess.run(
+        [sys.executable, str(ROOT / "scripts" / "scion_factory.py"), "list-roles", "--agent-team", "--json"],
+        capture_output=True,
+        text=True,
+    )
+    assert res_list.returncode == 0, res_list.stderr
+    payload = json.loads(res_list.stdout)
+    assert payload["count"] == len(role_library.ROLES)
+    by_name = {r["role"]: r for r in payload["roles"]}
+    assert by_name["architect"]["agent_team_template"] == "gh://scion-frontiers/agent-team/templates/architect"
+    assert "gh://microsoft/playwright-cli/playwright-cli" in by_name["qa-tester"]["agent_team_skills"]
+
+    # Missing file prints a clean error with actionable hint and no raw Python traceback.
+    res_missing = subprocess.run(
+        [sys.executable, str(ROOT / "scripts" / "scion_factory.py"), "check", str(tmp_path / "missing.yaml")],
+        capture_output=True,
+        text=True,
+    )
+    assert res_missing.returncode == 2
+    assert "Traceback" not in res_missing.stderr
+    assert "file not found:" in res_missing.stderr
+    assert "presets/" in res_missing.stderr
+
+    # provision --dry-run works with factory.env.example, strips inline comments, and warns on placeholders.
+    spec = scion_factory.load_spec(PRESET)
+    kit = tmp_path / "kit"
+    scion_factory.compile_factory_boilerplate(spec, kit)
+    res_prov = subprocess.run(
+        [
+            sys.executable,
+            str(ROOT / "scripts" / "scion_factory.py"),
+            "provision",
+            str(PRESET),
+            "--kit",
+            str(kit),
+            "--env",
+            str(kit / "config" / "factory.env.example"),
+            "--dry-run",
+            "--json",
+        ],
+        capture_output=True,
+        text=True,
+    )
+    assert res_prov.returncode == 0, res_prov.stderr + "\n" + res_prov.stdout
+    prov_out = json.loads(res_prov.stdout)
+    assert prov_out["ok"] is True
+    assert prov_out["apply"] is False
+    assert any("your-hub-gcp-project" in w for w in prov_out.get("warnings") or [])
+    assert all("# factory" not in w for w in prov_out.get("warnings") or [])

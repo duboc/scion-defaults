@@ -44,7 +44,6 @@ def test_service_roles_are_marked():
         "contract-tester",
         "latency-prober",
         "ui-auditor",
-        "qa-tester",
     }
 
 

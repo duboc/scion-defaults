@@ -84,7 +84,7 @@ def _parse_env_file(env_file: str | Path) -> dict[str, str]:
             line = line[len("export ") :].strip()
         if "=" in line:
             k, v = line.split("=", 1)
-            parsed[k.strip()] = v.strip().strip("'\"")
+            parsed[k.strip()] = provision_factory._parse_env_value(v)
     return parsed
 
 
