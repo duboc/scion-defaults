@@ -86,6 +86,28 @@ def test_doctor_passes_fast_on_valid_gke_toolchain(tmp_path):
     assert "ok=True" in factory_doctor.format_report(report)
 
 
+def test_doctor_isolates_kubectl_kubeconfig_to_devnull(tmp_path):
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    _seed_clean_gke_toolchain(bin_dir)
+    # Fail loudly if KUBECONFIG is not isolated to os.devnull (prevents kubectl-dispatcher hangs).
+    _make_fake_bin(
+        bin_dir,
+        "kubectl",
+        'if [ "${KUBECONFIG:-}" != "/dev/null" ]; then echo "unexpected KUBECONFIG=${KUBECONFIG:-}" >&2; exit 1; fi\n'
+        'echo "Client Version: v1.31.2"\n',
+    )
+
+    report = factory_doctor.run_doctor(
+        mode="gke",
+        skip_auth=True,
+        env={"PATH": str(bin_dir), "HOME": str(tmp_path), "KUBECONFIG": "/tmp/stale-dead-cluster.yaml"},
+    )
+    assert report["ok"] is True, report
+    kubectl_check = next(c for c in report["checks"] if c["name"] == "kubectl")
+    assert kubectl_check["status"] == "ok" and kubectl_check["version"] == "1.31.2"
+
+
 def test_doctor_flags_missing_gke_plugin_outdated_terraform_and_missing_auth(tmp_path):
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()

@@ -721,3 +721,56 @@ def test_run_hillclimb_wave_teardown_runs_in_finally_on_poll_timeout_and_catches
         assert len(seen_down) == 2
     finally:
         srv.close()
+
+
+def test_agent_team_hillclimb_profile_validates_compiles_and_exercises_all_four_roles(tmp_path: Path, monkeypatch):
+    jsonschema = pytest.importorskip("jsonschema")
+    import run_hillclimb_wave
+
+    schema = json.loads((ROOT / "config" / "factory.schema.json").read_text(encoding="utf-8"))
+    base_spec = scion_factory.load_spec(ROOT / "presets" / "bananacast-gke.factory.yaml")
+    augmented = run_hillclimb_wave.apply_agent_team_profile(base_spec)
+
+    jsonschema.validate(augmented, schema)
+    readiness = scion_factory.evaluate_spec_readiness(augmented)
+    assert readiness["ready"] is True, readiness["missing_or_weak"]
+    assert readiness["warnings"] == [], readiness["warnings"]
+
+    roles = {r["role"]: r for r in augmented["team"]["build_roles"]}
+    assert {"architect", "eng-manager", "web-builder", "qa-tester"} <= set(roles)
+    assert roles["frontend"]["reports_to"] == "eng-manager"
+    assert roles["web-builder"]["reports_to"] == "eng-manager"
+
+    kit_dir = tmp_path / "agent-team-kit"
+    scion_factory.compile_factory_boilerplate(augmented, kit_dir)
+    for role in ("architect", "eng-manager", "web-builder", "qa-tester"):
+        agent_yaml = (kit_dir / "templates" / role / "scion-agent.yaml").read_text(encoding="utf-8")
+        assert "gh://scion-frontiers/agent-team/" in agent_yaml
+    qa_prompt = (kit_dir / "templates" / "qa-tester" / "system-prompt.md").read_text(encoding="utf-8")
+    assert "in-process WSGI/ASGI" in qa_prompt
+
+    # Every wave in AGENT_TEAM_WAVE_CATALOG exercises architect, eng-manager, web-builder, and qa-tester
+    assert set(run_hillclimb_wave.AGENT_TEAM_WAVE_CATALOG.keys()) == {1, 2, 3}
+    for wave_id, tasks in run_hillclimb_wave.AGENT_TEAM_WAVE_CATALOG.items():
+        owners = {t["owner_role"] for t in tasks}
+        assert owners == {"architect", "eng-manager", "qa-tester"}, (wave_id, owners)
+        blob = json.dumps(tasks)
+        assert "web-builder" in blob
+
+    # Dry-run via run_wave(profile="agent-team") propagates profile and 10 roles
+    env_file = tmp_path / "hc.env"
+    env_file.write_text("HUB_REGION=us-central1\nPO_EMAIL=po@example.com\n", encoding="utf-8")
+    monkeypatch.setattr(
+        run_hillclimb_wave.gke_lifecycle,
+        "gke_up",
+        lambda *a, **kw: {"ok": True, "apply": False, "setup_warnings": []},
+    )
+    monkeypatch.setattr(
+        run_hillclimb_wave.gke_lifecycle,
+        "gke_down",
+        lambda *a, **kw: {"ok": True, "apply": False, "warnings": []},
+    )
+    dry = run_hillclimb_wave.run_wave(1, env_file=env_file, profile="agent-team", apply=False)
+    assert dry["ok"] is True
+    assert dry["profile"] == "agent-team"
+    assert {"architect", "eng-manager", "web-builder", "qa-tester"} <= set(dry["roles"])

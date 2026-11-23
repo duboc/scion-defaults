@@ -349,7 +349,15 @@ def load_spec(path: str | Path) -> dict[str, Any]:
         if not isinstance(data, dict):
             raise ValueError(f"Expected mapping at root of {p}")
         return data
-    return json.loads(text)
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(
+            f"PyYAML is required to read {p}; invoke via './scripts/scion-factory' (with uv) or install PyYAML."
+        ) from exc
+    if not isinstance(data, dict):
+        raise ValueError(f"Expected mapping at root of {p}")
+    return data
 
 
 def save_spec(spec: dict[str, Any], path: str | Path) -> None:
@@ -779,10 +787,18 @@ def add_role(
     target_role = (as_role or role).strip()
     if not _SLUG_RE.match(target_role):
         raise ValueError(f"role name {target_role!r} must be a lowercase slug (e.g. backend-sub-coordinator)")
-    team_name = team or lib["team"]
+    spec = load_spec(spec_path)
+    has_eval = has_eval_project(spec)
+    if team is None:
+        team_name = lib["team"] if has_eval else "build"
+    else:
+        team_name = team
     if team_name not in ("build", "eval"):
         raise ValueError(f"--team must be build or eval, not {team_name!r}")
-    spec = load_spec(spec_path)
+    if team_name == "eval" and not has_eval:
+        raise ValueError(
+            "single-project delta factories have no separate eval roster; omit --team or pass --team build"
+        )
     if lib["needs_service"] and deploy_mode(spec) == "none":
         raise ValueError(f"{role} needs a deployed service, but this factory has infrastructure.deploy: none")
     roster_team = spec.setdefault("team", {})
@@ -3430,17 +3446,19 @@ def main(argv: list[str] | None = None) -> int:
     p_git = sub.add_parser("enable-git", help="Switch a factory that started without Git to Git mode")
     p_git.add_argument("spec_path", help="Path to factory.yaml")
     p_git.add_argument("--repo", required=True, help="GitHub repository OWNER/NAME")
-    p_git.add_argument("--build-branch", default="main")
-    p_git.add_argument("--eval-branch", default="eval-dashboard")
+    p_git.add_argument("--build-branch", default="main", help="Git branch for build commits (default: main)")
+    p_git.add_argument("--eval-branch", default="eval-dashboard",
+                       help="Orphan Git branch for evaluation code in dual-project factories (default: eval-dashboard)")
 
     p_prov = sub.add_parser("provision", help="Deterministically provision projects, infra, and templates")
-    p_prov.add_argument("spec_path", type=str)
-    p_prov.add_argument("--kit", type=str, required=True)
-    p_prov.add_argument("--env", type=str, required=True)
-    p_prov.add_argument("--seed-repo", type=str)
-    p_prov.add_argument("--apply", action="store_true")
-    p_prov.add_argument("--go", action="store_true")
-    p_prov.add_argument("--json", action="store_true")
+    p_prov.add_argument("spec_path", type=str, help="Path to factory.yaml")
+    p_prov.add_argument("--kit", type=str, required=True, help="Compiled factory kit directory")
+    p_prov.add_argument("--env", type=str, required=True, help="Path to factory.env")
+    p_prov.add_argument("--seed-repo", type=str, help="Optional local target repository checkout for seeding wave issues")
+    p_prov.add_argument("--apply", action="store_true", help="Execute live provisioning mutations (default: dry-run)")
+    p_prov.add_argument("--dry-run", action="store_true", help="Preview provisioning phases without mutating cloud or Hub state")
+    p_prov.add_argument("--go", action="store_true", help="Send the initial GO brief to lead after --apply succeeds")
+    p_prov.add_argument("--json", action="store_true", help="Output structured JSON report")
 
     p_gke_up = sub.add_parser("gke-up", help="One-command cold-start GKE Hub setup, kit compile, and factory provisioning")
     p_gke_up.add_argument("spec_path", type=str, help="Path to factory.yaml")
@@ -3527,7 +3545,68 @@ def main(argv: list[str] | None = None) -> int:
                        help="Skip live gcloud and gh authentication checks")
     p_doc.add_argument("--json", action="store_true", help="Output JSON")
 
+    p_roles = sub.add_parser(
+        "list-roles",
+        help="List all built-in specialist roles, their default teams, and scion-frontiers/agent-team mappings",
+    )
+    p_roles.add_argument("--team", choices=("build", "eval"), default=None,
+                         help="Filter roles by default team")
+    p_roles.add_argument("--agent-team", action="store_true",
+                         help="Include upstream scion-frontiers/agent-team template and skill URIs")
+    p_roles.add_argument("--json", action="store_true", help="Output JSON")
+
     args = parser.parse_args(argv)
+    yaml_errors: tuple[type[BaseException], ...] = (yaml.YAMLError,) if yaml is not None else ()
+
+    try:
+        return _dispatch_cli(args)
+    except BrokenPipeError:
+        return 0
+    except FileNotFoundError as err:
+        missing_path = err.filename or str(err)
+        hint = " (run './scripts/scion-factory grill --repo <path>' or pass a preset from presets/)" if str(missing_path).endswith((".yaml", ".yml", ".json")) else ""
+        msg = f"file not found: {missing_path}{hint}"
+        if getattr(args, "json", False):
+            print(json.dumps({"ok": False, "error": msg}, indent=2))
+        else:
+            print(f"error: {msg}", file=sys.stderr)
+        return 2
+    except (IsADirectoryError, ValueError, RuntimeError, json.JSONDecodeError, *yaml_errors) as err:
+        if getattr(args, "json", False):
+            print(json.dumps({"ok": False, "error": str(err)}, indent=2))
+        else:
+            print(f"error: {err}", file=sys.stderr)
+        return 2
+
+
+def _dispatch_cli(args: argparse.Namespace) -> int:
+    if args.cmd == "list-roles":
+        rows = []
+        for role_name in sorted(role_library.ROLES):
+            meta = role_library.ROLES[role_name]
+            if args.team and meta["team"] != args.team:
+                continue
+            rows.append({
+                "role": role_name,
+                "team": meta["team"],
+                "kind": meta["kind"],
+                "default_kind": meta["default_kind"],
+                "needs_service": meta["needs_service"],
+                "agent_team_template": role_library.agent_team_template_uri(role_name),
+                "agent_team_skills": role_library.agent_team_skill_uris(role_name),
+                "responsibility": meta["responsibility"],
+            })
+        if args.json:
+            print(json.dumps({"count": len(rows), "roles": rows}, indent=2))
+        else:
+            print(f"Library roles ({len(rows)}):")
+            for r in rows:
+                svc = " [needs-service]" if r["needs_service"] else ""
+                print(f"  {r['role']:<22} {r['team']:<5} {r['kind']:<7}{svc}  {r['responsibility']}")
+                if args.agent_team:
+                    print(f"      template: {r['agent_team_template'] or 'n/a'}")
+                    print(f"      skills:   {', '.join(r['agent_team_skills']) or 'none'}")
+        return 0
 
     if args.cmd == "doctor":
         import factory_doctor
@@ -3639,19 +3718,27 @@ def main(argv: list[str] | None = None) -> int:
     if args.cmd == "provision":
         spec = load_spec(args.spec_path)
         import provision_factory
+        eff_apply = bool(args.apply) and not bool(args.dry_run)
         report = provision_factory.provision_factory(
             spec,
             Path(args.kit),
             Path(args.env),
             seed_repo=Path(args.seed_repo) if args.seed_repo else None,
-            apply=args.apply,
+            apply=eff_apply,
             send_go=args.go,
         )
         if args.json:
             print(json.dumps(report, indent=2))
         else:
-            for p in report["phases"]:
-                print(f"Phase {p['phase']}: {'OK' if p.get('ok') else 'SKIP'}")
+            mode = "apply" if eff_apply else "dry-run"
+            print(f"provision ({mode}): ok={report.get('ok')}")
+            for p in report.get("phases") or []:
+                status = "SKIP" if p.get("skipped") else ("OK" if p.get("ok") else "FAIL")
+                print(f"  Phase {p['phase']}: {status}")
+            for warn in report.get("warnings") or []:
+                print(f"  WARNING: {warn}")
+            if report.get("error"):
+                print(f"error: {report['error']}", file=sys.stderr)
         return 0 if report["ok"] else 1
 
     if args.cmd == "gke-up":

@@ -155,6 +155,19 @@ def _ensure_vertex_env(client, pids: list[str], gcp_project: str, location: str)
     return warnings
 
 
+def _parse_env_value(raw: str) -> str:
+    val = raw.strip()
+    if not val:
+        return ""
+    if val[0] in ("'", '"'):
+        quote = val[0]
+        end = val.find(quote, 1)
+        return val[1:end] if end != -1 else val.strip(quote)
+    # Strip trailing shell inline comments (whitespace followed by '#') on unquoted values.
+    parts = re.split(r"\s+#", val, maxsplit=1)
+    return parts[0].strip()
+
+
 def _load_env(env_file) -> dict:
     env_file = Path(env_file)
     env = {}
@@ -163,9 +176,11 @@ def _load_env(env_file) -> dict:
             line = line.strip()
             if not line or line.startswith("#"):
                 continue
+            if line.startswith("export "):
+                line = line[len("export "):].strip()
             if "=" in line:
                 k, v = line.split("=", 1)
-                env[k.strip()] = v.strip().strip("'\"")
+                env[k.strip()] = _parse_env_value(v)
     for k, v in os.environ.items():
         if v:
             env[k] = v
@@ -499,6 +514,18 @@ def provision_factory(
             sub_base_env["SCION_HUB_TOKEN"] = eff_env["HUB_TOKEN"]
 
         # 1. preflight
+        placeholder_warnings: list[str] = []
+        for pkey in ("HUB_PROJECT", "SANDBOX_PROJECT", "FIRESTORE_PROJECT", "DATA_BUCKET"):
+            pval = str(eff_env.get(pkey) or "").strip()
+            if "your-hub-gcp-project" in pval or "your-sandbox-gcp-project" in pval:
+                placeholder_warnings.append(
+                    f"{pkey}={pval!r} still has a template placeholder from factory.env.example; "
+                    f"edit {env_file} before running with --apply."
+                )
+        if apply and placeholder_warnings:
+            phases.append({"phase": "preflight", "ok": False, "error": placeholder_warnings[0]})
+            return {"ok": False, "apply": apply, "error": placeholder_warnings[0], "warnings": placeholder_warnings, "phases": phases}
+
         factory_projects = [
             p.strip()
             for p in eff_env.get("FACTORY_PROJECTS", "").split(",")
@@ -524,7 +551,7 @@ def provision_factory(
                 factory_projects = list(dict.fromkeys(factory_projects + existing_non_global))
             phases.append({"phase": "preflight", "ok": True})
         else:
-            existing_hub_projects = set(factory_projects)
+            existing_hub_projects = set() if not apply else set(factory_projects)
             phases.append({"phase": "preflight", "ok": True, "local": True})
 
         # 2. sandbox (skip when SANDBOX_PROJECT is unset or SKIP_SANDBOX=1)
@@ -889,13 +916,16 @@ def provision_factory(
 
         phases.append({"phase": "schedules_and_leads", "ok": True})
 
-        return {
+        result: dict = {
             "ok": True,
             "apply": apply,
             "runtime": runtime,
             "factory_projects": target_pids,
             "phases": phases,
         }
+        if placeholder_warnings:
+            result["warnings"] = placeholder_warnings
+        return result
     except Exception as e:
         import traceback
 

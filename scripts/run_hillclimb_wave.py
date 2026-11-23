@@ -42,6 +42,7 @@ if str(SCRIPT_DIR) not in sys.path:
 import gke_lifecycle  # noqa: E402
 from hub_client import HubClient  # noqa: E402
 import provision_factory  # noqa: E402
+import role_library  # noqa: E402
 import scion_factory  # noqa: E402
 
 
@@ -238,6 +239,275 @@ WAVE_CATALOG: dict[int, list[dict[str, Any]]] = {
         },
     ],
 }
+
+AGENT_TEAM_WAVE_CATALOG: dict[int, list[dict[str, Any]]] = {
+    1: [
+        {
+            "title": "Wave 1.1: Design and implement admin_auth.py hardening for performance routes",
+            "owner_role": "architect",
+            "requirements": ["REQ-001"],
+            "paths": [
+                "src/backend/utils/admin_auth.py",
+                "src/backend/routes/performances.py",
+                "src/backend/tests/test_admin_auth_performances.py",
+            ],
+            "description": (
+                "First have `architect` write a concise design note to `/scion-volumes/scratchpad/reports/<issue>-design.md` "
+                "specifying constant-time bearer (`X-App-Auth` / `Authorization`) and IAP admin verification rules for "
+                "`src/backend/utils/admin_auth.py` and `src/backend/routes/performances.py`. Then have `backend` fix missing "
+                "`hmac` and `config` imports, enforce `@require_admin` returning HTTP 401 JSON when `config.ADMIN_PASSWORD` is "
+                "set, and pass independent `reviewer` verification."
+            ),
+            "acceptance_criteria": [
+                "`architect` delivers a concise design decision in `/scion-volumes/scratchpad/reports/<issue>-design.md` covering auth header precedence and error responses.",
+                "`backend` imports `hmac` and `config` in `src/backend/utils/admin_auth.py` and enforces `@require_admin` on `GET /api/performances/<id>`.",
+                "`src/backend/tests/test_admin_auth_performances.py` verifies 401/200 and user-vs-admin serialization via `cd src/backend && pytest -q`.",
+            ],
+        },
+        {
+            "title": "Wave 1.2: Delegate frontend proxy lockdown and web surface hardening via eng-manager and web-builder",
+            "owner_role": "eng-manager",
+            "requirements": ["REQ-002"],
+            "paths": [
+                "src/frontend/proxy.py",
+                "src/backend/tests/test_frontend_proxy.py",
+            ],
+            "description": (
+                "Route this `src/frontend/` workstream through `eng-manager`, who delegates to `web-builder` (and `frontend` if "
+                "needed) to set `FastAPI(docs_url=None, redoc_url=None, openapi_url=None)` in `src/frontend/proxy.py`, enforce "
+                "`.resolve().is_relative_to(DIST_DIR.resolve())` in `proxy_assets` and `serve_spa` so `/..%2f` traversal is "
+                "blocked, and add guarded proxy tests."
+            ),
+            "acceptance_criteria": [
+                "`eng-manager` decomposes and supervises the `src/frontend/` change through `web-builder` without editing product code itself.",
+                "`src/frontend/proxy.py` disables `/openapi.json` and canonicalizes static paths with `.resolve().is_relative_to(DIST_DIR.resolve())`.",
+                "`src/backend/tests/test_frontend_proxy.py` guards FastAPI imports with `pytest.importorskip(\"fastapi\")` and passes `cd src/backend && pytest -q`.",
+            ],
+        },
+        {
+            "title": "Wave 1.3: Enforce campaign route admin gates and run qa-tester user-surface acceptance verification",
+            "owner_role": "qa-tester",
+            "requirements": ["REQ-003"],
+            "paths": [
+                "src/backend/routes/campaigns.py",
+                "src/backend/tests/test_get_config_route.py",
+            ],
+            "description": (
+                "Have `backend` apply `@require_admin` to management campaign endpoints (`list_campaigns`, `create_campaign`, "
+                "`update_campaign`) in `src/backend/routes/campaigns.py` and pin `GET /api/config/<slug>` whitelisting in "
+                "`src/backend/tests/test_get_config_route.py`. Then have `qa-tester` run real in-process Flask/ASGI acceptance "
+                "checks without unit mocks and write structured pass/fail findings to `/scion-volumes/scratchpad/reports/<issue>-qa.md`."
+            ),
+            "acceptance_criteria": [
+                "`backend` enforces `@require_admin` on admin campaign endpoints and pins `GET /api/config/<slug>` stripping of `imagePrompt`, `safetyConfig`, and raw `couponCode`.",
+                "`qa-tester` executes real in-process HTTP acceptance checks against the routes and records structured findings in `/scion-volumes/scratchpad/reports/<issue>-qa.md`.",
+                "All tests pass via `cd src/backend && pytest -q` and `reviewer` returns PASS.",
+            ],
+        },
+    ],
+    2: [
+        {
+            "title": "Wave 2.1: Design and implement safety_blocks admin auth and limit clamping",
+            "owner_role": "architect",
+            "requirements": ["REQ-001"],
+            "paths": [
+                "src/backend/utils/admin_auth.py",
+                "src/backend/routes/safety.py",
+                "src/backend/tests/test_safety_admin_auth.py",
+            ],
+            "description": (
+                "First have `architect` document the query-limit bounds (`[1, 500]`) and admin auth contract in "
+                "`/scion-volumes/scratchpad/reports/<issue>-design.md`. Then have `backend` fix `hmac`/`config` imports in "
+                "`src/backend/utils/admin_auth.py`, protect `list_safety_blocks` in `src/backend/routes/safety.py` with "
+                "`@require_admin`, clamp `limit` to `[1, 500]`, and add unit tests in `src/backend/tests/test_safety_admin_auth.py`."
+            ),
+            "acceptance_criteria": [
+                "`architect` writes the concise safety-endpoint design note to `/scion-volumes/scratchpad/reports/<issue>-design.md`.",
+                "`backend` enforces `@require_admin` and `[1, 500]` limit clamping on `list_safety_blocks` with constant-time auth checks.",
+                "`src/backend/tests/test_safety_admin_auth.py` passes `cd src/backend && pytest -q`.",
+            ],
+        },
+        {
+            "title": "Wave 2.2: Harden proxy headers and brandingValidation.ts via eng-manager and web-builder",
+            "owner_role": "eng-manager",
+            "requirements": ["REQ-002"],
+            "paths": [
+                "src/frontend/proxy.py",
+                "src/frontend/utils/brandingValidation.ts",
+                "src/backend/tests/test_proxy_security.py",
+            ],
+            "description": (
+                "Delegate through `eng-manager` to `web-builder` to harden `src/frontend/proxy.py` (disable OpenAPI, enforce "
+                "`DIST_DIR` containment, strip spoofed inbound `X-App-Auth` when `Authorization` is absent) and reject `..` / "
+                "`%2e%2e` segments in `src/frontend/utils/brandingValidation.ts::safeAssetPath`, verified with guarded tests."
+            ),
+            "acceptance_criteria": [
+                "`eng-manager` routes and tracks the `src/frontend/` changes executed by `web-builder`.",
+                "`src/frontend/proxy.py` disables `/openapi.json`, guards static traversal, and strips spoofed `X-App-Auth`.",
+                "`brandingValidation.ts::safeAssetPath` rejects `..` and `%2e%2e`, and `src/backend/tests/test_proxy_security.py` passes `cd src/backend && pytest -q`.",
+            ],
+        },
+        {
+            "title": "Wave 2.3: Remove mobile query token fallback and run qa-tester acceptance verification",
+            "owner_role": "qa-tester",
+            "requirements": ["REQ-003"],
+            "paths": [
+                "src/backend/routes/mobile.py",
+                "src/backend/tests/test_mobile.py",
+                "src/backend/tests/test_get_config_route.py",
+            ],
+            "description": (
+                "Have `backend` remove the `?token=` query-string fallback in `src/backend/routes/mobile.py::mobile_session_info` "
+                "so bearer headers (`X-App-Auth` / `Authorization`) are required, and pin zero secret exposure across `test_mobile.py` "
+                "and `test_get_config_route.py`. Then have `qa-tester` run real in-process acceptance checks and write "
+                "`/scion-volumes/scratchpad/reports/<issue>-qa.md`."
+            ),
+            "acceptance_criteria": [
+                "`mobile_session_info` rejects `?token=` query strings and requires bearer headers.",
+                "`qa-tester` verifies mobile and public config user surfaces in-process without mocks and writes `/scion-volumes/scratchpad/reports/<issue>-qa.md`.",
+                "All tests pass via `cd src/backend && pytest -q`.",
+            ],
+        },
+    ],
+    3: [
+        {
+            "title": "Wave 3.1: Design and implement X-Forwarded-For audit logging and performances admin gate",
+            "owner_role": "architect",
+            "requirements": ["REQ-001"],
+            "paths": [
+                "src/backend/utils/admin_auth.py",
+                "src/backend/routes/performances.py",
+                "src/backend/tests/test_performances_admin_gate.py",
+            ],
+            "description": (
+                "Have `architect` write a concise design note to `/scion-volumes/scratchpad/reports/<issue>-design.md` covering "
+                "sanitized first-hop `X-Forwarded-For` audit logging and performance serializer tiers. Then have `backend` implement "
+                "the `admin_auth.py` and `performances.py` fixes with regression tests in `test_performances_admin_gate.py`."
+            ),
+            "acceptance_criteria": [
+                "`architect` writes the design note to `/scion-volumes/scratchpad/reports/<issue>-design.md`.",
+                "`backend` fixes `admin_auth.py` imports, enforces `@require_admin`, and logs the sanitized first hop of `X-Forwarded-For`.",
+                "`src/backend/tests/test_performances_admin_gate.py` verifies anonymous vs admin serialization and passes `cd src/backend && pytest -q`.",
+            ],
+        },
+        {
+            "title": "Wave 3.2: Lock down proxy canonicalization and urlValidation.ts via eng-manager and web-builder",
+            "owner_role": "eng-manager",
+            "requirements": ["REQ-002"],
+            "paths": [
+                "src/frontend/proxy.py",
+                "src/frontend/utils/urlValidation.ts",
+                "src/backend/tests/test_frontend_proxy_canonicalization.py",
+            ],
+            "description": (
+                "Delegate through `eng-manager` to `web-builder` to lock down `src/frontend/proxy.py` (disable OpenAPI, enforce "
+                "`.resolve().is_relative_to(DIST_DIR.resolve())`) and reject embedded credentials (`parsed.username` / "
+                "`parsed.password`) in `src/frontend/utils/urlValidation.ts::isSafeUrl`, with guarded proxy tests."
+            ),
+            "acceptance_criteria": [
+                "`eng-manager` supervises the `src/frontend/` work delivered by `web-builder`.",
+                "`src/frontend/proxy.py` hides `/openapi.json` and blocks `/..%2f` traversal, and `urlValidation.ts::isSafeUrl` rejects embedded URL credentials.",
+                "`src/backend/tests/test_frontend_proxy_canonicalization.py` passes `cd src/backend && pytest -q`.",
+            ],
+        },
+        {
+            "title": "Wave 3.3: Protect campaign mutation routes, config startup guards, and run qa-tester sign-off",
+            "owner_role": "qa-tester",
+            "requirements": ["REQ-003"],
+            "paths": [
+                "src/backend/routes/campaigns.py",
+                "src/backend/tests/test_get_config_route.py",
+                "src/backend/tests/test_config.py",
+            ],
+            "description": (
+                "Have `backend` decorate admin campaign routes in `src/backend/routes/campaigns.py` with `@require_admin`, "
+                "pin nested whitelist invariants in `test_get_config_route.py`, and verify `SECRET_KEY`/`FLASK_DEBUG` guards in "
+                "`test_config.py`. Then have `qa-tester` run real in-process acceptance checks and write "
+                "`/scion-volumes/scratchpad/reports/<issue>-qa.md`."
+            ),
+            "acceptance_criteria": [
+                "`backend` enforces `@require_admin` on campaign mutations and verifies config startup guards and whitelist serialization.",
+                "`qa-tester` executes real in-process acceptance checks without unit mocks and records pass/fail evidence in `/scion-volumes/scratchpad/reports/<issue>-qa.md`.",
+                "All tests pass via `cd src/backend && pytest -q`.",
+            ],
+        },
+    ],
+}
+
+VALID_PROFILES = ("default", "agent-team")
+
+
+def apply_agent_team_profile(preset_spec: dict[str, Any]) -> dict[str, Any]:
+    """Return a copy of `preset_spec` augmented with the 4 `scion-frontiers/agent-team` roles.
+
+    Adds `architect`, `eng-manager` (domain sub-coordinator owning `src/frontend/`), `web-builder`
+    (reporting to `eng-manager`), and `qa-tester` (in-project acceptance verifier), assigns any
+    existing `frontend` role under `eng-manager`, pins all roles to the preset's lead harness/model,
+    and ensures `team.skill_registry` targets `gh://scion-frontiers/agent-team`.
+    """
+    spec = copy.deepcopy(preset_spec)
+    team = spec.setdefault("team", {})
+    team.setdefault("skill_registry", role_library.AGENT_TEAM_REPO)
+    build_roles = list(team.get("build_roles") or [])
+
+    lead_entry = next((r for r in build_roles if isinstance(r, dict) and r.get("role") == "lead"), {})
+    pin_harness = str(lead_entry.get("harness") or "antigravity")
+    pin_model = str(lead_entry.get("model") or "Gemini 4 Argon")
+
+    by_role = {str(r.get("role")): r for r in build_roles if isinstance(r, dict) and r.get("role")}
+
+    if "eng-manager" not in by_role:
+        em = dict(role_library.library_role_entry("eng-manager"))
+        em["harness"] = pin_harness
+        em["model"] = pin_model
+        em["focus"] = {
+            "paths": ["src/frontend/"],
+            "docs": ["docs/frontend.md", "docs/security-audit-2026-04-30.md"],
+        }
+        build_roles.append(em)
+        by_role["eng-manager"] = em
+
+    if "frontend" in by_role and not by_role["frontend"].get("reports_to"):
+        by_role["frontend"]["reports_to"] = "eng-manager"
+
+    if "web-builder" not in by_role:
+        wb = dict(role_library.library_role_entry("web-builder"))
+        wb["harness"] = pin_harness
+        wb["model"] = pin_model
+        wb["reports_to"] = "eng-manager"
+        wb["focus"] = {
+            "paths": ["src/frontend/"],
+            "commands": ["python3 -m compileall -q src/frontend/proxy.py", "cd src/backend && pytest -q"],
+            "docs": ["docs/frontend.md"],
+        }
+        build_roles.append(wb)
+        by_role["web-builder"] = wb
+
+    if "architect" not in by_role:
+        arch = dict(role_library.library_role_entry("architect"))
+        arch["harness"] = pin_harness
+        arch["model"] = pin_model
+        arch["focus"] = {
+            "paths": ["docs/", "knowledge-plane/"],
+            "docs": ["docs/architecture.md", "docs/backend-iam-lockdown.md"],
+        }
+        build_roles.append(arch)
+        by_role["architect"] = arch
+
+    if "qa-tester" not in by_role:
+        qa = dict(role_library.library_role_entry("qa-tester"))
+        qa["harness"] = pin_harness
+        qa["model"] = pin_model
+        qa["focus"] = {
+            "paths": ["src/backend/tests/", "src/frontend/"],
+            "commands": ["cd src/backend && pytest -q"],
+            "docs": ["docs/backend.md", "docs/frontend.md"],
+        }
+        build_roles.append(qa)
+        by_role["qa-tester"] = qa
+
+    team["build_roles"] = build_roles
+    return spec
 
 _STALE_PROJECT_ENV_KEYS = (
     "SANDBOX_PROJECT",
@@ -887,6 +1157,7 @@ def _prepare_wave_files(
     env_file: Path,
     work_dir: Path,
     effective_apply: bool,
+    profile: str = "default",
 ) -> tuple[Path, Path, str, str, str, str]:
     project_slug = f"bananacast-hc{wave_num}"
     build_branch = f"factory/gke-hc{wave_num}"
@@ -917,7 +1188,8 @@ def _prepare_wave_files(
     env_lines = [f"{k}={v}" for k, v in env_out.items() if v != ""]
     gke_lifecycle._write_private_file(wave_env_path, "\n".join(env_lines) + "\n", mode=0o600)
 
-    wave_spec = copy.deepcopy(preset_spec)
+    wave_spec = apply_agent_team_profile(preset_spec) if profile == "agent-team" else copy.deepcopy(preset_spec)
+    catalog = AGENT_TEAM_WAVE_CATALOG if profile == "agent-team" else WAVE_CATALOG
     wave_spec.setdefault("project", {})["slug"] = project_slug
     wave_spec.setdefault("vcs", {})["build_branch"] = build_branch
     wave_spec["waves"] = [
@@ -931,7 +1203,7 @@ def _prepare_wave_files(
                     "requirements": list(t.get("requirements") or ["REQ-001"]),
                     "acceptance_criteria": list(t["acceptance_criteria"]),
                 }
-                for t in WAVE_CATALOG[wave_num]
+                for t in catalog[wave_num]
             ],
         }
     ]
@@ -984,6 +1256,7 @@ def run_wave(
     timeout_sec: int = 3600,
     poll_interval_sec: float = 15.0,
     preset_path: Path | str | None = None,
+    profile: str = "default",
     backup_root: Path | str | None = None,
     apply: bool = False,
     keep_on_failure: bool = False,
@@ -996,6 +1269,8 @@ def run_wave(
     """
     if wave_num not in WAVE_CATALOG:
         raise ValueError(f"Unsupported wave_num {wave_num!r}; expected one of {sorted(WAVE_CATALOG)}")
+    if profile not in VALID_PROFILES:
+        raise ValueError(f"Unsupported profile {profile!r}; expected one of {', '.join(VALID_PROFILES)}")
 
     resolved_preset = Path(preset_path) if preset_path is not None else (ROOT_DIR / "presets" / "bananacast-gke.factory.yaml")
     preset_spec = scion_factory.load_spec(resolved_preset)
@@ -1015,12 +1290,15 @@ def run_wave(
             env_file=resolved_env_file,
             work_dir=work_dir,
             effective_apply=effective_apply,
+            profile=profile,
         )
+        wave_spec_loaded = scion_factory.load_spec(wave_spec_path)
+        wave_roles = [str(r.get("role")) for r in ((wave_spec_loaded.get("team") or {}).get("build_roles") or []) if isinstance(r, dict) and r.get("role")]
         eff_env = gke_lifecycle._load_lifecycle_env(wave_env_path)
         repo = gke_lifecycle._normalize_github_repo(
             str((preset_spec.get("vcs") or {}).get("repo") or eff_env.get("GITHUB_REPO") or "duboc/bananacast")
         )
-        tasks = WAVE_CATALOG[wave_num]
+        tasks = AGENT_TEAM_WAVE_CATALOG[wave_num] if profile == "agent-team" else WAVE_CATALOG[wave_num]
 
         if not effective_apply:
             prev_hub_url = os.environ.pop("HUB_URL", None)
@@ -1049,6 +1327,8 @@ def run_wave(
                 "ok": bool(up_dry.get("ok") and down_dry.get("ok")),
                 "apply": False,
                 "wave": wave_num,
+                "profile": profile,
+                "roles": wave_roles,
                 "repo": repo,
                 "project_slug": project_slug,
                 "hub_project": hub_project,
@@ -1239,6 +1519,8 @@ def run_wave(
             "ok": ok,
             "apply": True,
             "wave": wave_num,
+            "profile": profile,
+            "roles": wave_roles,
             "repo": repo,
             "project_slug": project_slug,
             "hub_project": hub_project,
@@ -1272,6 +1554,18 @@ def main(argv: list[str] | None = None) -> int:
         description="Run or preview an end-to-end bananacast GKE hillclimb wave (1, 2, or 3)."
     )
     parser.add_argument("--wave", type=int, choices=(1, 2, 3), required=True, help="Hillclimb wave number (1, 2, or 3)")
+    parser.add_argument(
+        "--preset",
+        type=str,
+        default=None,
+        help="Optional path to a custom FactorySpec YAML (default: presets/bananacast-gke.factory.yaml)",
+    )
+    parser.add_argument(
+        "--profile",
+        choices=VALID_PROFILES,
+        default="default",
+        help="Wave roster/backlog profile: 'default' (6-role bananacast) or 'agent-team' (10-role roster with architect, eng-manager, web-builder, and qa-tester)",
+    )
     parser.add_argument(
         "--env",
         type=str,
@@ -1319,6 +1613,8 @@ def main(argv: list[str] | None = None) -> int:
         idle_soak_sec=args.idle_soak_sec,
         drills=args.drills,
         timeout_sec=args.timeout_sec,
+        preset_path=Path(args.preset) if args.preset else None,
+        profile=args.profile,
         backup_root=Path(args.backup_root) if args.backup_root else None,
         apply=eff_apply,
         keep_on_failure=args.keep_on_failure,

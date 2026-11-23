@@ -353,5 +353,36 @@ def test_no_broken_relative_links_in_tracked_markdown_docs():
     assert broken == [], f"Found broken relative Markdown links: {broken[:10]}"
 
 
+def test_readme_onboarding_order_agent_team_coverage_and_valid_commands():
+    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+    for needle in (
+        "scion-factory doctor",
+        "scion-factory list-roles --agent-team",
+        "--from-agent-team",
+        "team.skill_registry",
+        "architect",
+        "eng-manager",
+        "qa-tester",
+        "web-builder",
+        "--profile agent-team",
+        "go-library",
+    ):
+        assert needle in readme, f"missing {needle!r} in README.md"
+
+    # Before you begin must clone scion-defaults before running ./scripts/scion-factory doctor
+    before_sec = readme.split("### Before you begin", 1)[1].split("### Step 1:", 1)[0]
+    clone_idx = before_sec.find("git clone https://github.com/duboc/scion-defaults.git")
+    doctor_idx = before_sec.find("./scripts/scion-factory doctor")
+    assert clone_idx != -1 and doctor_idx != -1 and clone_idx < doctor_idx, (
+        "README Before you begin must clone the repo before running ./scripts/scion-factory doctor"
+    )
+
+    # Every push-templates.py invocation in README must include required --project, --roles, and --templates flags
+    for m in re.finditer(r"scripts/push-templates\.py[^\n\\]*(?:\\\n[^\n\\]*)*", readme):
+        cmd = m.group(0)
+        assert "--project" in cmd and "--roles" in cmd and "--templates" in cmd, f"incomplete push-templates cmd: {cmd}"
+
+
+
 
 
