@@ -27,7 +27,9 @@ def test_agent_team_catalog_roles_and_uri_mappings():
 
     assert sub_coordinators.is_sub_coordinator(role_library.library_role_entry("eng-manager"))
     assert role_library.ROLES["qa-tester"]["needs_service"] is False
-    assert "in-process WSGI/ASGI" in (role_library.role_protocol("qa-tester", deploy="none") or "")
+    qa_none_proto = role_library.role_protocol("qa-tester", deploy="none") or ""
+    assert "in-process WSGI/ASGI" in qa_none_proto
+    assert 'sciontool status task_completed "Awaiting branch handoff"' in qa_none_proto
     assert role_library.ROLES["architect"]["needs_service"] is False
 
     assert role_library.agent_team_template_uri("lead") == "gh://scion-frontiers/agent-team/templates/coordinator"

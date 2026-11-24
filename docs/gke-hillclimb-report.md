@@ -59,18 +59,39 @@ Run 2 transcripts exposed blocked-specialist and startup races, fixed before Run
 1. **Mid-wave specialist pod eviction (`kubectl delete pod`):** While Wave 3 issues were `status:in-progress`, `run_hillclimb_wave.py` deleted pod `bananacast-hc3--backend`. `sciontool` caught `SIGTERM` and updated the Hub agent record to `phase: "stopped"`. `scion-factory-delta` woke `lead` with `stopped_children: ["backend"]`, `lead` restarted `backend`, and all three Wave 3 issues reached `status:verified`.
 2. **Product-owner decision sleep and wake (`status:po-decision`):** Seeding a `status:po-decision` issue kept the factory idle until `scion-factory-delta` stopped `lead` after the 10-minute grace window (`entered_sleep: true`, `0` running agent pods). Posting an unmarked human comment (`Approved Option A`) woke `lead` in `70.0s` (`112.6s` in Run 3, both under the `120s` target), and `lead` closed the issue as `status:verified` in a single turn.
 
+## Agent-Team Profile Hillclimb (Waves 1 to 3)
+
+After integrating [`scion-frontiers/agent-team`](https://github.com/scion-frontiers/agent-team) roles, declarative `gh://scion-frontiers/agent-team/...` URI skills, and the 10-role `--profile agent-team` runner (`lead`, `backend`, `eng-manager`, `frontend`, `web-builder`, `architect`, `reviewer`, `security-auditor`, `qa-tester`, `evaluator`), all three waves ran end to end on fresh ephemeral GKE projects (`setup_warnings == []`, native `resolved-skills.json` registry resolution at `08faf48269da`, zero IAP `401`/heartbeat/telemetry/CronJob errors, zero duplicate bootstrap wakes, and zero standing cloud resources):
+
+| Metric | Agent-Team Wave 1 (`scion-gke-hc1-<hex>`) | Agent-Team Wave 2 (`scion-gke-hc2-<hex>`) | Agent-Team Wave 3 (`scion-gke-hc3-<hex> --drills`) |
+|---|---|---|---|
+| Cold-start `gke-up` (`setup` / `provision`) | 0 setup warnings | 52.9m (45.7m / 7.2m, 0 warnings) | 55.7m (48.7m / 7.0m, 0 warnings) |
+| Delivered scope | 3 issues (`architect`, `eng-manager`, `web-builder`, `qa-tester`) | 3 issues (all 4 `agent-team` roles) | 3 issues + 2 drills (all 4 `agent-team` roles) |
+| Active wave time | ~37m | ~23m | ~36m (with `architect` pod eviction) |
+| Pod Direct IAP `401` / heartbeat / telemetry boot errors | 0 / 0 / 0 (past `T+60m` on `lead`) | 0 / 0 / 0 | 0 / 0 / 0 |
+| K8s `CronJob` errors / duplicate bootstrap wakes | 0 / 0 | 0 / 0 | 0 / 0 |
+| `agent.log` warnings/errors across all pods | 0 on 5 pods; 4 transient span cancels (0 dropped) | 0 across all 7 pods | 0 across all 9 pod instances |
+| Total steps / `USER_INPUT` turns | 538 / 24 | 458 / 25 | 562 / 25 |
+| Uncached input tokens | 1,448,606 | 696,706 (-51.9%) | 1,078,329 (-52.3% vs prior Wave 3) |
+| Cache-read / output tokens | 15,951,690 / 136,703 | 9,541,651 / 106,277 | 17,288,287 / 140,041 |
+| Pod eviction drill / PO wake latency | n/a | n/a | `architect` recovered / `53.2s` |
+| 30m idle soak (pods / additional lead steps & tokens) | 0 pods / 0 | 0 pods / 0 (61 samples) | 0 pods / 0 (65 samples) |
+| Post-run cloud resources | project deleted ($0) | project deleted ($0) | project deleted ($0) |
+
+One hillclimb refinement landed between Wave 1 and Wave 2 (`scripts/role_library.py`): in Wave 1, `qa-tester` finished its initial wait turn with `sciontool status blocked` before `backend` pushed its branch, leaving sticky `blocked` activity on the Hub and triggering one spurious `STALLED_WIP` wake while `qa-tester` was running. Instructing `qa-tester` to end branch-wait turns with `sciontool status task_completed "Awaiting branch handoff"` (matching `reviewer`) eliminated `STALLED_WIP` false positives across Waves 2 and 3 and helped cut Wave 2 uncached input tokens by `51.9%`. (Wave 1's branch guard exited `1` only because the repo owner merged an unrelated PR on `duboc/bananacast` `main` during Cloud Build 42 minutes before `lead` started; zero agents modified `main` or `factory/main`, and Waves 2 and 3 exited `0` with `branch_guard.unchanged: true`.)
+
 ## Reproducing a Full-Lifecycle Wave
 
 Preview the full lifecycle without creating cloud resources:
 
 ```bash
-python3 scripts/run_hillclimb_wave.py --wave 1 --env config/hc1.env --json
+python3 scripts/run_hillclimb_wave.py --wave 1 --profile agent-team --env config/hc1.env --json
 ```
 
-Run an unattended live wave (pass `--keep-on-failure` while iterating on a new change, or `--drills` on Wave 3):
+Run an unattended live wave (pass `--keep-on-failure` while iterating on a new change, `--profile agent-team` for the 10-role roster, or `--drills` on Wave 3):
 
 ```bash
-python3 scripts/run_hillclimb_wave.py --wave 3 --drills --env config/hc3.env --apply --json
+python3 scripts/run_hillclimb_wave.py --wave 3 --profile agent-team --drills --env config/hc3.env --apply --json
 ```
 
 For standalone ephemeral GKE factories outside the benchmark runner, use `./scripts/scion-factory gke-up` and `./scripts/scion-factory gke-down --delete-project` as documented in [`docs/gke-setup-runbook.md`](gke-setup-runbook.md).
