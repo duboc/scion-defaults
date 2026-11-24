@@ -61,24 +61,38 @@ Run 2 transcripts exposed blocked-specialist and startup races, fixed before Run
 
 ## Agent-Team Profile Hillclimb (Waves 1 to 3)
 
-After integrating [`scion-frontiers/agent-team`](https://github.com/scion-frontiers/agent-team) roles, declarative `gh://scion-frontiers/agent-team/...` URI skills, and the 10-role `--profile agent-team` runner (`lead`, `backend`, `eng-manager`, `frontend`, `web-builder`, `architect`, `reviewer`, `security-auditor`, `qa-tester`, `evaluator`), all three waves ran end to end on fresh ephemeral GKE projects (`setup_warnings == []`, native `resolved-skills.json` registry resolution at `08faf48269da`, zero IAP `401`/heartbeat/telemetry/CronJob errors, zero duplicate bootstrap wakes, and zero standing cloud resources):
+After integrating [`scion-frontiers/agent-team`](https://github.com/scion-frontiers/agent-team) roles and declarative `gh://scion-frontiers/agent-team/...` URI skills, each wave ran once on a fresh ephemeral GKE project with the 10-role `--profile agent-team` roster (`lead`, `backend`, `eng-manager`, `frontend`, `web-builder`, `architect`, `reviewer`, `security-auditor`, `qa-tester`, `evaluator`). Every number below comes from one run per wave, read from the archived `scorecard.json`, pod `agent.log` files, harness transcripts, GitHub label events, and the runner report.
 
 | Metric | Agent-Team Wave 1 (`scion-gke-hc1-<hex>`) | Agent-Team Wave 2 (`scion-gke-hc2-<hex>`) | Agent-Team Wave 3 (`scion-gke-hc3-<hex> --drills`) |
 |---|---|---|---|
-| Cold-start `gke-up` (`setup` / `provision`) | 0 setup warnings | 52.9m (45.7m / 7.2m, 0 warnings) | 55.7m (48.7m / 7.0m, 0 warnings) |
-| Delivered scope | 3 issues (`architect`, `eng-manager`, `web-builder`, `qa-tester`) | 3 issues (all 4 `agent-team` roles) | 3 issues + 2 drills (all 4 `agent-team` roles) |
-| Active wave time | ~37m | ~23m | ~36m (with `architect` pod eviction) |
-| Pod Direct IAP `401` / heartbeat / telemetry boot errors | 0 / 0 / 0 (past `T+60m` on `lead`) | 0 / 0 / 0 | 0 / 0 / 0 |
-| K8s `CronJob` errors / duplicate bootstrap wakes | 0 / 0 | 0 / 0 | 0 / 0 |
-| `agent.log` warnings/errors across all pods | 0 on 5 pods; 4 transient span cancels (0 dropped) | 0 across all 7 pods | 0 across all 9 pod instances |
+| Runner exit | `1` (branch guard, see below) | `0` | `0` |
+| Cold-start `gke-up` (`setup` / `provision`) | not recorded | 52.9m (45.7m / 7.2m) | 55.7m (48.7m / 7.0m) |
+| `setup_warnings` | not recorded | `[]` | `[]` |
+| Delivered scope | 3 of 3 issues verified | 3 of 3 issues verified | 3 of 3 issues verified + 2 drills |
+| Agent-team roles that ran (`architect`, `eng-manager`, `web-builder`, `qa-tester`) | 4 of 4 | 4 of 4 | 4 of 4 |
+| Active wave time (first delta wake to last `status:verified`) | 38.8m | 23.6m | 36.2m |
+| Pod Direct IAP `401` / heartbeat / telemetry boot errors | 0 / 0 / 0 | 0 / 0 / 0 | 0 / 0 / 0 |
+| K8s `CronJob` log errors / duplicate bootstrap wakes | 0 / 0 | 0 / 0 | 0 / 0 |
+| `[ERROR]` lines in archived `agent.log` files | 4 (`lead` 3, `reviewer` 1) | 2 (`web-builder`) | 0 in 7 logs (2 pod instances not archived) |
+| `STALLED_WIP` wakes of `lead` | 1 | 0 | 0 |
 | Total steps / `USER_INPUT` turns | 538 / 24 | 458 / 25 | 562 / 25 |
-| Uncached input tokens | 1,448,606 | 696,706 (-51.9%) | 1,078,329 (-52.3% vs prior Wave 3) |
+| Uncached input tokens | 1,448,606 | 696,706 | 1,078,329 |
 | Cache-read / output tokens | 15,951,690 / 136,703 | 9,541,651 / 106,277 | 17,288,287 / 140,041 |
-| Pod eviction drill / PO wake latency | n/a | n/a | `architect` recovered / `53.2s` |
-| 30m idle soak (pods / additional lead steps & tokens) | 0 pods / 0 | 0 pods / 0 (61 samples) | 0 pods / 0 (65 samples) |
-| Post-run cloud resources | project deleted ($0) | project deleted ($0) | project deleted ($0) |
+| PO wake latency (`status:po-decision`) | n/a | n/a | 53.2s |
+| 30m idle soak (pods / additional `lead` steps and tokens) | not recorded | 0 pods / 0 (61 samples) | 0 pods / 0 (65 samples) |
+| Post-run cloud resources | project deleted | project deleted | project deleted |
 
-One hillclimb refinement landed between Wave 1 and Wave 2 (`scripts/role_library.py`): in Wave 1, `qa-tester` finished its initial wait turn with `sciontool status blocked` before `backend` pushed its branch, leaving sticky `blocked` activity on the Hub and triggering one spurious `STALLED_WIP` wake while `qa-tester` was running. Instructing `qa-tester` to end branch-wait turns with `sciontool status task_completed "Awaiting branch handoff"` (matching `reviewer`) eliminated `STALLED_WIP` false positives across Waves 2 and 3 and helped cut Wave 2 uncached input tokens by `51.9%`. (Wave 1's branch guard exited `1` only because the repo owner merged an unrelated PR on `duboc/bananacast` `main` during Cloud Build 42 minutes before `lead` started; zero agents modified `main` or `factory/main`, and Waves 2 and 3 exited `0` with `branch_guard.unchanged: true`.)
+Notes on what the evidence does and does not show:
+
+1. **Wave 1 runner report is missing.** The branch guard raised before the runner printed its JSON report, because the repository owner merged an unrelated pull request into `duboc/bananacast` `main` during the Cloud Build phase, 42 minutes before `lead` started. No agent commit touched `main` or `factory/main`. The cold-start timers, `setup_warnings`, and idle-soak result for Wave 1 were therefore never written, and the scorecard does not carry them.
+2. **Telemetry export errors.** All six `[ERROR]` lines are `Failed to export spans to cloud: context canceled` (Wave 1) or `Failed to export logs to cloud: context canceled` (Wave 2). In Wave 1 the final delivery snapshots show 4 spans never confirmed (`lead` 163 of 166, `reviewer` 85 of 86). No `401`, heartbeat, or telemetry boot error appears in any archived log.
+3. **Wave 3 log coverage.** The archive holds one `agent.log` per pod name. The evicted first `architect` pod and the `lead` instance restarted for the PO drill have transcripts but no archived `agent.log`, so the zero-error count covers 7 of 9 pod instances.
+4. **URI skills.** Every archived pod in all three waves logged `resolved-skills.json` among its staged inputs. The file content was inspected on one pod only (the Wave 1 `lead`), where the three `gh://scion-frontiers/agent-team/...` skills resolved from the registry at revision `08faf48269da`.
+5. **Pod eviction drill.** The runner deleted the `architect` pod while Wave 3 issues were in progress. `scion-factory-delta` did not wake `lead` for it. The likely reason, not confirmed from Hub state, is that other specialists were still busy: the `STALLED_WIP` wake is written for the case of zero busy specialists. `lead` noticed on a later turn that an unrelated teammate message triggered, its first `scion start architect` did not bring the pod back, and `scion delete architect` followed by `scion start` did. The design note arrived about 17 minutes after `lead` first started `architect`. All three issues reached `status:verified`.
+6. **No pod crossed 60 minutes.** The longest-lived `lead` ran 51 minutes, so these runs did not exercise the Direct IAP token refresh window at `T+55m` to `T+60m`.
+7. **Token totals are not a controlled comparison.** Each wave has different issues, and the earlier 6-role runs show the same Wave 1 to Wave 2 drop (1,454,899 to 657,278). The numbers describe these runs and do not measure the effect of any single change.
+
+One change landed between Wave 1 and Wave 2 (`scripts/role_library.py`). In Wave 1, `qa-tester` ended its first turn with `sciontool status blocked` while it waited for `backend` to push a branch. The Hub kept that `blocked` activity while `qa-tester` later worked, `scion-factory-delta` counted zero busy specialists, and it sent `lead` one `STALLED_WIP` wake. `qa-tester` now ends branch-wait turns with `sciontool status task_completed "Awaiting branch handoff"`, as `reviewer` does. Waves 2 and 3 recorded zero `STALLED_WIP` wakes, with one run each.
 
 ## Reproducing a Full-Lifecycle Wave
 
